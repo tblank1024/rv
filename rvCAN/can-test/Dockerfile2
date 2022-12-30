@@ -1,0 +1,37 @@
+FROM python:3.10-bullseye
+
+RUN apt update
+RUN apt install -y doxygen
+
+RUN wget http://www.airspayce.com/mikem/bcm2835/bcm2835-1.60.tar.gz
+RUN tar zxvf bcm2835-1.60.tar.gz 
+WORKDIR bcm2835-1.60/
+RUN ./configure
+RUN  make
+#RUN  make check
+RUN  make install
+
+#wiringpi 
+RUN wget https://project-downloads.drogon.net/wiringpi-latest.deb
+RUN dpkg -i wiringpi-latest.deb
+RUN gpio -v
+# Run the command "gpio -v". If the version 2.52 is displayed, the installation is successful
+RUN gpio -v
+
+# config.txt additions
+#RUN echo 'dtparam=spi=on' >> /boot/config.txt
+#RUN echo 'dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=23' >> /boot/config.txt
+## echo 'dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=25' >> /boot/config.txt  (not using can1)
+
+RUN apt install -y iproute2
+RUN ip link set can0 type can bitrate 250000
+RUN ifconfig can0 up
+
+
+WORKDIR /code 
+ADD requirements.txt .
+RUN pip install -r requirements.txt 
+ADD receive2.py  .
+
+
+ENTRYPOINT [ "python","/code/receive2.py" ]

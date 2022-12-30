@@ -1,0 +1,26 @@
+version: "2.2"
+services:
+#   rv2mqtt:
+#    image: "ghcr.io/spbrogan/rvc2mqtt:main"
+ 
+services:
+
+  mqtt:
+    container_name: mosq
+    image: eclipse-mosquitto:latest
+    restart: always
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+
+    volumes:
+      - /home/pi/Code/docker/mqtt/config:/mosquitto/config
+      - /home/pi/Code/docker/mqtt/data:/mosquitto/data
+      - /home/pi/Code/docker/mqtt/log:/mosquitto/log
+
+volumes:
+  config:
+  data:
+  log:
+
+

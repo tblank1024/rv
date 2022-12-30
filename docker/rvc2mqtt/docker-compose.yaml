@@ -1,0 +1,43 @@
+version: "2.2"
+ 
+services:
+
+  mqtt:
+    container_name: mosq
+    image: eclipse-mosquitto:latest
+    restart: always
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+
+    volumes:
+      - /home/pi/Code/docker/mqtt/config:/mosquitto/config
+      - /home/pi/Code/docker/mqtt/data:/mosquitto/data
+      - /home/pi/Code/docker/mqtt/log:/mosquitto/log
+
+  rcv2mqtt:
+    image: "ghcr.io/spbrogan/rvc2mqtt:main"
+
+    volumes:
+      - /home/pi/Code/docker/rcv2mqtt/config:/rcv2mqtt/config
+      - /home/pi/Code/docker/rcv2mqtt/data:/rcv2mqtt/data 
+      - /home/pi/Code/docker/rcv2mqtt/log:/rcv2mqtt/log
+
+    environment:
+#      - CAN_INTERFACE_NAME="can0"
+      - FLOORPLAN_FILE_1="/rcv2mqtt/config/floor1.yml"
+#      - FLOORPLAN_FILE_2 : path to the 2nd floor plan file. This is optional but for HA addons this allows UI generated content to be added.
+      - LOG_CONFIG_FILE="/rcv2mqtt/log"
+      - MQTT_HOST="10.0.0.253"
+      - MQTT_PORT=1883
+      - MQTT_USERNAME=""
+      - MQTT_PASSWORD=""
+#     - MQTT_CLIENT_ID : mqtt client id and the bridge node name in mqtt path. default is bridge
+
+
+volumes:
+  config:
+  data:
+  log:
+
+

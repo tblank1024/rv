@@ -1,0 +1,28 @@
+FROM python:3.10-bullseye
+
+RUN apt-get clean
+RUN apt --allow-insecure-repositories --allow-unauthenticated update
+RUN apt install -y doxygen
+WORKDIR /code
+RUN wget http://www.airspayce.com/mikem/bcm2835/bcm2835-1.60.tar.gz
+RUN tar zxvf bcm2835-1.60.tar.gzw
+
+
+WORKDIR /code/bcm2835-1.60
+RUN ./configure
+RUN make
+RUN make install
+
+RUN sudo apt-get install wiringpi
+#When used on Raspberry Pi 4B, you may need to upgrade first：
+RUN wget https://project-downloads.drogon.net/wiringpi-latest.deb
+RUN sudo dpkg -i wiringpi-latest.deb
+RUN gpio -v
+# Run the command "gpio -v". If the version 2.52 is displayed, the installation is successful
+
+WORKDIR /code 
+ADD requirements.txt .
+RUN pip install -r requirements.txt
+ADD receive2.py .
+
+ENTRYPOINT [ "/code/receive2.py" ]

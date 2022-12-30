@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "rvcMon",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "args": ["-d 4","-o 1","-b10.0.0.253", "-m 1"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "justMyCode": true
+        }
+    ]
+}
