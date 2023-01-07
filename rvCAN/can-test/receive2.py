@@ -1,8 +1,8 @@
 import os
 import can
 
-
-can0 = can.interface.Bus(channel = 'can0', bustype = 'socketcan')# socketcan_nativewdocker
+can0 = can.interface.Bus(channel= 'can0', bustype = 'socketcan')
+#can0 = can.interface.Bus(channel = 'can0', bustype = 'socketcan')# socketcan_nativewdocker
 
 #msg = can.Message(arbitration_id=0x123, data=[0, 1, 2, 3, 4, 5, 6, 7], extended_id=False)
 for x in range(600):

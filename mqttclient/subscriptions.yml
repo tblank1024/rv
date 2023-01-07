@@ -1,0 +1,15 @@
+---
+subscriptions:
+  - "RVC/CHARGER_STATUS/1":
+    - qos: 0
+    - keys:
+      - "charge voltage": "var1"
+      - "charge current": "var2"
+      - "operating state definition": var3
+  - "RVC/INVERTER_DC_STATUS/1":
+    - qos: 0
+    - keys:
+      - "charge voltage": "var4"
+      - "charge current": "var5"
+      - "operating state definition": "var6"
+

@@ -14,9 +14,9 @@ services:
       - "9001:9001"
 
     volumes:
-      - /home/pi/Code/docker/mqtt/config:/mosquitto/config
-      - /home/pi/Code/docker/mqtt/data:/mosquitto/data
-      - /home/pi/Code/docker/mqtt/log:/mosquitto/log
+      - /home/pi/Code/tomb/rv/docker/mqtt/config:/mosquitto/config
+      - /home/pi/Code/tomb/rv/docker/mqtt/data:/mosquitto/data
+      - /home/pi/Code/tomb/rv/docker/mqtt/log:/mosquitto/log
 
 volumes:
   config:
