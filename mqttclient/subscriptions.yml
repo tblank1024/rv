@@ -1,15 +1,29 @@
 ---
 subscriptions:
-  - "RVC/CHARGER_STATUS/1":
-    - qos: 0
-    - keys:
-      - "charge voltage": "var1"
-      - "charge current": "var2"
-      - "operating state definition": var3
-  - "RVC/INVERTER_DC_STATUS/1":
-    - qos: 0
-    - keys:
-      - "charge voltage": "var4"
-      - "charge current": "var5"
-      - "operating state definition": "var6"
-
+- - dsn_name: RVC/CHARGER_STATUS/1
+    qos: 0
+    keys:
+    - key_name: charge voltage
+      disp_name: var1
+    - key_name: charge current
+      disp_name: var2
+    - key_name: operating state definition
+      disp_name: var3
+- - dsn_name: RVC/INVERTER_AC_STATUS_1/1
+    qos: 0
+    keys:
+    - key_name: charge voltage
+      disp_name: var4
+    - key_name: charge current
+      disp_name: var5
+    - key_name: operating state definition
+      disp_name: var6
+- - dsn_name: RVC/INVERTER_DC_STATUS/1
+    qos: 0
+    keys:
+    - key_name: charge voltage
+      disp_name: var4
+    - key_name: charge current
+      disp_name: var5
+    - key_name: operating state definition
+      disp_name: var6

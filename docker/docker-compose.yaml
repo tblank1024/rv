@@ -1,5 +1,5 @@
 version: "2.2"
-services:
+# services:
 #   rv2mqtt:
 #    image: "ghcr.io/spbrogan/rvc2mqtt:main"
  
@@ -14,9 +14,9 @@ services:
       - "9001:9001"
 
     volumes:
-      - /home/pi/Code/tomb/rv/docker/mqtt/config:/mosquitto/config
-      - /home/pi/Code/tomb/rv/docker/mqtt/data:/mosquitto/data
-      - /home/pi/Code/tomb/rv/docker/mqtt/log:/mosquitto/log
+      - /home/pi/Code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
+      - /home/pi/Code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
+      - /home/pi/Code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
 
 volumes:
   config:

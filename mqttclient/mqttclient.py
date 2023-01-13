@@ -4,18 +4,25 @@ import paho.mqtt.client as mqtt
 import ruamel.yaml as yaml
 from pprint import pprint
 
-with open("/home/pi/Code/tomb/rv/mqttclient/subscriptions.yml", "r") as file:
+with open("/home/pi/Code/tblank1024/rv/mqttclient/subscriptions.yml", "r") as file:
     data = yaml.load(file, Loader=yaml.Loader)
     pprint(data)
+    
+
+
 
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
+    global data
     print("Connected with result code "+str(rc))
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
     #client.subscribe("$SYS/#")
-    client.subscribe("RVC/CHARGER_STATUS/1")
+    for val in data['subscriptions']:
+        print("Subscribing to: ",val[0]["dsn_name"], val[0]["qos"])
+        client.subscribe(val[0]["dsn_name"], int(val[0]["qos"]))
+    print('Running...')
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
