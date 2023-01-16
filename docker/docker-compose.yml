@@ -1,16 +1,16 @@
 version: "2.2"
-# services:
-
  
 services:
 
   mqtt:
     container_name: broker
+    network_mode: host
     image: eclipse-mosquitto:latest
     restart: always
-    ports:
-      - "1883:1883"
-      - "9001:9001"
+# ports not used in network_mode: host
+#    ports:
+#      - "1883:1883"
+#      - "9001:9001"
 
     volumes:
       - /home/pi/Code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
@@ -24,4 +24,14 @@ services:
     restart: always
     depends_on:
       - mqtt
+
+  mqttclient:
+    container_name: client
+    network_mode: host
+    image: mqttclient:latest
+    restart: always
+    depends_on:
+      - mqtt
+
+
     
