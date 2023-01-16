@@ -1,12 +1,11 @@
 version: "2.2"
 # services:
-#   rv2mqtt:
-#    image: "ghcr.io/spbrogan/rvc2mqtt:main"
+
  
 services:
 
   mqtt:
-    container_name: mosq
+    container_name: broker
     image: eclipse-mosquitto:latest
     restart: always
     ports:
@@ -18,9 +17,11 @@ services:
       - /home/pi/Code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
       - /home/pi/Code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
 
-volumes:
-  config:
-  data:
-  log:
-
-
+  rv2mqtt:
+    container_name: CAN
+    network_mode: host
+    image: rvc2mqtt:latest
+    restart: always
+    depends_on:
+      - mqtt
+    

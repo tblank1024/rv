@@ -4,7 +4,7 @@ import paho.mqtt.client as mqtt
 import ruamel.yaml as yaml
 from pprint import pprint
 
-with open("/home/pi/Code/tblank1024/rv/mqttclient/subscriptions.yml", "r") as file:
+with open("subscriptions.yml", "r") as file:
     data = yaml.load(file, Loader=yaml.Loader)
     pprint(data)
     
@@ -33,7 +33,7 @@ client.on_connect = on_connect
 client.on_message = on_message
 
 #client.connect("mqtt.eclipseprojects.io", 1883, 60)
-client.connect("127.0.0.1", 1883, 60)
+client.connect("localhost", 1883, 60)
 
 # Blocking call that processes network traffic, dispatches callbacks and
 # handles reconnecting.
