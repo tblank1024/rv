@@ -1,2 +1,0 @@
-#ruamel.yaml  installed seperately due to error
-paho-mqtt>=1.6.1
