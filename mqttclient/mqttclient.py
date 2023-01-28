@@ -32,14 +32,19 @@ def on_message(client, userdata, msg):
         if item == 'instance':
             break
         #print(item,'= ', msg_dict[item])
-        TopicData[msg.topic + '/' + item] = msg_dict[item]
+        tmp = msg.topic + '/' + item
+        TopicData[tmp] = msg_dict[item]
+        AliasData[TargetAlias[tmp]] = msg_dict[item]
+
 
     msg_counter += 1
     if msg_counter % 20 == 0:
         #This is a poor way to provide a UI but tkinter isn't working
         os.system('clear')
-        print('******************************************************')
-        pprint(TopicData)
+        print('*******************************************************')
+        pprint(AliasData)
+        #pprint(TopicData)
+        msg_counter = 0
     #time.sleep(.5)
     
 
@@ -67,6 +72,8 @@ except:
 msg_counter = 0
 TargetTopics = {}
 TopicData = {}
+TargetAlias = {}
+AliasData = {}
 for item in data:
     if "instance" in data[item]:
         topic = TOPIC_PREFIX + '/' + item + '/' + str(data[item]["instance"])
@@ -78,9 +85,15 @@ for item in data:
             if topic not in TargetTopics:
                 TargetTopics[topic] = {}
             TargetTopics[topic][entryvar] = tmp
-            TopicData[topic + '/' + entryvar] = ""
+            local_topic = topic + '/' + entryvar
+            TopicData[local_topic] = ''
+            AliasData[tmp] = ''
+            TargetAlias[local_topic] = tmp
 pprint(TargetTopics)
 pprint(TopicData)
+pprint(TargetAlias)
+pprint(AliasData)
+
 
 # Blocking call that processes network traffic, dispatches callbacks and
 # handles reconnecting.
