@@ -18,6 +18,9 @@ services:
       - /home/pi/Code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
 
   rv2mqtt:
+    build:
+      context: /home/pi/Code/linuxkid/rvc-monitor-py
+      dockerfile: Dockerfile
     container_name: CAN
     network_mode: host
     image: rvc2mqtt:latest
@@ -25,10 +28,13 @@ services:
     depends_on:
       - mqtt
 
-  mqttclient:
-    container_name: client
+  webclient:
+    build:
+      context: /home/pi/Code/joram/RVSecurity
+      dockerfile: Dockerfile
+    container_name: webclient
     network_mode: host
-    image: mqttclient:latest
+    image: react:latest
     restart: always
     depends_on:
       - mqtt
