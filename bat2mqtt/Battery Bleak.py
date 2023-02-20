@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
+"""
+Notifications
+-------------
+
+Example showing how to add notifications to a characteristic and handle the responses.
+
+Updated on 2019-07-03 by hbldh <henrik.blidh@gmail.com>
+
+"""
 
 from operator import truediv
 import sys
-import time 
-import json
 import asyncio
 import platform
 
@@ -11,12 +18,8 @@ from bleak import BleakClient
 import atexit
 import time
 import os
-import paho.mqtt.client as mqtt
-from pprint import pprint
 
 import logging
-import mqttclient
-import random
 
 logging.basicConfig()
 logging.getLogger('BLEAK_LOGGING').setLevel(logging.DEBUG)
@@ -30,13 +33,12 @@ CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Char
 LastMessage = ""
 LastVolt = 0
 LastAmps = 0
-Debug = 0
 
 
 
 def notification_handler_battery(sender, data):
     """Simple notification handler which prints the data received.
-    Note: data from device comes back as binary array of data representing the data
+    Note data from device comes back as binary array of data representing the data
     in a BCD format seperated by commas.  The end of record termination is \r.
     Data is comma seperated BCD ASCII values; Not necessarily in a fixed position but close
     CSV datafields are:
@@ -75,21 +77,10 @@ def notification_handler_battery(sender, data):
     1 bytes - record termination char 0x0d CR
     ************  new record starts here
     1 byte  - record termination char 0x0a  LF
-
-    Volt = " + LastMessage[0:4])
-    Cell1= " + LastMessage[5:8])
-    Cell2= " + LastMessage[9:12])
-    Cell3= " + LastMessage[13:16])
-    Cell4= " + LastMessage[17:20])
-    Temp = " + LastMessage[21:23])
-    BMS  = " + LastMessage[24:26])
-    Amps = " + LastMessage[27])
-    Full = " + LastMessage[29:32])
-    Stat = " + LastMessage[33:39])
-    """
+     """
     
     global LastMessage, LastAmps, LastVolt
-    global file_ptr
+    global fp
     
     # raw print of all data
     #print(" {0}: {1}".format(sender, data))
@@ -97,7 +88,15 @@ def notification_handler_battery(sender, data):
         
     if data[0] == 0x0a:                   # now sync'd to end of a record at start
         if len(LastMessage) == 40:          # end of complete record with 40 bytes
+            """TimeString = str(time.time())
+            while not TimeString:                   #prevents random null return
+                TimeString = str(time.time())
+            print(TimeString + ","+ LastMessage)
+            fp.write(TimeString + ","+ LastMessage)
+                """
+
             FieldData = LastMessage.split(",")
+
             CurTime = int(time.time())
             Volt    = int(FieldData[0])
             Temp    = int(FieldData[5])
@@ -105,36 +104,29 @@ def notification_handler_battery(sender, data):
             Full    = int(FieldData[8])
             Stat    = FieldData[9]
 
-            if Debug > 0:
-                if LastVolt == Volt and LastAmps == Amps:
-                    # No change from last measurement
-                    print("{},{},{},{},{},{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                else:
-                    print("{},{},{},{},{},{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                    file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                LastVolt = Volt
-                LastAmps = Amps
-
-            #Now publish to MQTT           
-            """  target topic copied from json file provides easy tag IDs
-            "BATTERY_STATUS":{                         
-                    "instance":1,
-                    "name":"BATTERY_STATUS",
-                    "DC_voltage":                                               "_var18Batt_voltage",
-                    "DC_current":                                               "_var19Batt_current",
-                    "State_of_charge":                                          "_var20Batt_charge",
-                    "Status":                                                    ""},
-            """ 
-            #Update the mqtt AllData dictionary with new data and publish
-            mqttpubclient.AllData['BATTERY_STATUS']["DC_voltage"] = Volt
-            mqttpubclient.AllData['BATTERY_STATUS']["DC_current"] = Amps
-            mqttpubclient.AllData['BATTERY_STATUS']["State_of_charge"] = Full
-            mqttpubclient.AllData['BATTERY_STATUS']["Status"] = Stat
-            mqttpubclient.RVC_Client.pub(mqttpubclient.AllData['BATTERY_STATUS'])
+            if LastVolt == Volt and LastAmps == Amps:
+                # No change from last measurement
+                print("{},{},{},{},{},{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
+            else:
+                print("{},{},{},{},{},{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                fp.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
 
 
+            LastVolt = Volt
+            LastAmps = Amps
 
-            
+            """
+            Volt = " + LastMessage[0:4])
+            Cell1= " + LastMessage[5:8])
+            Cell2= " + LastMessage[9:12])
+            Cell3= " + LastMessage[13:16])
+            Cell4= " + LastMessage[17:20])
+            Temp = " + LastMessage[21:23])
+            BMS  = " + LastMessage[24:26])
+            Amps = " + LastMessage[27])
+            Full = " + LastMessage[29:32])
+            Stat = " + LastMessage[33:39])
+            """
 
         #Reset Vars
         LastMessage = ""
@@ -142,9 +134,33 @@ def notification_handler_battery(sender, data):
     else:
         LastMessage += data.decode("utf-8")
 
+        """
+    hexdata = data.hex()
+    print(hexdata)
+    strdata = data[0:4].decode('utf-8')    
+    print(strdata)
+    """
+    
+
+ 
+    
+    
+
+
+#deptricated original from example
+async def main1(address, char_uuid):
+    async with BleakClient(address) as client:
+        print(f"Connectted: {client.is_connected}")
+        await client.start_notify(char_uuid, notification_handler_battery)
+        while True:
+            await asyncio.sleep(5.0)
+        print(f"Disconnecting: {client.is_connected}")
+        await client.stop_notify(char_uuid)
+
+        
 
 async def OneClient(address1, char_uuid):  # need unique address and service address for each  todo
-    global file_ptr
+    global fp
 
     #make sure BLE stack isn't hung on this MAC address
     stream = os.popen('bluetoothctl disconnect ' + address1)
@@ -153,19 +169,17 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     time.sleep(2)
 
     client1 = BleakClient(address1)
-    try:
-        await client1.connect()
-        print(f"Connectted: {client1.is_connected}")
-    except:
-        print("BLE device not found; Exiting!")
-        return
+    await client1.connect()
+    print(f"Connectted: {client1.is_connected}")
 
     try:
         await client1.start_notify(char_uuid, notification_handler_battery)
+
         while True:
             await asyncio.sleep(5.0)
     finally: 
-        file_ptr.close()
+        
+        fp.close()
         print(f"Disconnecting: {client1.is_connected}")       
         await client1.stop_notify(char_uuid)
         await client1.disconnect()  
@@ -199,9 +213,6 @@ async def TwoClient(address1, address2, char_uuid):  # need unique address and s
 
 
 if __name__ == "__main__":
-    Debug = 1
-    mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
-    if Debug > 0:
-            file_ptr = open("batterylog.txt","w")
+    fp = open("batterylog.txt","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
-    
+    # asyncio.run( main3(DEV_MAC1, DEV_MAC2,CHARACTERISTIC_UUID )
