@@ -35,7 +35,7 @@ class Alarm:
         States.ON:          [ 1,  0,  0],
         States.TRIGDELAY:   [16, 16,  0],
         States.TRIGGERED:   [16, 16,  1],
-        States.SILENCED:    [16, 16,  0]
+        States.SILENCED:    [16, 16,  0],
     }
 
     #Class Constants

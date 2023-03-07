@@ -34,7 +34,7 @@ services:
       dockerfile: Dockerfile
     container_name: webclient
     network_mode: host
-    image: react:latest
+    image: react2:latest
     restart: always
     depends_on:
       - mqtt

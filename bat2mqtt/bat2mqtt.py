@@ -132,10 +132,6 @@ def notification_handler_battery(sender, data):
             mqttpubclient.AllData['BATTERY_STATUS']["Status"] = Stat
             mqttpubclient.RVC_Client.pub(mqttpubclient.AllData['BATTERY_STATUS'])
 
-
-
-            
-
         #Reset Vars
         LastMessage = ""
 
