@@ -28,11 +28,11 @@ services:
     depends_on:
       - mqtt
 
-  webclient:
+  webserver:
     build:
       context: /home/pi/Code/joram/RVSecurity
       dockerfile: Dockerfile
-    container_name: webclient
+    container_name: webserver
     network_mode: host
     image: react2:latest
     restart: always

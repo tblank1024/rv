@@ -164,7 +164,7 @@ if __name__ == "__main__":
     else:
         while True:
             time.sleep(6)
-            #update AllData disctionary with new variable data
+            #update AllData dictionary with new variable data
             """  target topic from json file 
             "BATTERY_STATUS":{                         
                     "instance":1,
