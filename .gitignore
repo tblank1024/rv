@@ -2,3 +2,6 @@
 *.pyc
 #react experiments
 React/
+docker/mqtt/log
+TODO.txt
+mqttclient/TestGui.py
