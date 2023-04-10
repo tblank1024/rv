@@ -1,12 +1,20 @@
-import piplates.TINKERplate as TINK
+import sys
+sys.path.append('/home/pi/Code/tblank1024/rv/mqttclient')
 import time
 import RPi.GPIO as GPIO
+from rpi_hardware_pwm import HardwarePWM
 import time
 import logging
 import mqttclient
 
-
-
+# https://pypi.org/project/rpi-hardware-pwm/
+# GPIO_18 as the pin for PWM0  aka Pin12
+# GPIO_19 as the pin for PWM1  aka Pin35
+# pwm = HardwarePWM(pwm_channel=0, hz=60)
+# pwm.start(100) # full duty cycle
+# pwm.change_duty_cycle(50)
+# pwm.change_frequency(25_000)
+# pwm.stop()
 
 from enum import Enum
 
@@ -36,7 +44,7 @@ class Alarm:
         States.ON:          [ 1,  0,  0],
         States.TRIGDELAY:   [16, 16,  0],
         States.TRIGGERED:   [16, 16,  1],
-        States.SILENCED:    [16, 16,  0]
+        States.SILENCED:    [16, 16,  0],
     }
 
     #Class Constants
@@ -45,14 +53,23 @@ class Alarm:
     SLOWBLINK       = int(6 * FASTBLINK) # SLOWBLINK must be a multiple of FASTBLINK
     MAXALARMTIME    = int(2)             # Number of minutes max that the alarm can be on
     LOOPDELAY       = float(.3)          # time in seconds pausing between running loop
-    TINKERADDR      = int(0)             # IO bd address
-    BUZZER          = 1
-    ALARMHORN       = 2
     LOUDENABLE      = True
     
-    # Pin Definitons not using PI HAT:
-    PIRSensor       = 17                 # Broadcom pin 17 (P1 pin 11)
+    # Pin Definitons using board connector numbering and RP.gpio:
 
+    REDBUTTONIN     = 33
+    REDLEDOUT       = 35
+    BLUEBUTTONIN    = 10
+    BLUELEDOUT      = 12
+    BIKEOUT         = 16
+    BIKEIN          = 18
+    PIRSENSORIN     = 11                 
+
+    BUZZEROUT       = 38
+    HORNOUT         = 40
+
+    PINSINPUT       = [REDBUTTONIN, BLUEBUTTONIN, BIKEIN, PIRSENSORIN]
+    PINSOUTPUT      = [REDLEDOUT, BLUELEDOUT, BIKEOUT, BUZZEROUT, HORNOUT]
 
 
     # Class variables
@@ -68,26 +85,33 @@ class Alarm:
     BluePWMVal: int          = 0          #PWM value from 0 - 100
 
 
+
     def __init__(self):
-        ## Basic setup   
-        TINK.setMODE(self.TINKERADDR,1,'BUTTON')  # Red Button
-        TINK.setMODE(self.TINKERADDR,2,'PWM')     # Red LED
-        TINK.setMODE(self.TINKERADDR,3,'BUTTON')  # Blue Button
-        TINK.setMODE(self.TINKERADDR,4,'PWM')     # Blue LED
-        TINK.setMODE(self.TINKERADDR,5,'DIN')     # PIR interior sensor 
-        TINK.setMODE(self.TINKERADDR,6,'DOUT')    # Surrogate for Alarm horn
-        TINK.clrLED(self.TINKERADDR,0)            # Note LED0 is surrogate for buzzer 
-        TINK.setPWM(self.TINKERADDR,2,0)          # Red LED off
-        TINK.setPWM(self.TINKERADDR,4,0)          # Blue LED
-        TINK.clrDOUT(self.TINKERADDR,6)           # Surrogate Alarm horn
-        TINK.relayOFF(self.TINKERADDR, self.BUZZER)   # Alarm Horn
-        TINK.relayOFF(self.TINKERADDR, self.ALARMHORN)# Buzzer
+        #New Setup using raw RPI GPIO
+        GPIO.setmode(GPIO.BOARD)                    #use board numbering scheme
+        GPIO.setwarnings(False)
+        GPIO.setup(self.PINSINPUT, GPIO.IN) 
+        GPIO.setup(self.PINSOUTPUT, GPIO.OUT) 
+        GPIO.output(self.REDLEDOUT, False)
+        GPIO.output(self.BLUELEDOUT, False)
+        GPIO.output(self.HORNOUT, False)
+        GPIO.output(self.BUZZEROUT, False)
+
+        
+        
+        ## Basic setup usting TINK  
+        #TINK.clrLED(self.TINKERADDR,0)            # Note LED0 is surrogate for buzzer 
+        #TINK.clrDOUT(self.TINKERADDR,6)           # Surrogate Alarm horn
         
         self.BikeState = States.OFF
         self.InteriorState = States.OFF
         # Pin Setup:
-        GPIO.setmode(GPIO.BCM) # Broadcom pin-numbering scheme
-        GPIO.setup(self.PIRSensor, GPIO.IN) # 
+
+    def _toggle(self, outpin):
+        outval = GPIO.input(outpin)
+        GPIO.output(outpin, not outval)
+        
+    
      
     def set_state(self, state_var: AlarmTypes, state_val: States):
         if state_var == AlarmTypes.Interior:
@@ -106,24 +130,25 @@ class Alarm:
             return self.BikeState
          
     def _bikewire_error_tst(self) -> bool:
-        VOL_DELTA = .20                                             #Allowed voltage delta in trip wire
-        Chan1_Base = TINK.getADC(self.TINKERADDR,1)                 #This measures the 5V supply used to generate Chan3_Base and Chan4_Base 
-        Chan3_Base = Chan1_Base * 0.6391                            #ratio set by resistive divider
-        Chan4_Base = Chan1_Base * 0.309
-        Chan3_Raw = TINK.getADC(self.TINKERADDR,3)
-        Chan3_Err = abs(Chan3_Raw - Chan3_Base)
-        Chan4_Raw = TINK.getADC(self.TINKERADDR,4)
-        Chan4_Err = abs(Chan4_Raw - Chan4_Base)
-        error_status = (Chan3_Err > VOL_DELTA) or (Chan4_Err > VOL_DELTA)
-        if error_status or (self.LoopCount % 14400 == 0):
-            Err_msg = ", Chan1B=, " + '%4.3f'%Chan1_Base + ", Chan3B =, "  + '%4.3f'%Chan3_Base + ", Chan4B=, " + '%4.3f'%Chan4_Base + \
-                  " ,Chan3_Raw=, " + '%4.3f'%Chan3_Raw +  ", Chan4_Raw=, " + '%4.3f'%Chan4_Raw + \
-                  " ,Chan3_Err=, " + '%4.3f'%Chan3_Err +  ", Chan4_Err=, " + '%4.3f'%Chan4_Err
-            logging.debug(Err_msg)
-        return (error_status)                                       # returns true if error detected
+    #     VOL_DELTA = .20                                             #Allowed voltage delta in trip wire
+    #     Chan1_Base = TINK.getADC(self.REDBUTTONIN)                 #This measures the 5V supply used to generate Chan3_Base and Chan4_Base 
+    #     Chan3_Base = Chan1_Base * 0.6391                            #ratio set by resistive divider
+    #     Chan4_Base = Chan1_Base * 0.309
+    #     Chan3_Raw = TINK.getADC(self.BLUEBUTTONIN)
+    #     Chan3_Err = abs(Chan3_Raw - Chan3_Base)
+    #     Chan4_Raw = TINK.getADC(self.BLUELEDOUT)
+    #     Chan4_Err = abs(Chan4_Raw - Chan4_Base)
+    #     error_status = (Chan3_Err > VOL_DELTA) or (Chan4_Err > VOL_DELTA)
+    #     if error_status or (self.LoopCount % 14400 == 0):
+    #         Err_msg = ", Chan1B=, " + '%4.3f'%Chan1_Base + ", Chan3B =, "  + '%4.3f'%Chan3_Base + ", Chan4B=, " + '%4.3f'%Chan4_Base + \
+    #               " ,Chan3_Raw=, " + '%4.3f'%Chan3_Raw +  ", Chan4_Raw=, " + '%4.3f'%Chan4_Raw + \
+    #               " ,Chan3_Err=, " + '%4.3f'%Chan3_Err +  ", Chan4_Err=, " + '%4.3f'%Chan4_Err
+    #         logging.debug(Err_msg)
+    #     return (error_status)                                       # returns true if error detected
+        return(False)
     
     def _check_bike_wire(self):
-        # if self.BikeState in [States.ON, States.STARTING] and self._bikewire_error_tst()
+        if self.BikeState in [States.ON, States.STARTING] and self._bikewire_error_tst():
             #two tests show error
             if(self.BikeState == States.STARTING):
                 # Starting errror
@@ -136,24 +161,24 @@ class Alarm:
                 self.AlarmTime = self.LoopTime
     
     def _check_interior(self):
-        if self.InteriorState == States.STARTING and GPIO.input(self.PIRSensor): 
+        if self.InteriorState == States.STARTING and GPIO.input(self.PIRSENSORIN): 
              #Alarm triggered but starting
             self.set_state(AlarmTypes.Interior, States.STARTERROR)
-        elif self.InteriorState == States.ON and GPIO.input(self.PIRSensor): 
+        elif self.InteriorState == States.ON and GPIO.input(self.PIRSENSORIN): 
             #Alarm triggered
             self.set_state(AlarmTypes.Interior, States.TRIGDELAY)
             self.AlarmTime = self.LoopTime
             logging.info("Interior Alarm triggered")
 
     def _check_buttons(self):
-        BUTTONDELAY = 1             # Time (sec) before button toggles
+        BUTTONDELAY = 1             # Time (sec) before button _toggle((s
 
         NowTime = self.LoopTime
-        RedButton = TINK.getBUTTON(self.TINKERADDR,1)     #Interior Alarm control
-        BlueButton = TINK.getBUTTON(self.TINKERADDR,3)    #Bike Alarm control
+        RedButton = GPIO.input(self.REDBUTTONIN)     #Interior Alarm control
+        BlueButton = GPIO.input(self.BLUEBUTTONIN)    #Bike Alarm control
         
         if(RedButton == 1 and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
-            #Toggle
+            #_toggle((
             if self.InteriorState == States.OFF:
                 self.set_state(AlarmTypes.Interior,States.STARTING)
                 logging.info("Red Starting")
@@ -163,7 +188,7 @@ class Alarm:
             self.LastButtonTime = NowTime
 
         if BlueButton == 1 and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
-            #Toggle
+            #_toggle((
             if self.BikeState == States.OFF:
                 self.set_state(AlarmTypes.Bike, States.STARTING)
                 logging.info("Blue Starting")
@@ -180,21 +205,21 @@ class Alarm:
         NightTime =  mytime.tm_hour < 8 or mytime.tm_hour > 20
 
         if IntState[0] == 0:
-            TINK.setPWM(self.TINKERADDR,2, 0) #Red light off
+            GPIO.output(self.REDLEDOUT, 0) #Red light off
         elif IntState[0] == 1:
             #Red light on
             if NightTime:
-                TINK.setPWM(self.TINKERADDR,2,1)    #dim on
+                GPIO.output(self.REDLEDOUT,1)    #dim on
             else:
-                TINK.setPWM(self.TINKERADDR,2,100)    #strong on
+                GPIO.output(self.REDLEDOUT,100)    #strong on
         if BkState[0] == 0:
-            TINK.setPWM(self.TINKERADDR,4, 0) #Blue light off
+            GPIO.output(self.BLUELEDOUT, 0) #Blue light off
         elif BkState[0] == 1:
             #Blue light on
             if NightTime:
-                TINK.setPWM(self.TINKERADDR,4,1)    #Dim on
+                GPIO.output(self.BLUELEDOUT,1)    #Dim on
             else:
-                TINK.setPWM(self.TINKERADDR,4,100)  #strong on
+                GPIO.output(self.BLUELEDOUT,100)  #strong on
 
         
         # Combined Buzzer and Alarm values
@@ -202,53 +227,51 @@ class Alarm:
         AlarmVal = IntState[2] + BkState[2]
 
         if BuzzerVal == 0:
-            TINK.relayOFF(self.TINKERADDR, self.BUZZER)
-            TINK.clrLED(self.TINKERADDR,0)
+            GPIO.output(self.BUZZEROUT, 0)
         elif BuzzerVal == 1:
             if self.LOUDENABLE:
-                    TINK.relayON(self.TINKERADDR,self.BUZZER)
-            TINK.setLED(self.TINKERADDR,0)
+                    GPIO.output(self.BUZZEROUT, 1)
+            #TINK.setLED(self.TINKERADDR,0)
         
         if AlarmVal == 0:
-            TINK.relayOFF(self.TINKERADDR,self.ALARMHORN)
-            TINK.clrDOUT(self.TINKERADDR,6)
+            GPIO.output(self.HORNOUT, 0)
         elif AlarmVal == 1:
             if self.LOUDENABLE:
-                TINK.relayON(self.TINKERADDR,self.ALARMHORN)
-            TINK.setDOUT(self.TINKERADDR,6)
+                GPIO.output(self.HORNOUT, 1)
+            #TINK.setDOUT(self.TINKERADDR,6)
 
         if BuzzerVal > 1 or AlarmVal > 1 or IntState[0] > 1 or BkState[0] > 1:
-             # Someone needs to toggle now
+             # Someone needs to _toggle(( now
             if self.LoopCount % self.SLOWBLINK == 0:
                 if IntState[0] > 2:            # Red Light
                     self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    TINK.setPWM(self.TINKERADDR,2,self.RedPWMVal)
+                    GPIO.output(self.REDLEDOUT,self.RedPWMVal)
                 if BkState[0] > 2:                # Blue Light
                     self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    TINK.setPWM(self.TINKERADDR,4, self.BluePWMVal)
+                    GPIO.output(self.BLUELEDOUT, self.BluePWMVal)
                 if BuzzerVal > 2:
                     if self.LOUDENABLE:
-                        TINK.relayTOGGLE(self.TINKERADDR,self.BUZZER)
-                    TINK.toggleLED(self.TINKERADDR,0)
+                        self._toggle(self.BUZZEROUT)
+                    #TINK._toggle((LED(self.TINKERADDR,0)
                 if AlarmVal > 2:
                     if self.LOUDENABLE:
-                        TINK.relayTOGGLE(self.TINKERADDR,self.ALARMHORN)
-                    TINK.toggleDOUT(self.TINKERADDR,6)
+                        self._toggle(self.HORNOUT)
+                    #TINK._toggle((DOUT(self.TINKERADDR,6)
             elif (self.LoopCount % self.FASTBLINK) == 0:
                 if IntState[0] > 8:            # Red Light
                     self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    TINK.setPWM(self.TINKERADDR,2,self.RedPWMVal)
+                    GPIO.output(self.REDLEDOUT,self.RedPWMVal)
                 if BkState[0] > 8:                # Blue Light
                     self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    TINK.setPWM(self.TINKERADDR,4, self.BluePWMVal)
+                    GPIO.output(self.BLUELEDOUT, self.BluePWMVal)
                 if BuzzerVal > 8:
                     if self.LOUDENABLE:
-                        TINK.relayTOGGLE(self.TINKERADDR,self.BUZZER)
-                    TINK.toggleLED(self.TINKERADDR,0)
+                        self._toggle(self.BUZZEROUT)
+                    #TINK._toggle((LED(self.TINKERADDR,0)
                 if AlarmVal > 8:
                     if self.LOUDENABLE:
-                        TINK.relayTOGGLE(self.TINKERADDR,self.ALARMHORN)
-                    TINK.toggleDOUT(self.TINKERADDR,6)
+                        self._toggle(self.HORNOUT)
+                    #TINK._toggle((DOUT(self.TINKERADDR,6)
                 
 
        
