@@ -90,7 +90,7 @@ class Alarm:
         #New Setup using raw RPI GPIO
         GPIO.setmode(GPIO.BOARD)                    #use board numbering scheme
         GPIO.setwarnings(False)
-        GPIO.setup(self.PINSINPUT, GPIO.IN) 
+        GPIO.setup(self.PINSINPUT, GPIO.IN, pull_up_down=GPIO.PUD_UP) 
         GPIO.setup(self.PINSOUTPUT, GPIO.OUT) 
         GPIO.output(self.REDLEDOUT, False)
         GPIO.output(self.BLUELEDOUT, False)
