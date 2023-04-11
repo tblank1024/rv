@@ -1,1 +1,2 @@
-pi-plates==9.31
+RPi.GPIO==0.7.1
+rpi_hardware_pwm==0.1.4
