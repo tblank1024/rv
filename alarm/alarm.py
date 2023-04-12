@@ -2,7 +2,7 @@ import sys
 sys.path.append('/home/pi/Code/tblank1024/rv/mqttclient')
 import time
 import RPi.GPIO as GPIO
-from rpi_hardware_pwm import HardwarePWM
+#from rpi_hardware_pwm import HardwarePWM
 import time
 import logging
 import mqttclient
@@ -32,7 +32,7 @@ class AlarmTypes(Enum):
     Bike        = 2
 
 
-class Alarm:
+class Alarm():
 
     StateConsts = {
         # Value list assignments: 1st: Light indicator state; 2nd: Buzzer State; 3rd: Alarm State
@@ -57,19 +57,24 @@ class Alarm:
     
     # Pin Definitons using board connector numbering and RP.gpio:
 
-    REDBUTTONIN     = 33
-    REDLEDOUT       = 35
-    BLUEBUTTONIN    = 10
-    BLUELEDOUT      = 12
-    BIKEOUT         = 16
-    BIKEIN          = 18
-    PIRSENSORIN     = 11                 
+    BUZZEROUT       = 15
+    HORNOUT         = 18
+    PIRSENSORIN     = 29
+    REDBUTTONIN     = 31
+    REDLEDOUT       = 32
+    BLUEBUTTONIN    = 33
+    BLUELEDOUT      = 35
+    BIKEIN1         = 36
+    BIKEIN2         = 37
+    BIKEOUT1        = 38
+    BIKEOUT2        = 40
+    
+    
 
-    BUZZEROUT       = 38
-    HORNOUT         = 40
 
-    PINSINPUT       = [REDBUTTONIN, BLUEBUTTONIN, BIKEIN, PIRSENSORIN]
-    PINSOUTPUT      = [REDLEDOUT, BLUELEDOUT, BIKEOUT, BUZZEROUT, HORNOUT]
+
+    PINSINPUT       = [REDBUTTONIN, BLUEBUTTONIN, BIKEIN1, BIKEIN2, PIRSENSORIN]
+    PINSOUTPUT      = [REDLEDOUT, BLUELEDOUT, BIKEOUT1, BIKEOUT2, BUZZEROUT, HORNOUT]
 
 
     # Class variables
@@ -82,12 +87,16 @@ class Alarm:
     LoopTime: float         = 0.0        #Time of current loop execution
     LoopCount: int          = 0          #Simple counter of loop cycles
     RedPWMVal: int          = 0          #PWM value from 0 - 100
-    BluePWMVal: int          = 0          #PWM value from 0 - 100
+    BluePWMVal: int         = 0          #PWM value from 0 - 100
+    debuglevel: int         = 0
 
 
 
-    def __init__(self):
+    def __init__(self, debug):
         #New Setup using raw RPI GPIO
+        global debuglevel
+        debuglevel = debug
+
         GPIO.setmode(GPIO.BOARD)                    #use board numbering scheme
         GPIO.setwarnings(False)
         GPIO.setup(self.PINSINPUT, GPIO.IN, pull_up_down=GPIO.PUD_UP) 
@@ -99,13 +108,13 @@ class Alarm:
 
         
         
-        ## Basic setup usting TINK  
+
         #TINK.clrLED(self.TINKERADDR,0)            # Note LED0 is surrogate for buzzer 
         #TINK.clrDOUT(self.TINKERADDR,6)           # Surrogate Alarm horn
         
         self.BikeState = States.OFF
         self.InteriorState = States.OFF
-        # Pin Setup:
+
 
     def _toggle(self, outpin):
         outval = GPIO.input(outpin)
@@ -301,27 +310,56 @@ class Alarm:
         elif (Bike ==  States.TRIGGERED) and ((self.LoopTime - self.AlarmTime) > (60 * self.MAXALARMTIME)):
             #self.BikeState = States.SILENCED
             self.set_state(Bike, States.SILENCED)
+
+    def _InternalTest(self):
+        #blink red and blue leds
+        self.LoopCount += 1
+
+        if self.LoopCount % 3 == 0:
+            print(GPIO.input(self.PIRSENSORIN), "\t", GPIO.input(self.BLUEBUTTONIN), "\t", GPIO.input(self.REDBUTTONIN), "\t", GPIO.input(self.BIKEIN1), "\t", GPIO.input(self.BIKEIN2))
+            self._toggle(self.REDLEDOUT)
+            self._toggle(self.BLUELEDOUT)
+            self._toggle(self.BUZZEROUT)
+            self._toggle(self.HORNOUT)
+            self._toggle(self.BIKEOUT1)
+            self._toggle(self.BIKEOUT2)
+        if self.LoopCount % 50 == 1:
+            print("PIR\tRED\tBlu\tBK1\tBK2")
+            
+            
+            
+            
+
+
+        
+
     
     def run_alarm_infinite(self):
         # run alarm code forever
         while True:                    
-            if self.InteriorState == States.OFF and self.BikeState == States.OFF:
-                #don't let the LoopCount get too big
-                self.LoopCount = 1      
+            
+            if debuglevel == 10:
+                self._InternalTest()
             else:
-                self.LoopCount += 1
-            self.LoopTime = time.time()
-            self._check_buttons()    
-            self._check_bike_wire()
-            self._check_interior()
-            self._update_timed_transitions()
-            self._display()
-            #if LoopCount % 40 == 0:
-            #    print(AlarmState)
+                if self.InteriorState == States.OFF and self.BikeState == States.OFF:
+                #don't let the LoopCount get too big
+                    self.LoopCount = 1      
+                else:
+                    self.LoopCount += 1
+                self.LoopTime = time.time()
+                self._check_buttons()    
+                self._check_bike_wire()
+                self._check_interior()
+                self._update_timed_transitions()
+                self._display()
+                #if LoopCount % 40 == 0:
+                #    print(AlarmState)
             time.sleep(self.LOOPDELAY) #sleep
 
 if __name__ == "__main__":
     logging.basicConfig(filename='alarm.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
     logging.info('Alarm App Starting')
-    RVIO = Alarm()
+    debuglevel = 10
+    RVIO = Alarm(debuglevel)
+
     RVIO.run_alarm_infinite()

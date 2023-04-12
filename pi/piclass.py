@@ -1,4 +1,4 @@
-from enum import Enum
+import sys
 
 class pipins():
     #constants
@@ -50,7 +50,7 @@ class pipins():
 
     CANPINSDICT = {
         "PWR": "5V0",
-        "PWR": "GND",
+        "GND": "GND",
         "GPIO7": "CAN_1 chip select",
         "GPIO8": "CAN_0 chip select",
         "GPIO9": "SPI clock input",
@@ -61,17 +61,19 @@ class pipins():
     }
 
     ALARMPINSDICT = {
-        "PWR": "5V0",
-        "PWR": "GND",
-        "GPIO5": "RESERVED",
-        "GPIO6": "PIRSENSORIN",
+        "PWR":    "5V0",
+        "GND":    "GND",
+        "GPIO5":  "PIRSENSORIN",
+        "GPIO6":  "REDBUTTONIN",
         "GPIO12": "REDLEDOUT",
-        "GPIO13": "BUZZEROUT",
-        "GPIO16": "HORNOUT",
+        "GPIO13": "BLUEBUTTONIN",
+        "GPIO16": "BIKEIN1",
         "GPIO19": "BLUELEDOUT",
-        "GPIO20": "BLUEBUTTONIN",
-        "GPIO21": "BIKEOUT",
-        "GPIO26": "BIKEIN",
+        "GPIO20": "BIKEOUT1",
+        "GPIO21": "BIKEOUT2",
+        "GPIO22": "BUZZEROUT",
+        "GPIO24": "HORNOUT",
+        "GPIO26": "BIKEIN2",
     }
     
    
@@ -85,19 +87,20 @@ class pipins():
             if self.PIEPINS[pin][1] not in list(mergeddict.keys()):
                 print(pin, "\t", self.PIEPINS[pin][1].ljust(6), "\t", self.PIEPINS[pin][2], "")
         print("")
-
         
-        pinsused = []
-        for pin in self.PIEPINS:
-            if self.PIEPINS[pin][0] != "PWR" and self.PIEPINS[pin][0] != "ID" and (self.PIEPINS[pin][1] not in BCM_List_of_Dicts):
-                pinsused.append(pin)
-        return pinsused 
+        # pinsused = []
+        # for pin in self.PIEPINS:
+        #     if self.PIEPINS[pin][0] != ("PWR" or "GND" or "ID") and (self.PIEPINS[pin][1] not in BCM_List_of_Dicts):
+        #         pinsused.append(pin)
+        # return pinsused 
 
 
     def print_BCM_pins(self, used_dict):
         #used_dict must be BCM named dictionary keys and usage; prints in pins list order
         print("Pin#\t Usage\t\t\t\t BCM#\t\t Pull\tOptions")
         for pin in self.PIEPINS:
+            if self.PIEPINS[pin][0] == "PWR" or self.PIEPINS[pin][0] == "GND":
+                continue
             if self.PIEPINS[pin][1] in list(used_dict.keys()):
                 usage = used_dict[self.PIEPINS[pin][1]].ljust(23)
                 print(pin, "\t",usage, "\t", self.PIEPINS[pin][1].ljust(6), "\t", self.PIEPINS[pin][2], "")
@@ -118,6 +121,28 @@ class pipins():
             if pin in PIN_List:
                 pinsused.append(self.PIEPINS[pin][1])
         return pinsused
+    
+    def _ConflictCheck(self, dictlistBCM):
+        #verify that there are no overlaps between the listed dictionaries
+        tempdict = {}
+        errorcount = 0
+        for pin in self.PIEPINS:
+            tempdict[self.PIEPINS[pin][1]]=  False
+        for dicts in dictlistBCM:
+            for item in dicts:
+                if item == "PWR" or item == "GND":
+                   continue 
+                if tempdict[item] == True:
+                    print('Conflict error for item: ', item)
+                    errorcount += 1
+                else:
+                    tempdict[item] = True
+        if errorcount > 0:
+            print('Conflict Check Complete with Error Count = ', errorcount)
+            sys.exit()  
+        else: 
+            print('No conflict errors found')  
+
         
     def __init__(self):
         
@@ -127,12 +152,13 @@ class pipins():
 if __name__ == "__main__":
 
     doit = pipins()
+    useddictlist = [doit.CANPINSDICT, doit.ALARMPINSDICT]
+    doit._ConflictCheck(useddictlist)
     print("CAN pin list")
     doit.print_BCM_pins(doit.CANPINSDICT)
     print("Alarm pin list")
     doit.print_BCM_pins(doit.ALARMPINSDICT)
     print("Remaining unused pins")
-    useddictlist = [doit.CANPINSDICT, doit.ALARMPINSDICT]
     
 
     doit.print_pins_unused(useddictlist)
