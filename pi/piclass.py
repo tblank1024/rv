@@ -72,7 +72,7 @@ class pipins():
         "GPIO20": "BIKEOUT1",
         "GPIO21": "BIKEOUT2",
         "GPIO22": "BUZZEROUT",
-        "GPIO24": "HORNOUT",
+        "GPIO27": "HORNOUT",
         "GPIO26": "BIKEIN2",
     }
     

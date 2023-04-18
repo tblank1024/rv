@@ -39,16 +39,26 @@ services:
     depends_on:
       - mqtt
 
-#  batterypub:
-#    build:
-#      context: /home/pi/Code/tblank1024/rv/bat2mqtt
-#      dockerfile: Dockerfile
-#    container_name: bat2mqtt
-#    network_mode: host
-#    image: react:latest
-#    restart: always
-#    depends_on:
-#      - mqtt
+  alarm:
+    build:
+      context: /home/pi/Code/tblank1024/rv/alarm
+      dockerfile: Dockerfile
+    container_name: alarm
+    network_mode: host
+    restart: "no"
+    privileged: true
+    depends_on:
+      - mqtt
+
+# bat2mqtt:
+  #   build:
+  #     context: /home/pi/Code/tblank1024/rv/bat2mqtt
+  #     dockerfile: Dockerfile
+  #   container_name: bat2mqtt
+  #   network_mode: host
+    #   restart: "no"
+  #   depends_on:
+  #     - mqtt
 
 
     

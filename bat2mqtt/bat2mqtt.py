@@ -88,32 +88,24 @@ def notification_handler_battery(sender, data):
     Stat = " + LastMessage[33:39])
     """
     
-    global LastMessage, LastAmps, LastVolt
+    global LastMessage, LastAmps, LastVolt, Debug
     global file_ptr
     
     # raw print of all data
-    #print(" {0}: {1}".format(sender, data))
+    if Debug >1:
+        #print(" {0}: {1} {2} {3}".format(sender, len(LastMessage), hex(data[0]), data))
+        print(" {0} {1} {2} {3} decoded: {4} ".format(len(LastMessage), len(data), data[19], data, data.decode("utf-8")))
 
-        
-    if data[0] == 0x0a:                   # now sync'd to end of a record at start
+    LastMessage += data.decode("utf-8")
+    if data[19] == 0x0A:
         if len(LastMessage) == 40:          # end of complete record with 40 bytes
             FieldData = LastMessage.split(",")
             CurTime = int(time.time())
-            Volt    = int(FieldData[0])
+            Volt    = float(FieldData[0])/100
             Temp    = int(FieldData[5])
             Amps    = int(FieldData[7])
             Full    = int(FieldData[8])
-            Stat    = FieldData[9]
-
-            if Debug > 0:
-                if LastVolt == Volt and LastAmps == Amps:
-                    # No change from last measurement
-                    print("{},{},{},{},{},{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                else:
-                    print("{},{},{},{},{},{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                    file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                LastVolt = Volt
-                LastAmps = Amps
+            Stat    = FieldData[9][0:6]
 
             #Now publish to MQTT           
             """  target topic copied from json file provides easy tag IDs
@@ -125,24 +117,37 @@ def notification_handler_battery(sender, data):
                     "State_of_charge":                                          "_var20Batt_charge",
                     "Status":                                                    ""},
             """ 
-            #Update the mqtt AllData dictionary with new data and publish
-            mqttpubclient.AllData['BATTERY_STATUS']["DC_voltage"] = Volt
-            mqttpubclient.AllData['BATTERY_STATUS']["DC_current"] = Amps
-            mqttpubclient.AllData['BATTERY_STATUS']["State_of_charge"] = Full
-            mqttpubclient.AllData['BATTERY_STATUS']["Status"] = Stat
-            mqttpubclient.RVC_Client.pub(mqttpubclient.AllData['BATTERY_STATUS'])
+            #create dictionary with new data and publish
+            AllData = {}
+            AllData["instance"] = 1
+            AllData["name"] = "BATTERY_STATUS"
+            AllData["DC_voltage"] = Volt
+            AllData["DC_current"] = Amps
+            AllData["State_of_charge"] = Full
+            AllData["Status"] = Stat
+            mqttpubclient.pub(AllData)
+
+            if Debug > 0:
+                if LastVolt == Volt and LastAmps == Amps:
+                    # No change from last measurement
+                    print("{},{},{},{},{},{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                else:
+                    print("{},{},{},{},{},{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                LastVolt = Volt
+                LastAmps = Amps
+
 
         #Reset Vars
-        LastMessage = ""
-
-    else:
-        LastMessage += data.decode("utf-8")
-
+        else:
+            LastMessage = ""
+        
 
 async def OneClient(address1, char_uuid):  # need unique address and service address for each  todo
     global file_ptr
 
     #make sure BLE stack isn't hung on this MAC address
+    print('OneClient BLE watcher starting')
     stream = os.popen('bluetoothctl disconnect ' + address1)
     output = stream.read()
     print(output)
