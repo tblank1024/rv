@@ -92,13 +92,16 @@ def notification_handler_battery(sender, data):
     global file_ptr
     
     # raw print of all data
-    if Debug >1:
+    if Debug > 2:
         #print(" {0}: {1} {2} {3}".format(sender, len(LastMessage), hex(data[0]), data))
-        print(" {0} {1} {2} {3} decoded: {4} ".format(len(LastMessage), len(data), data[19], data, data.decode("utf-8")))
+        if len(data) == 20:
+            print(" {0} {1} {2} {3} decoded: {4} ".format(len(LastMessage), len(data), data[19], data, data.decode("utf-8")))
+        else:
+            print(" {0} {1} {2} {3} decoded: {4} ".format(len(LastMessage), len(data), data[0], data, data.decode("utf-8")))
 
     LastMessage += data.decode("utf-8")
-    if data[19] == 0x0A:
-        if len(LastMessage) == 40:          # end of complete record with 40 bytes
+    if data[len(data)-1] == 0x0A:  # end of record with 0x0A LF
+        if len(LastMessage) < 45:          # end of complete record with 40 or so bytes
             FieldData = LastMessage.split(",")
             CurTime = int(time.time())
             Volt    = float(FieldData[0])/100
@@ -125,8 +128,8 @@ def notification_handler_battery(sender, data):
             AllData["DC_current"] = Amps
             AllData["State_of_charge"] = Full
             AllData["Status"] = Stat
-            mqttpubclient.pub(AllData)
-
+            if Debug < 2:
+                mqttpubclient.pub(AllData)
             if Debug > 0:
                 if LastVolt == Volt and LastAmps == Amps:
                     # No change from last measurement
@@ -141,6 +144,7 @@ def notification_handler_battery(sender, data):
         #Reset Vars
         else:
             LastMessage = ""
+    
         
 
 async def OneClient(address1, char_uuid):  # need unique address and service address for each  todo
@@ -200,8 +204,15 @@ async def TwoClient(address1, address2, char_uuid):  # need unique address and s
 
 
 if __name__ == "__main__":
-    Debug = 1
-    mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
+    # Debug values
+    # 0 - Silently transmists data to mqtt
+    # 1 - logs all data to batterylot.txt (overwrites previous log) and prints output
+    # 2 - does not log to mqtt and all of #1
+    # 3 - #2 plus outputs raw packets received
+    
+    Debug = 2
+    if Debug < 2:       #don't pub to mqtt
+        mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
     if Debug > 0:
             file_ptr = open("batterylog.txt","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
