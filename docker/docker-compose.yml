@@ -47,6 +47,7 @@ services:
     network_mode: host
     restart: always
     image: alarm:latest
+    privileged: true 
 
 
 # bat2mqtt:
