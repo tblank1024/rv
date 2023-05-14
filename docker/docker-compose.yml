@@ -19,9 +19,9 @@ services:
 
   rv2mqtt:
     build:
-      context: /home/pi/Code/linuxkid/rvc-monitor-py
+      context: /home/pi/Code/linuxkidd/rvc-monitor-py
       dockerfile: Dockerfile
-    container_name: CAN
+    container_name: can
     network_mode: host
     image: rvc2mqtt:latest
     restart: always
@@ -47,9 +47,7 @@ services:
     network_mode: host
     restart: always
     image: alarm:latest
-    privileged: true
-    depends_on:
-      - mqtt
+
 
 # bat2mqtt:
   #   build:
