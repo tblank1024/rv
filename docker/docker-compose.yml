@@ -45,7 +45,8 @@ services:
       dockerfile: Dockerfile
     container_name: alarm
     network_mode: host
-    restart: "no"
+    restart: always
+    image: alarm:latest
     privileged: true
     depends_on:
       - mqtt
@@ -55,6 +56,7 @@ services:
   #     context: /home/pi/Code/tblank1024/rv/bat2mqtt
   #     dockerfile: Dockerfile
   #   container_name: bat2mqtt
+  #   image: bat2mqtt:latest
   #   network_mode: host
     #   restart: "no"
   #   depends_on:

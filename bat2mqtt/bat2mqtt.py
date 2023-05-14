@@ -28,6 +28,7 @@ CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Char
 
 #variables
 LastMessage = ""
+MsgCount = 0
 LastVolt = 0
 LastAmps = 0
 Debug = 0
@@ -88,7 +89,7 @@ def notification_handler_battery(sender, data):
     Stat = " + LastMessage[33:39])
     """
     
-    global LastMessage, LastAmps, LastVolt, Debug
+    global LastMessage, LastAmps, LastVolt, Debug, MsgCount
     global file_ptr
     
     # raw print of all data
@@ -106,7 +107,8 @@ def notification_handler_battery(sender, data):
             CurTime = int(time.time())
             Volt    = float(FieldData[0])/100
             Temp    = int(FieldData[5])
-            Amps    = int(FieldData[7])
+            Amps    = 2 * int(FieldData[7])  # 2x since only monitoring 1 of 2 batteries
+            #NOTE: positive amps => charging and negative amps => discharging
             Full    = int(FieldData[8])
             Stat    = FieldData[9][0:6]
 
@@ -128,14 +130,18 @@ def notification_handler_battery(sender, data):
             AllData["DC_current"] = Amps
             AllData["State_of_charge"] = Full
             AllData["Status"] = Stat
+            
             if Debug < 2:
                 mqttpubclient.pub(AllData)
             if Debug > 0:
+                if MsgCount % 20 == 0:
+                    print("Time\t\tVolt\tTemp\tAmps\tFull\tStat")
+                MsgCount += 1
                 if LastVolt == Volt and LastAmps == Amps:
                     # No change from last measurement
-                    print("{},{},{},{},{},{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    print("{}\t{}\t{}\t{}\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
                 else:
-                    print("{},{},{},{},{},{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    print("{}\t{}\t{}\t{}\t{}\t{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
                     file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
                 LastVolt = Volt
                 LastAmps = Amps
@@ -210,7 +216,7 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 2
+    Debug = 1
     if Debug < 2:       #don't pub to mqtt
         mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
     if Debug > 0:
