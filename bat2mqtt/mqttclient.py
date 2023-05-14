@@ -105,11 +105,11 @@ class mqttclient():
             if item == 'instance':
                 break
             if debug>2:
-                print(item,'= ', msg_dict[item])
+                print('*** ',item,'= ', msg_dict[item])
             tmp = msg.topic + '/' + item
             AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
 
-        if debug > 0:
+        if debug > 0 and debug < 3:
             #This is a poor way to provide a UI but tkinter isn't working
             msg_counter += 1
             if msg_counter % 20 == 0:
@@ -126,7 +126,7 @@ class mqttclient():
             topic = topic_prefix + '/' + payload["name"] + '/' + str(payload["instance"])
         else:   
             topic = topic_prefix + '/' + payload["name"]             
-
+        
         if debug > 0:
             print('Publishing: ', topic, payload)
         #quick check that topic is in TargetTopics
@@ -152,6 +152,14 @@ if __name__ == "__main__":
     broker = args.broker
     port = args.port
     debug = args.debug
+    #debug levels
+    # 0 - no debug reports
+    # 1 - light reportingof both send/rec
+    # 2 - more reporting of both send/rec
+    # 3 - heavy reporting of both send/rec and all raw data
+
+
+
     if args.mode == 'sub':
         mode = 'sub'
     else:
