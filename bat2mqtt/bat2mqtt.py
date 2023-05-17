@@ -160,7 +160,7 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     print('OneClient BLE watcher starting')
     stream = os.popen('bluetoothctl disconnect ' + address1)
     output = stream.read()
-    print(output)
+    print('Bluetoothctl output = ', output)
     time.sleep(2)
 
     client1 = BleakClient(address1)
@@ -222,4 +222,7 @@ if __name__ == "__main__":
     if Debug > 0:
             file_ptr = open("batterylog.txt","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
+    while True:
+        time.sleep(1)
+        print("Sleeping")
     

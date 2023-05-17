@@ -17,7 +17,7 @@ services:
       - /home/pi/Code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
       - /home/pi/Code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
 
-  rv2mqtt:
+  rvc2mqtt:
     build:
       context: /home/pi/Code/linuxkidd/rvc-monitor-py
       dockerfile: Dockerfile
@@ -38,6 +38,9 @@ services:
     restart: always
     depends_on:
       - mqtt
+      - bat2mqtt
+      - rvc2mqtt
+      - alarm
 
   alarm:
     build:
@@ -47,19 +50,26 @@ services:
     network_mode: host
     restart: always
     image: alarm:latest
+    privileged: true
+    depends_on:
+      - mqtt 
+
+
+  bat2mqtt:
+    build:
+      context: /home/pi/Code/tblank1024/rv/bat2mqtt
+      dockerfile: Dockerfile
+    container_name: battery
+    image: bat2mqtt:latest
+    network_mode: host
+    depends_on:
+      - mqtt
+    volumes:
+      #- /srv/ha_config:/config
+      #- /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+    restart: unless-stopped
     privileged: true 
-
-
-# bat2mqtt:
-  #   build:
-  #     context: /home/pi/Code/tblank1024/rv/bat2mqtt
-  #     dockerfile: Dockerfile
-  #   container_name: bat2mqtt
-  #   image: bat2mqtt:latest
-  #   network_mode: host
-    #   restart: "no"
-  #   depends_on:
-  #     - mqtt
 
 
     
