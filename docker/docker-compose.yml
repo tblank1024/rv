@@ -68,7 +68,7 @@ services:
       #- /srv/ha_config:/config
       #- /etc/localtime:/etc/localtime:ro
       - /run/dbus:/run/dbus:ro
-    restart: unless-stopped
+    restart: always
     privileged: true 
 
 
