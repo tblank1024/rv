@@ -157,10 +157,10 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     global file_ptr
 
     def cleanup():
-        print("Disconnecting: {client1.is_connected}")
+        print(f"Disconnecting: {client1.is_connected}")
         client1.stop_notify(char_uuid)
         client1.disconnect()
-        print("Disconnect2: {client1.is_connected}")
+        print(f"Disconnect client1: {client1.is_connected}")
         if Debug > 0:
             file_ptr.close()
 

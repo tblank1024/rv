@@ -23,7 +23,7 @@ logging.getLogger('BLEAK_LOGGING').setLevel(logging.DEBUG)
 
 #CONSTANTS
 TIRELINC_MAC = 'F4:CF:A2:85:D0:62'
-CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Characteristic UUID
+CHARACTERISTIC_UUID = '00000000-00b7-4807-beee-e0b0879cf3dd'      #timrelinc sERVICE GATT Characteristic UUID
 
 #variables
 LastMessage = ""
@@ -138,7 +138,7 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 1
+    Debug = 3
     if Debug < 2:       #don't pub to mqtt
         mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
     if Debug > 0:
