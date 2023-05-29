@@ -7,6 +7,8 @@ import re       # regular expressions
 import paho.mqtt.client as mqtt
 from pprint import pprint
 import tkinter as tk
+import threading
+import datetime
 
 
 #globals
@@ -23,6 +25,52 @@ LastStatus = ''
 IOFile = ''
 TopicFile = ''
 IOFileptr = None
+thread_data = {}
+
+
+# Create a class for the window thread
+class WindowThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+
+
+    def run(self):
+
+        self.window = tk.Tk()
+        self.window.title("MQTT/RVC Watcher")
+        self.update_data()
+        
+        self.window.after(1000, self.update_data)
+
+        self.window.mainloop()
+
+    def update_data(self):
+        global AliasData
+
+        thread_data = AliasData
+
+        label_widgets = {}
+        value_widgets = {}
+
+        row = 0
+        x_pad = 30
+        y_pad = 10
+        for label, value in thread_data.items():
+            label_widget = tk.Label(self.window, text=label.ljust(x_pad,'_'), font=("Arial", 18))
+            label_widget.grid(row=row, column=0, padx=x_pad, pady=y_pad)
+            label_widgets[label] = label_widget
+
+            value_widget = tk.Label(self.window, text=str(value).rjust(x_pad,'_'), font=("Arial", 18))
+            value_widget.grid(row=row, column=1, padx=x_pad, pady=y_pad)
+            value_widgets[label] = value_widget
+
+            row += 1
+        self.window.after(1000, self.update_data)
+
+
+
+
+
 
 class mqttclient():
 
@@ -97,13 +145,24 @@ class mqttclient():
                 print("Can't open .log file for reading  -- exiting",IOFile + '.log')
                 exit()
 
+    def _UpdateAliasData(self, msg_dict):
+        global AliasData, MQTTNameToAliasName
+
+        for item in TargetTopics[msg_dict['topic']]:
+            if item == 'instance':
+                break
+            if debug>2:
+                print('*** ',item,'= ', msg_dict[item])
+            tmp = msg_dict['topic'] + '/' + item
+            AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+
 
     #function arguments:
     # - json file with target variables identified
     # - file name assuming the.log extension for the input run data
     # input log file format: one dictionary entry per line for each message received from mqtt
     # - file name assuming the.csv extension for the output data
-    def GenOutput(self):
+    def GenOutput(self, samplerate):
         global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName
         #open the input file
         try:
@@ -119,46 +178,22 @@ class mqttclient():
 
             msg_dict = json.loads(msg)
 
-            for item in TargetTopics[msg_dict['topic']]:
-                if item == 'instance':
-                    break
-                if debug>2:
-                    print('*** ',item,'= ', msg_dict[item])
-                tmp = msg_dict['topic'] + '/' + item
-                AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+            self._UpdateAliasData(msg_dict)
 
-            # print out the data every 15th message
-            # doing tkinter UI would be better TODO
-            
             if msg_counter == 0:
                 for item in AliasData:
-                    print(item, end='\t,')
-                print('')
-            elif msg_counter % 15 == 14:
+                    fp_out.write(item + '\t,')
+                fp_out.write('\n') 
+            elif msg_counter % samplerate == 1:
                 for item in AliasData:
-                    print(AliasData[item], end='\t,')
-                print(' ')
-                os.sys.stdout.flush()
+                    fp_out.write(str(AliasData[item]) + '\t,')
+                fp_out.write('\n')
                 msg_counter = 1
             msg_counter += 1
-        fp_out.write('testing\n')
         fp_out.close()
         IOFileptr.close()
         
-        # Function to print out all input dictionary values in a single line with a comma separator in a table format
-    def _print_dict(self, dict):
-        for item in dict:
-            print(dict[item], end='\t,')
-        
-
-    # Function to print out all input dictionary names in a single line with a comma separator in a table format
-    def _print_dict_names(self, dict):
-        for item in dict:
-            print(item, end='\t,')
-        print('')
-
-
-
+       
     # The callback for when the client receives a CONNACK response from the server.
     def _on_connect(self, client, userdata, flags, rc):
         global TargetTopics
@@ -185,7 +220,7 @@ class mqttclient():
         if debug>2:
             print(msg.topic + " " + str(msg.payload))
         msg_dict = json.loads(msg.payload.decode('utf-8'))
-        msg_dict['topic'] = msg.topic
+        msg_dict['topic'] = msg.topic   #add MQTT topic to the dictionary
         if mode == 'c':
             #writes this dictionary to the output file on one line 
             json.dump(msg_dict, IOFileptr)
@@ -200,13 +235,7 @@ class mqttclient():
         #     print(msg.topic+ " " + str(msg.payload))
 
 
-        for item in TargetTopics[msg_dict['topic']]:
-            if item == 'instance':
-                break
-            if debug>2:
-                print('*** ',item,'= ', msg_dict[item])
-            tmp = msg.topic + '/' + item
-            AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+        self._UpdateAliasData(msg_dict)
 
         # print out the data every 15th message
         # doing tkinter UI would be better TODO
@@ -217,9 +246,12 @@ class mqttclient():
             print('')
         elif msg_counter % 15 == 14:
             for item in AliasData:
-                print(AliasData[item], end='\t,')
+                if item == '_var01Timestamp' and AliasData[item] != '':
+                    dt = datetime.datetime.fromtimestamp(float(AliasData[item]))
+                    print(dt.strftime('%Y-%m-%d %H:%M:%S'), end='\t,')
+                else:
+                    print(AliasData[item], end='\t,')
             print(' ')
-            os.sys.stdout.flush()
             msg_counter = 1
         msg_counter += 1
 
@@ -233,10 +265,11 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--broker", default = "localhost", help="MQTT Broker Host")
     parser.add_argument("-p", "--port", default = 1883, type=int, help="MQTT Broker Port")
     parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
-    parser.add_argument("-s", "--jsonvarfile", default = "./watched_variables.json", help="RVC json file with variables to watch")
+    parser.add_argument("-f", "--jsonvarfile", default = "./watched_variables.json", help="RVC json file with variables to watch")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
-    parser.add_argument("-m", "--Mode", default = "o", help="s - screen only, c - capture msgs into file and screen output, o - output")
+    parser.add_argument("-m", "--Mode", default = "s", help="s - screen only, c - capture msgs into file and screen output, o - output to csv file")
     parser.add_argument("-i", "--IOfile", default = "data", help="IO file name with no extension")
+    parser.add_argument("-s", "--samplerate", default = "15", help="message sample count; 1 - every message, 15 - every 15th message, etc.")
     
     args = parser.parse_args()
 
@@ -247,20 +280,15 @@ if __name__ == "__main__":
     mqttTopic = args.topic
     opmode = args.Mode
 
+    
 
 
-    # # Create a new Tkinter window
-    # window = tk.Tk()
+   # Create an instance of the window thread
+    window_thread = WindowThread()
 
-    # # Set the window title
-    # window.title("Simple Tkinter UI")
+    # Start the window thread
+    window_thread.start()
 
-    # # Create a label widget
-    # label = tk.Label(window, text="Hello, World!")
-    # label.pack()
-
-    # # Run the Tkinter event loop
-    # window.mainloop()
 
 
     RVC_Client = mqttclient('sub',broker, port, jasonvarfile,'_var', mqttTopic, debug, opmode, args.IOfile)
@@ -268,6 +296,6 @@ if __name__ == "__main__":
         RVC_Client.run_mqtt_infinite()
     else:   #output mode
         print('output mode')
-        RVC_Client.GenOutput()
+        RVC_Client.GenOutput(int(args.samplerate))
 
     
