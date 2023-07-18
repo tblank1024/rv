@@ -36,10 +36,9 @@ class mqttclient():
             exit()
 
         for item in AllData:
-            if "instance" in AllData[item]:
-                topic = topic_prefix + '/' + item + '/' + str(AllData[item]["instance"])
-            else:   
-                topic = topic_prefix + '/' + item
+            #instance number is included in key but not topic prefix
+            topic = topic_prefix + '/' + item
+            
             for entryvar in AllData[item]:
                 tmp = AllData[item][entryvar]
                 if  isinstance(tmp, str) and tmp.startswith(varIDstr):

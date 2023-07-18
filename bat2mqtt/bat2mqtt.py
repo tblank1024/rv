@@ -135,7 +135,7 @@ def notification_handler_battery(sender, data):
                 mqttpubclient.pub(AllData)
             if Debug > 0:
                 if MsgCount % 20 == 0:
-                    print("Time\t\tVolt\tTemp\tAmps\tFull\tStat")
+                    print("Time   \tVolt\tTemp\tAmps\tFull\tStat")
                 MsgCount += 1
                 if LastVolt == Volt and LastAmps == Amps:
                     # No change from last measurement

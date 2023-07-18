@@ -38,34 +38,52 @@ class WindowThread(threading.Thread):
 
         self.window = tk.Tk()
         self.window.title("MQTT/RVC Watcher")
-        self.update_data()
-        
-        self.window.after(1000, self.update_data)
-
+        self.create_labels()
+        self.update_data()        
         self.window.mainloop()
+
+    
+
+    def create_labels(self):
+        global AliasData
+
+        thread_data = AliasData
+
+        label_widgets = {}
+        x_pad = 30
+        y_pad = 10
+
+        for row, (label, _) in enumerate(thread_data.items()):
+            label_widget = tk.Label(self.window, text=label.ljust(x_pad, '_'), font=("Arial", 18))
+            label_widget.grid(row=row, column=0, padx=x_pad, pady=y_pad, sticky='w')
+            label_widgets[label] = label_widget
+
+        return label_widgets
 
     def update_data(self):
         global AliasData
 
         thread_data = AliasData
 
-        label_widgets = {}
         value_widgets = {}
 
-        row = 0
         x_pad = 30
         y_pad = 10
-        for label, value in thread_data.items():
-            label_widget = tk.Label(self.window, text=label.ljust(x_pad,'_'), font=("Arial", 18))
-            label_widget.grid(row=row, column=0, padx=x_pad, pady=y_pad)
-            label_widgets[label] = label_widget
 
-            value_widget = tk.Label(self.window, text=str(value).rjust(x_pad,'_'), font=("Arial", 18))
-            value_widget.grid(row=row, column=1, padx=x_pad, pady=y_pad)
-            value_widgets[label] = value_widget
+        for row, (label, value) in enumerate(thread_data.items()):
+            if label not in value_widgets:
+                value_widget = tk.Label(self.window, text=str(value).rjust(x_pad, '_'), font=("Arial", 18))
+                value_widget.grid(row=row, column=1, padx=x_pad, pady=y_pad, sticky='e')
+                value_widgets[label] = value_widget
 
-            row += 1
+            if label in value_widgets:
+                value_widgets[label].config(text=str(value).rjust(x_pad, '_'))
+
         self.window.after(1000, self.update_data)
+
+    # Create labels initially
+    
+
 
 
 
@@ -94,10 +112,7 @@ class mqttclient():
             exit()
 
         for item in AllData:
-            if "instance" in AllData[item]:
-                topic = topic_prefix + '/' + item + '/' + str(AllData[item]["instance"])
-            else:   
-                topic = topic_prefix + '/' + item
+            topic = topic_prefix + '/' + item
             for entryvar in AllData[item]:
                 tmp = AllData[item][entryvar]
                 if  isinstance(tmp, str) and tmp.startswith(varIDstr):
@@ -267,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-f", "--jsonvarfile", default = "./watched_variables.json", help="RVC json file with variables to watch")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
-    parser.add_argument("-m", "--Mode", default = "s", help="s - screen only, c - capture msgs into file and screen output, o - output to csv file")
+    parser.add_argument("-m", "--Mode", default = "o", help="s - screen only, c - capture MQTT msgs into file and screen output, o - From xx.log file, output watched vars to xx.csv file")
     parser.add_argument("-i", "--IOfile", default = "data", help="IO file name with no extension")
     parser.add_argument("-s", "--samplerate", default = "15", help="message sample count; 1 - every message, 15 - every 15th message, etc.")
     
@@ -280,22 +295,19 @@ if __name__ == "__main__":
     mqttTopic = args.topic
     opmode = args.Mode
 
-    
-
-
-   # Create an instance of the window thread
-    window_thread = WindowThread()
-
-    # Start the window thread
-    window_thread.start()
-
-
-
     RVC_Client = mqttclient('sub',broker, port, jasonvarfile,'_var', mqttTopic, debug, opmode, args.IOfile)
-    if opmode == 's' or opmode == 'c':
+
+    if opmode == 's' or opmode == 'c':  #screen mode or capture mode
+        # Create an instance of the window thread
+        window_thread = WindowThread()
+        # Start the window thread
+        window_thread.start()
+        # Start the MQTT client thread
         RVC_Client.run_mqtt_infinite()
+
     else:   #output mode
         print('output mode')
         RVC_Client.GenOutput(int(args.samplerate))
+        print('Finished!')
 
     
