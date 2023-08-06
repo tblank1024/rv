@@ -222,7 +222,7 @@ if __name__ == "__main__":
     
     Debug = 1
     if Debug < 2:       #don't pub to mqtt
-        mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', Debug-1)
+        mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, '_var', 'RVC', Debug-1)
     if Debug > 0:
             file_ptr = open("batterylog.txt","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
