@@ -25,6 +25,7 @@ LastStatus = ''
 IOFile = ''
 IOFileptr = None
 thread_data = {}
+SAMPLERATE = 60
 
 
 # Create a class for the window thread
@@ -218,7 +219,7 @@ class mqttclient():
 
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
-        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode
+        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, SAMPLERATE
 
         
         if debug>2:
@@ -226,18 +227,18 @@ class mqttclient():
         msg_dict = json.loads(msg.payload.decode('utf-8'))
         msg_dict['topic'] = msg.topic   #add MQTT topic to the dictionary
         
-        #Checks if the message is in the TargetTopics and if 60 seconds have passed since the last message of this topic and in mode 'c'
+        #Checks if the message is in the TargetTopics and if SAMPLEREATE seconds have passed since the last message of this topic and in mode 'c'
         try:
             t_time = int(TargetTopics[msg.topic]['timestamp'])
         except:
             t_time = 0
-        if (mode == 'c') and (msg.topic in TargetTopics) and (time.time() - t_time) > 30:
+        if (mode == 'c') and (msg.topic in TargetTopics) and (time.time() - t_time) > SAMPLERATE:
             TargetTopics[msg.topic]['timestamp'] = time.time()
             #writes this dictionary to the output file on one line 
             json.dump(msg_dict, IOFileptr)
             IOFileptr.write("\n")
             IOFileptr.flush()
-            if debug > -1:
+            if debug > 0:
                 dt = datetime.datetime.fromtimestamp(time.time())
                 print('wrote to file: ', dt, msg.topic, msg_dict)
                 
@@ -482,7 +483,7 @@ if __name__ == "__main__":
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
     parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, c - capture MQTT msgs into file and screen output, o - From xx.log file, output watched vars to xx.csv file")
     parser.add_argument("-i", "--IOfile", default = "data", help="IO file name with no extension")
-    parser.add_argument("-s", "--samplerate", default = "15", help="message sample count; 1 - every message, 15 - every 15th message, etc.")
+    parser.add_argument("-s", "--samplerate", default = 60, help="Sample interval in seconds")
     
     args = parser.parse_args()
 
@@ -491,7 +492,11 @@ if __name__ == "__main__":
     debug = args.debug   
     mqttTopic = args.topic
     opmode = args.Mode
+    SAMPLERATE = (args.samplerate)
 
+    print('Watcher starting in mode: ', opmode)
+    print('debug level = ', debug)
+          
     RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, args.IOfile)
 
     if opmode == 's' or opmode == 'c':  #screen mode or capture mode
