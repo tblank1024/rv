@@ -130,6 +130,7 @@ def notification_handler_battery(sender, data):
             AllData["DC_current"] = Amps
             AllData["State_of_charge"] = Full
             AllData["Status"] = Stat
+            AllData["timestamp"] = CurTime
             
             if Debug < 2:
                 mqttpubclient.pub(AllData)
