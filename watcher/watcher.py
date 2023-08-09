@@ -123,7 +123,7 @@ class mqttclient():
             pprint(AliasData)
             print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
 
-        if mode == 'c' or mode == 's':
+        if mode == 'c' or mode == 's' or mode == 'b':
             # setup the MQTT client
             client = mqtt.Client()
             client.on_connect = self._on_connect
@@ -244,6 +244,10 @@ class mqttclient():
                 
 
         self._UpdateAliasData(msg_dict)
+        msg_counter += 1
+        if msg_counter%200 == 0:
+            print(AliasData['_var_04timestamp'][0:11], '  ', AliasData['_var20Batt_charge'],'%')
+            msg_counter
 
 
     def run_mqtt_infinite(self):
@@ -481,7 +485,7 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--port", default = 1883, type=int, help="MQTT Broker Port")
     parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
-    parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, c - capture MQTT msgs into file and screen output, o - From xx.log file, output watched vars to xx.csv file")
+    parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
     parser.add_argument("-i", "--IOfile", default = "data", help="IO file name with no extension")
     parser.add_argument("-s", "--samplerate", default = 60, help="Sample interval in seconds")
     
@@ -499,14 +503,15 @@ if __name__ == "__main__":
           
     RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, args.IOfile)
 
-    if opmode == 's' or opmode == 'c':  #screen mode or capture mode
+    if opmode == 's' or opmode == 'b':  #screen mode or capture mode
         # Create an instance of the window thread
         window_thread = WindowThread()
         # Start the window thread
         window_thread.start()
         # Start the MQTT client thread
         RVC_Client.run_mqtt_infinite()
-
+    elif opmode == 'c': #file caputure only  mode
+        RVC_Client.run_mqtt_infinite()
     else:   #output mode
         print('output mode')
         RVC_Client.GenOutput(int(args.samplerate))
