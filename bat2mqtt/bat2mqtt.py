@@ -176,9 +176,9 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     try:
         await client1.connect()
         atexit.register(cleanup)
-        print(f"Connected: {client1.is_connected}")
+        print(f"OneClient Connected 1: {client1.is_connected}")
     except:
-        print("BLE device not found; Exiting!")
+        print("OneClient BLE device not found; Exiting!")
         return
 
     await client1.start_notify(char_uuid, notification_handler_battery)
@@ -191,11 +191,11 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
 async def TwoClient(address1, address2, char_uuid):  # need unique address and service address for each  todo
     client1 = BleakClient(address1)
     await client1.connect()
-    print(f"Connectted: {client1.is_connected}")
+    print(f"Connectted 1: {client1.is_connected}")
 
     client2 = BleakClient(address2)
     await client2.connect()
-    print(f"Connectted: {client2.is_connected}")
+    print(f"Connectted 2: {client2.is_connected}")
 
     try:
         await client1.start_notify(char_uuid, notification_handler_battery)
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     # 3 - #2 plus outputs raw packets received
     
     Debug = 1
-    if Debug < 2:       #don't pub to mqtt
+    if Debug < 2:       #only pub to mqtt if debug is less than 2
         mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, '_var', 'RVC', Debug-1)
     if Debug > 0:
             file_ptr = open("batterylog.txt","w")

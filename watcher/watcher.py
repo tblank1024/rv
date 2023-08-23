@@ -154,7 +154,7 @@ class mqttclient():
         global AliasData, MQTTNameToAliasName
 
         for item in TargetTopics[msg_dict['topic']]:
-            if item == 'instance':
+            if item == 'instance' or item not in msg_dict:
                 break
             if debug>2:
                 print('*** ',item,'= ', msg_dict[item])
@@ -178,10 +178,15 @@ class mqttclient():
         #input one line from the input file
         while True:
             msg = IOFileptr.readline()
-            if msg == '':
+            try:
+                msg_dict = json.loads(msg)
+            except:
+                if msg == '':
+                    print('Finished reading input file')
+                    break
+                print('Error reading json data from input file')
+                print('Problem msg = "', msg, '"  Line # = ', msg_counter+1)
                 break
-
-            msg_dict = json.loads(msg)
 
             self._UpdateAliasData(msg_dict)
 
@@ -193,7 +198,6 @@ class mqttclient():
                 for item in AliasData:
                     fp_out.write(str(AliasData[item]) + '\t,')
                 fp_out.write('\n')
-                msg_counter = 1
             msg_counter += 1
         fp_out.close()
         IOFileptr.close()
@@ -497,6 +501,9 @@ if __name__ == "__main__":
     mqttTopic = args.topic
     opmode = args.Mode
     SAMPLERATE = (args.samplerate)
+
+    debug = 3
+    opmode = 'o'
 
     print('Watcher starting in mode: ', opmode)
     print('debug level = ', debug)
