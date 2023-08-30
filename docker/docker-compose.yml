@@ -13,13 +13,13 @@ services:
 #      - "9001:9001"
 
     volumes:
-      - /home/pi/Code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
-      - /home/pi/Code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
-      - /home/pi/Code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
+      - /home/tblank2/code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
+      - /home/tblank2/code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
+      - /home/tblank2/code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
 
   rvc2mqtt:
     build:
-      context: /home/pi/Code/linuxkidd/rvc-monitor-py
+      context: /home/tblank2/code/linuxkidd/rvc-monitor-py
       dockerfile: Dockerfile
     container_name: can
     network_mode: host
@@ -30,7 +30,7 @@ services:
 
   webserver:
     build:
-      context: /home/pi/Code/joram/RVSecurity
+      context: /home/tblank2/code/joram/RVSecurity
       dockerfile: Dockerfile
     container_name: webserver
     network_mode: host
@@ -44,7 +44,7 @@ services:
 
   alarm:
     build:
-      context: /home/pi/Code/tblank1024/rv/alarm
+      context: /home/tblank2/code/tblank1024/rv/alarm
       dockerfile: Dockerfile
     container_name: alarm
     network_mode: host
@@ -57,7 +57,7 @@ services:
 
   bat2mqtt:
     build:
-      context: /home/pi/Code/tblank1024/rv/bat2mqtt
+      context: /home/tblank2/code/tblank1024/rv/bat2mqtt
       dockerfile: Dockerfile
     container_name: battery
     image: bat2mqtt:latest

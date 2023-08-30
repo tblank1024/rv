@@ -18,11 +18,11 @@ debug = 0
 
 class mqttclient():
 
-    def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, debug):
-        global client, AllData, AliasData, MQTTNameToAliasName, TargetTopics, mode
+    def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, ddebug):
+        global client, AllData, AliasData, MQTTNameToAliasName, TargetTopics, mode, debug
 
         mode = initmode
-
+        debug = ddebug
         for item in AllData:
             #instance number is included in key but not topic prefix
             topic = topic_prefix + '/' + item
@@ -65,7 +65,7 @@ class mqttclient():
 
     # The callback for when the client receives a CONNACK response from the server.
     def _on_connect(self, client, userdata, flags, rc):
-        global TargetTopics, mode
+        global TargetTopics, mode, debug
 
         if rc == 0:
             print("_on_connect to MQTT Server - OK")
@@ -83,7 +83,7 @@ class mqttclient():
 
     # The callback for when a PUBLISH message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
-        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName
+        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, debug
         if debug>2:
             print(msg.topic+ " " + str(msg.payload))
         msg_dict = json.loads(msg.payload.decode('utf-8'))
