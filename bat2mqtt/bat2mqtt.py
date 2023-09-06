@@ -26,13 +26,24 @@ DEV_MAC1 = 'F8:33:31:56:ED:16'
 DEV_MAC2 = 'F8:33:31:56:FB:8E'
 CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Characteristic UUID
 
-#variables
+#global variables
 LastMessage = ""
-MsgCount = 0
+#MsgCount = 0
 LastVolt = 0
 LastAmps = 0
 Debug = 0
 
+def _MqttConnect():
+    global MqttPubClient
+
+    #Keep trying to connect to mqtt broker until it is up
+    while True:
+        try:
+            print('Trying connect to mqtt broker')
+            MqttPubClient = mqttclient.mqttclient("pub","localhost", 1883, '_var', 'RVC', Debug-1)
+            break
+        except:
+            time.sleep(10)
 
 
 def notification_handler_battery(sender, data):
@@ -133,11 +144,13 @@ def notification_handler_battery(sender, data):
             AllData["timestamp"] = CurTime
             
             if Debug < 2:
-                mqttpubclient.pub(AllData)
+                (RtnCode, MsgCount) = MqttPubClient.pub(AllData)
+                if RtnCode != 0:
+                    print("MQTT pubclient error = ", RtnCode)
+                    _MqttConnect()  #wait until reconnected to mqtt broker
             if Debug > 0:
                 if MsgCount % 20 == 0:
                     print("Time     \tVolt\tTemp\tAmps\tFull\tStat")
-                MsgCount += 1
                 if LastVolt == Volt and LastAmps == Amps:
                     # No change from last measurement
                     print("{}\t{}\t{}\t{}\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
@@ -172,14 +185,22 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     print('Bluetoothctl output = ', output)
     time.sleep(2)
 
-    client1 = BleakClient(address1)
-    try:
-        await client1.connect()
-        atexit.register(cleanup)
-        print(f"OneClient Connected 1: {client1.is_connected}")
-    except:
-        print("OneClient BLE device not found; Exiting!")
-        return
+    
+    while True:
+        client1 = BleakClient(address1)
+        try:
+            await client1.connect()
+            atexit.register(cleanup)
+            print(f"OneClient Connected 1: {client1.is_connected}")
+            break
+        except:
+            print("BLE trying again")
+            time.sleep(2)
+            stream = os.popen('bluetoothctl disconnect ' + address1)
+            output = stream.read()
+            print('Bluetoothctl output = ', output)
+            
+            
 
     await client1.start_notify(char_uuid, notification_handler_battery)
     
@@ -189,6 +210,7 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
         
 
 async def TwoClient(address1, address2, char_uuid):  # need unique address and service address for each  todo
+    #note: TwoClient is not as resiliant as the OneClient version;  could be updated to be more like OneClient todo
     client1 = BleakClient(address1)
     await client1.connect()
     print(f"Connectted 1: {client1.is_connected}")
@@ -214,6 +236,7 @@ async def TwoClient(address1, address2, char_uuid):  # need unique address and s
         print(f"Disconnect:  Clients 1 & 2 connected?: {client1.is_connected} {client2.is_connected}")
 
 
+
 if __name__ == "__main__":
     # Debug values
     # 0 - Silently transmists data to mqtt
@@ -221,11 +244,14 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 1
+    Debug = 0
+
+    time.sleep(10)  # wait for mqtt broker to start:
     if Debug < 2:       #only pub to mqtt if debug is less than 2
-        mqttpubclient = mqttclient.mqttclient("pub","localhost", 1883, '_var', 'RVC', Debug-1)
+        _MqttConnect()
+
     if Debug > 0:
-            file_ptr = open("batterylog.txt","w")
+            file_ptr = open("battery_raw.log","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
     while True:
         time.sleep(1)

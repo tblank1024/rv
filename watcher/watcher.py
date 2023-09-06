@@ -10,6 +10,8 @@ import tkinter as tk
 import threading
 import datetime
 
+#CONSTANTS
+FILEDIR = './watcherlogs/'
 
 #globals
 topic_prefix = 'RVC'
@@ -137,17 +139,27 @@ class mqttclient():
             if mode == 'c':
                 #open the .log file for writing
                 try:
-                    IOFileptr = open(IOFile + '.log', "w")
-                except:
-                    print("Can't open .log file for writing  -- exiting",IOFile + '.log')
+                    print('opening file: ', IOFile + '.log')
+                    IOFileptr = open(IOFile + '.log', "a")
+                except FileNotFoundError as e:
+                    print(f"An FileNotFount error occurred: {e}")
                     exit()
+                except PermissionError as e:
+                    print(f"Permission error: {e}")
+                    exit()
+                except Exception as e:
+                    print(f"An unexpected error occurred: {e}")
+                    exit()
+                # except:
+                #     print("Can't open ",IOFile + '.log', ' for append -- exiting')
+                #     exit()
                 
         else:   #mode is output; reads from log file and outputs selected vars to csv file
             #open the .log file for reading
             try:
                 IOFileptr = open(IOFile + '.log', "r")
             except:
-                print("Can't open .log file for reading  -- exiting",IOFile + '.log')
+                print("Can't open .log file for reading  -- exiting", IOFile + '.log')
                 exit()
 
     def _UpdateAliasData(self, msg_dict):
@@ -168,12 +180,11 @@ class mqttclient():
     # input log file format: one dictionary entry per line for each message received from mqtt
     # - file name assuming the.csv extension for the output data
     def GenOutput(self, samplerate):
-        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName
         #open the input file
         try:
             fp_out = open(IOFile + '.csv', "w")
         except:
-            print("Can't open file for writing -- exiting", IOFile + '.log')
+            print("Can't open file for writing -- exiting", IOFile + '.csv')
             exit()
         #input one line from the input file
         while True:
@@ -439,42 +450,42 @@ Watched_Vars = {
                     "data": "001020FFFFFFFFFF",
                     "dgn": "1FFB7",
                     "instance": 0,
-                    "instance definition":                          "_var28Tank_Name",
+                    "instance definition":                          "x_var28Tank_Name",
                     "name": "TANK_STATUS",
-                    "relative level":                               "_var29Tank_Level",
-                    "resolution":                                   "_var30Tank_Resolution",
+                    "relative level":                               "x_var29Tank_Level",
+                    "resolution":                                   "x_var30Tank_Resolution",
                     "tank size": 65535,
-                    "timestamp":                                    "_var07Timestamp"},  
+                    "timestamp":                                    "x_var07Timestamp"},  
     "TANK_STATUS/1": {"absolute level": 65535,
                     "data": "010A38FFFFFFFFFF",
                     "dgn": "1FFB7",
                     "instance": 1,
-                    "instance definition":                          "_var31Tank_Name",
+                    "instance definition":                          "x_var31Tank_Name",
                     "name": "TANK_STATUS",
-                    "relative level":                               "_var32Tank_Level",
-                    "resolution":                                   "_var33Tank_Resolution",
+                    "relative level":                               "x_var32Tank_Level",
+                    "resolution":                                   "x_var33Tank_Resolution",
                     "tank size": 65535,
-                    "timestamp":                                    "_var08Timestamp"},
+                    "timestamp":                                    "x_var08Timestamp"},
     "TANK_STATUS/2": {"absolute level": 65535,
                     "data": "020B38FFFFFFFFFF",
                     "dgn": "1FFB7",
                     "instance": 2,
-                    "instance definition":                          "_var34Tank_Name",
+                    "instance definition":                          "x_var34Tank_Name",
                     "name": "TANK_STATUS",
-                    "relative level":                               "_var35Tank_Level",
-                    "resolution":                                   "_var36Tank_Resolution",
+                    "relative level":                               "x_var35Tank_Level",
+                    "resolution":                                   "x_var36Tank_Resolution",
                     "tank size": 65535,
-                    "timestamp":                                    "_var09Timestamp"},
+                    "timestamp":                                    "x_var09Timestamp"},
     "TANK_STATUS/3": {"absolute level": 65535,
                     "data": "034D64FFFFFFFFFF",
                     "dgn": "1FFB7",
                     "instance": 3,
-                    "instance definition":                          "_var37Tank_Name",
+                    "instance definition":                          "x_var37Tank_Name",
                     "name": "TANK_STATUS",
-                    "relative level":                               "_var38Tank_Level",
-                    "resolution":                                   "_var39Tank_Resolution",
+                    "relative level":                               "x_var38Tank_Level",
+                    "resolution":                                   "x_var39Tank_Resolution",
                     "tank size": 65535,
-                    "timestamp":                                    "_var10Timestamp"},
+                    "timestamp":                                    "x_var10Timestamp"},
     "RV_Loads/1": {
                     "instance": 1,
                     "name": "RV_Loads",
@@ -490,7 +501,7 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
     parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
-    parser.add_argument("-i", "--IOfile", default = "data", help="IO file name with no extension")
+    parser.add_argument("-i", "--IOfile", default = "watcher", help="IO file name with no extension")
     parser.add_argument("-s", "--samplerate", default = 60, help="Sample interval in seconds")
     
     args = parser.parse_args()
@@ -502,13 +513,10 @@ if __name__ == "__main__":
     opmode = args.Mode
     SAMPLERATE = (args.samplerate)
 
-    debug = 3
-    opmode = 'o'
-
     print('Watcher starting in mode: ', opmode)
     print('debug level = ', debug)
           
-    RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, args.IOfile)
+    RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, FILEDIR+args.IOfile)
 
     if opmode == 's' or opmode == 'b':  #screen mode or capture mode
         # Create an instance of the window thread

@@ -13,13 +13,14 @@ services:
 #      - "9001:9001"
 
     volumes:
-      - /home/tblank2/code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
-      - /home/tblank2/code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
-      - /home/tblank2/code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
+      - /home/tblank/code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
+      - /home/tblank/code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
+      - /home/tblank/code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
+      - /home/tblank/code/tblank1024/rv/docker/watcher/log:/watcher/log
 
   rvc2mqtt:
     build:
-      context: /home/tblank2/code/linuxkidd/rvc-monitor-py
+      context: /home/tblank/code/linuxkidd/rvc-monitor-py
       dockerfile: Dockerfile
     container_name: can
     network_mode: host
@@ -30,7 +31,7 @@ services:
 
   webserver:
     build:
-      context: /home/tblank2/code/joram/RVSecurity
+      context: /home/tblank/code/joram/RVSecurity
       dockerfile: Dockerfile
     container_name: webserver
     network_mode: host
@@ -38,13 +39,12 @@ services:
     restart: always
     depends_on:
       - mqtt
-      - bat2mqtt
       - rvc2mqtt
       - alarm
 
   alarm:
     build:
-      context: /home/tblank2/code/tblank1024/rv/alarm
+      context: /home/tblank/code/tblank1024/rv/alarm
       dockerfile: Dockerfile
     container_name: alarm
     network_mode: host
@@ -54,22 +54,37 @@ services:
     depends_on:
       - mqtt 
 
-
-  bat2mqtt:
+  watcher:
     build:
-      context: /home/tblank2/code/tblank1024/rv/bat2mqtt
+      context: /home/tblank/code/tblank1024/rv/watcher
       dockerfile: Dockerfile
-    container_name: battery
-    image: bat2mqtt:latest
+    container_name: watcher
     network_mode: host
-    depends_on:
-      - mqtt
-    volumes:
-      #- /srv/ha_config:/config
-      #- /etc/localtime:/etc/localtime:ro
-      - /run/dbus:/run/dbus:ro
     restart: always
-    privileged: true 
+    image: watcher:latest
+    privileged: false
+    depends_on:
+      - mqtt 
+    volumes:
+      - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
+
+# bat2mqtt used to work in Buster but can't get to work in Bullseye
+#
+#  bat2mqtt:
+#    build:
+#      context: /home/tblank/code/tblank1024/rv/bat2mqtt
+#      dockerfile: Dockerfile
+#    container_name: battery
+#    image: bat2mqtt:latest
+#    network_mode: host
+#    depends_on:
+#      - mqtt
+#    volumes:
+#      #- /srv/ha_config:/config
+#      #- /etc/localtime:/etc/localtime:ro
+#      - /run/dbus:/run/dbus:ro
+#    restart: always
+#    privileged: true 
 
 
     

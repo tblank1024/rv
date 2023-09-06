@@ -120,7 +120,7 @@ class mqttclient():
         #quick check that topic is in TargetTopics
         if topic not in TargetTopics:
             print('Error: Publishing topic not in  specified json file: ', topic)
-        client.publish(topic, json.dumps(payload), qos, retain)
+        return(client.publish(topic, json.dumps(payload), qos, retain))
                 
     def run_mqtt_infinite(self):
         global client
