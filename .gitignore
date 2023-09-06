@@ -1,5 +1,6 @@
 *~
 *.pyc
+*.log
 #react experiments
 React/
 docker/mqtt/log
