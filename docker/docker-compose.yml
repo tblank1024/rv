@@ -30,6 +30,14 @@ services:
       - mqtt
 
   webserver:
+    environment:
+      - TZ=America/Los_Angeles
+      #- TZ=America/New_York
+      #- TZ = America/Chicago
+      #- TZ = America/Denver
+      #- TZ = America/Phoenix
+      #- TZ = America/Anchorage
+
     build:
       context: /home/tblank/code/joram/RVSecurity
       dockerfile: Dockerfile
