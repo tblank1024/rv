@@ -175,7 +175,8 @@ class mqttclient():
             if debug>2:
                 print('*** ',item,'= ', msg_dict[item])
             tmp = msg_dict['topic'] + '/' + item
-            AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+            if tmp in MQTTNameToAliasName:
+                AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
         return False
 
 
@@ -514,10 +515,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-b", "--broker", default = "localhost", help="MQTT Broker Host")
     parser.add_argument("-p", "--port", default = 1883, type=int, help="MQTT Broker Port")
-    parser.add_argument("-d", "--debug", default = 1, type=int, choices=[0, 1, 2, 3], help="debug level")
+    parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
-    parser.add_argument("-m", "--Mode", default = "o", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
-    parser.add_argument("-i", "--IOfile", default = "watcher1", help="IO file name with no extension")
+    parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
+    parser.add_argument("-i", "--IOfile", default = "watcher", help="IO file name with no extension")
     parser.add_argument("-s", "--sample_sec", default = 60, help="Capture Sample interval in seconds")
     
     args = parser.parse_args()
