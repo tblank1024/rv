@@ -27,7 +27,7 @@ LastStatus = ''
 IOFile = ''
 IOFileptr = None
 thread_data = {}
-SAMPLERATE = 60
+Sample_Period_Sec = 60
 
 
 # Create a class for the window thread
@@ -165,6 +165,10 @@ class mqttclient():
     def _UpdateAliasData(self, msg_dict):
         global AliasData, MQTTNameToAliasName
 
+        #test if this message is in the target list
+        if msg_dict['topic'] not in TargetTopics:
+            return True
+
         for item in TargetTopics[msg_dict['topic']]:
             if item == 'instance' or item not in msg_dict:
                 break
@@ -172,6 +176,7 @@ class mqttclient():
                 print('*** ',item,'= ', msg_dict[item])
             tmp = msg_dict['topic'] + '/' + item
             AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+        return False
 
 
     #function arguments:
@@ -179,7 +184,11 @@ class mqttclient():
     # - file name assuming the.log extension for the input run data
     # input log file format: one dictionary entry per line for each message received from mqtt
     # - file name assuming the.csv extension for the output data
-    def GenOutput(self, samplerate):
+    def GenOutput(self):
+        global Sample_Period_Sec
+        msg_counter = 0
+        LastTimestamp = 0
+
         #open the input file
         try:
             fp_out = open(IOFile + '.csv', "w")
@@ -188,8 +197,8 @@ class mqttclient():
             exit()
         #input one line from the input file
         while True:
-            msg = IOFileptr.readline()
             try:
+                msg = IOFileptr.readline()
                 msg_dict = json.loads(msg)
             except:
                 if msg == '':
@@ -199,16 +208,23 @@ class mqttclient():
                 print('Problem msg = "', msg, '"  Line # = ', msg_counter+1)
                 break
 
-            self._UpdateAliasData(msg_dict)
-
+            if self._UpdateAliasData(msg_dict):
+                #This record is no longer in the target list
+                continue
+            #Only output data if msg_dict['timestamp'] is different from the last output
+            
+            if "timestamp" in msg_dict:
+                tmp = int(float(msg_dict['timestamp']))
+                if tmp - LastTimestamp < Sample_Period_Sec * .2:
+                    continue
+                LastTimestamp = tmp
             if msg_counter == 0:
                 for item in AliasData:
-                    fp_out.write(item + '\t,')
+                    fp_out.write(item + ',')
                 fp_out.write('\n') 
-            elif msg_counter % samplerate == 1:
-                for item in AliasData:
-                    fp_out.write(str(AliasData[item]) + '\t,')
-                fp_out.write('\n')
+            for item in AliasData:
+                fp_out.write(str(AliasData[item]) + ',')
+            fp_out.write('\n')
             msg_counter += 1
         fp_out.close()
         IOFileptr.close()
@@ -234,7 +250,7 @@ class mqttclient():
 
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
-        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, SAMPLERATE
+        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec
 
         
         if debug>2:
@@ -247,7 +263,7 @@ class mqttclient():
             t_time = int(TargetTopics[msg.topic]['timestamp'])
         except:
             t_time = 0
-        if (mode == 'c') and (msg.topic in TargetTopics) and (time.time() - t_time) > SAMPLERATE:
+        if (mode == 'c') and (msg.topic in TargetTopics) and (time.time() - t_time) > Sample_Period_Sec:
             TargetTopics[msg.topic]['timestamp'] = time.time()
             #writes this dictionary to the output file on one line 
             json.dump(msg_dict, IOFileptr)
@@ -408,8 +424,8 @@ Watched_Vars = {
                      "load sense enabled definition": "load sense disabled",
                      "name": "INVERTER_STATUS",
                      "status":                                      "x_var16Invert_status_num",
-                     "status definition":                           "_var15Invert_status_name",
-                     "timestamp":                                   "_var05Timestamp"},
+                     "status definition":                           "x_var15Invert_status_name",
+                     "timestamp":                                   "x_var05Timestamp"},
     "INVERTER_TEMPERATURE_STATUS/1": {"data": "01E026FFFFFFFFFF",
                                  "dgn": "1FEBD",
                                  "fet temperature": 38.0,
@@ -452,7 +468,7 @@ Watched_Vars = {
                     "instance": 0,
                     "instance definition":                          "x_var28Tank_Name",
                     "name": "TANK_STATUS",
-                    "relative level":                               "x_var29Tank_Level",
+                    "relative level":                               "_var29Tank_Level",
                     "resolution":                                   "x_var30Tank_Resolution",
                     "tank size": 65535,
                     "timestamp":                                    "x_var07Timestamp"},  
@@ -491,18 +507,18 @@ Watched_Vars = {
                     "name": "RV_Loads",
                     "AC Load":                                      "_var24RV_Loads_AC",
                     "DC Load":                                      "_var25RV_Loads_DC",
-                    "timestamp":                                    "_var11Timestamp"},
+                    "timestamp":                                    "x_var11Timestamp"},
 }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-b", "--broker", default = "localhost", help="MQTT Broker Host")
     parser.add_argument("-p", "--port", default = 1883, type=int, help="MQTT Broker Port")
-    parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
+    parser.add_argument("-d", "--debug", default = 1, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
-    parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
-    parser.add_argument("-i", "--IOfile", default = "watcher", help="IO file name with no extension")
-    parser.add_argument("-s", "--samplerate", default = 60, help="Sample interval in seconds")
+    parser.add_argument("-m", "--Mode", default = "o", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
+    parser.add_argument("-i", "--IOfile", default = "watcher1", help="IO file name with no extension")
+    parser.add_argument("-s", "--sample_sec", default = 60, help="Capture Sample interval in seconds")
     
     args = parser.parse_args()
 
@@ -511,7 +527,7 @@ if __name__ == "__main__":
     debug = args.debug   
     mqttTopic = args.topic
     opmode = args.Mode
-    SAMPLERATE = (args.samplerate)
+    Sample_Period_Sec = (args.sample_sec)
 
     print('Watcher starting in mode: ', opmode)
     print('debug level = ', debug)
@@ -529,7 +545,7 @@ if __name__ == "__main__":
         RVC_Client.run_mqtt_infinite()
     else:   #output mode
         print('output mode')
-        RVC_Client.GenOutput(int(args.samplerate))
+        RVC_Client.GenOutput()
         print('Finished!')
 
     
