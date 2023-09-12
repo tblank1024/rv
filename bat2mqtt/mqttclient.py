@@ -51,6 +51,7 @@ class mqttclient():
         client = mqtt.Client()
         client.on_connect = self._on_connect
         client.on_message = self._on_message
+        client.on_disconnect = self._on_disconnect
 
         try:
             client.connect(mqttbroker,mqttport, 60)
@@ -60,7 +61,18 @@ class mqttclient():
 
         
 
-       
+    def _on_disconnect(self, client, userdata, rc):
+        print('Disconnected from MQTT server.  Result code = ', rc)
+        count = 0
+        while True:
+            try:
+                client.reconnect()
+                break
+            except:
+                print("Reconnect failed! Trying again in 10 seconds. Trys = ", count, end = '\r')
+                #sleep and try again
+                time.sleep(10)
+                count += 1
         
 
     # The callback for when the client receives a CONNACK response from the server.
