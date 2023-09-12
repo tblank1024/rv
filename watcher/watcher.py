@@ -15,7 +15,6 @@ FILEDIR = './watcherlogs/'
 
 #globals
 topic_prefix = 'RVC'
-msg_counter = 0
 TargetTopics = {}
 MQTTNameToAliasName = {}
 Watched_Vars = {}
@@ -31,7 +30,7 @@ Sample_Period_Sec = 60
 
 
 # Create a class for the window thread
-class WindowThread(threading.Thread):
+class WindowDisplayThread(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
 
@@ -87,11 +86,6 @@ class WindowThread(threading.Thread):
     
 
 
-
-
-
-
-
 class mqttclient():
 
     def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, debug, opmode, IOFilename):
@@ -100,7 +94,10 @@ class mqttclient():
         mode = opmode
         IOFile = IOFilename
 
-
+        #Build data structures for the watched variables
+        #   TargetTopics is a dictionary of dictionaries.  The first key is the MQTT topic and the second key is the variable name
+        #   MQTTNameToAliasName is a dictionary of MQTT topic/variable names to the alias name
+        #   AliasData is a dictionary of alias variable names to the current value
         for item in Watched_Vars:
             topic = topic_prefix + '/' + item 
 
@@ -112,8 +109,12 @@ class mqttclient():
                         TargetTopics[topic] = {}
                     TargetTopics[topic][entryvar] = tmp
                     local_topic = topic + '/' + entryvar
-                    AliasData[tmp] = ''
+                    AliasData[tmp] = {
+                        "timestamp": 0,
+                        "flag": False,          #has this var been printed as an error already
+                    }
                     MQTTNameToAliasName[local_topic] = tmp
+                
         if debug > 0:
             #print('>>All Data:')
             #pprint(AllData)
@@ -125,17 +126,23 @@ class mqttclient():
             pprint(AliasData)
             print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>')
 
+        # For watching modes, we need to connect to the MQTT broker and possibly open .log file
         if mode == 'c' or mode == 's' or mode == 'b':
             # setup the MQTT client
             client = mqtt.Client()
             client.on_connect = self._on_connect
             client.on_message = self._on_message
+            client.on_disconnect = self._on_disconnect
 
-            try:
-                client.connect(mqttbroker,mqttport, 60)
-            except:
-                print("Can't connect to MQTT Broker/port -- exiting",mqttbroker,":",mqttport)
-                exit()
+            # Connect to the MQTT broker
+            while True:
+                try:
+                    client.connect(mqttbroker,mqttport, 60)
+                    break
+                except:
+                    print("Can't connect to MQTT Broker/port -- will retry",mqttbroker,":",mqttport)
+                    #sleep and try again
+                    time.sleep(5)
             if mode == 'c':
                 #open the .log file for writing
                 try:
@@ -162,13 +169,12 @@ class mqttclient():
                 print("Can't open .log file for reading  -- exiting", IOFile + '.log')
                 exit()
 
-    def _UpdateAliasData(self, msg_dict):
-        global AliasData, MQTTNameToAliasName
+    def _UpdateAliasData(self, msg_dict, now):
+        global AliasData, MQTTNameToAliasName, IOFileptr
 
         #test if this message is in the target list
         if msg_dict['topic'] not in TargetTopics:
             return True
-
         for item in TargetTopics[msg_dict['topic']]:
             if item == 'instance' or item not in msg_dict:
                 break
@@ -176,7 +182,11 @@ class mqttclient():
                 print('*** ',item,'= ', msg_dict[item])
             tmp = msg_dict['topic'] + '/' + item
             if tmp in MQTTNameToAliasName:
-                AliasData[MQTTNameToAliasName[tmp]] = msg_dict[item]
+                AliasData[MQTTNameToAliasName[tmp]] = {
+                    "timestamp": now,
+                    "value": msg_dict[item],
+                    "flag": False
+                }
         return False
 
 
@@ -224,7 +234,7 @@ class mqttclient():
                     fp_out.write(item + ',')
                 fp_out.write('\n') 
             for item in AliasData:
-                fp_out.write(str(AliasData[item]) + ',')
+                fp_out.write(str(AliasData[item].value) + ',')
             fp_out.write('\n')
             msg_counter += 1
         fp_out.close()
@@ -248,12 +258,33 @@ class mqttclient():
         if debug > 0:
             print('Conected to MQTT and Running')
     
+    def _on_disconnect(self, client, userdata, rc):
+        print('Disconnected from MQTT server.  Result code = ', rc)
+        count = 0
+        while True:
+            try:
+                client.reconnect()
+                break
+            except:
+                print("Reconnect failed! Trying again in 10 seconds. Trys = ", count, end = '\r')
+                if count == 0:
+                    #Create msg_dict to indicate error and timestamp
+                    msg_dict = {}
+                    msg_dict['topic'] = 'RVC/ERRORS/1'
+                    msg_dict['description'] = 'MQTT Disconnected'
+                    msg_dict['timestamp'] = int(time.time())
+                    #write this error msg once to the output file on one line
+                    json.dump(msg_dict, IOFileptr)
+                    IOFileptr.write("\n")
+                    IOFileptr.flush()
+                #sleep and try again
+                time.sleep(10)
+                count += 1
 
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
-        global TargetTopics, msg_counter, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec
+        global TargetTopics, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec
 
-        
         if debug>2:
             print(msg.topic + " " + str(msg.payload))
         msg_dict = json.loads(msg.payload.decode('utf-8'))
@@ -274,13 +305,46 @@ class mqttclient():
                 dt = datetime.datetime.fromtimestamp(time.time())
                 print('wrote to file: ', dt, msg.topic, msg_dict)
                 
+        #Update the AliasData dictionary
+        now = int(time.time())
+        self._UpdateAliasData(msg_dict, now)
 
-        self._UpdateAliasData(msg_dict)
-        msg_counter += 1
-        if msg_counter%200 == 0:
-            print(AliasData['_var_04timestamp'][0:11], '  ', AliasData['_var20Batt_charge'],'%')
-            msg_counter
+        #Check if timestamp is progressing for all AliasData entries
+        LARGESTINTERVAL = 90            #max update interval in seconds of any variable
+        for item in AliasData:
+            if int((AliasData[item]['timestamp'])) != 0  \
+                    and int((AliasData[item]['timestamp'])) + LARGESTINTERVAL < now  \
+                    and not AliasData[item]['flag']:
+                AliasData[item]['flag'] = True
+                print('Timestamp not progressing for  ', item, '  now = ', now)
+                pprint(AliasData[item])
+                #update msg_dict to include error field
+                msg_dict['error'] = 'Timestamp not progressing for  ' + item + '  now = ' + str(now)
+                #write this error msg to the output file on one line
+                json.dump(msg_dict, IOFileptr)
+                IOFileptr.write("\n")
+                IOFileptr.flush()
+                if debug > 0:
+                    dt = datetime.datetime.fromtimestamp(time.time())
+                    print('wrote error to file: ', dt, msg.topic, msg_dict)
+                #.... update message to MQTT        
+     
 
+    @staticmethod
+    def pub(payload, qos=0, retain=False):
+        global client, debug, topic_prefix
+                
+        if "instance" in payload:
+            topic = topic_prefix + '/' + payload["name"] + '/' + str(payload["instance"])
+        else:   
+            topic = topic_prefix + '/' + payload["name"]             
+        
+        if debug > 0:
+            print('Publishing: ', topic, payload)
+        #quick check that topic is in TargetTopics
+        if topic not in TargetTopics:
+            print('Error: Publishing topic not in  specified json file: ', topic)
+        client.publish(topic, json.dumps(payload), qos, retain)
 
     def run_mqtt_infinite(self):
         global client
@@ -509,16 +573,21 @@ Watched_Vars = {
                     "AC Load":                                      "_var24RV_Loads_AC",
                     "DC Load":                                      "_var25RV_Loads_DC",
                     "timestamp":                                    "x_var11Timestamp"},
+    "RV_Watcher/1": {
+                    "instance": 1,
+                    "name": "RV_Watcher",
+                    "Status":                                       "_var50RV_Watcher_Status",
+                    "timestamp":                                    "_var51Timestamp"},
 }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-b", "--broker", default = "localhost", help="MQTT Broker Host")
     parser.add_argument("-p", "--port", default = 1883, type=int, help="MQTT Broker Port")
-    parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
+    parser.add_argument("-d", "--debug", default = 1, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
     parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
-    parser.add_argument("-i", "--IOfile", default = "watcher", help="IO file name with no extension")
+    parser.add_argument("-i", "--IOfile", default = "watcher2", help="IO file name with no extension")
     parser.add_argument("-s", "--sample_sec", default = 60, help="Capture Sample interval in seconds")
     
     args = parser.parse_args()
@@ -532,12 +601,14 @@ if __name__ == "__main__":
 
     print('Watcher starting in mode: ', opmode)
     print('debug level = ', debug)
-          
+
+              
     RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, FILEDIR+args.IOfile)
+
 
     if opmode == 's' or opmode == 'b':  #screen mode or capture mode
         # Create an instance of the window thread
-        window_thread = WindowThread()
+        window_thread = WindowDisplayThread()
         # Start the window thread
         window_thread.start()
         # Start the MQTT client thread
