@@ -271,7 +271,7 @@ class mqttclient():
                     #Create msg_dict to indicate error and timestamp
                     msg_dict = {}
                     msg_dict['topic'] = 'RVC/ERRORS/1'
-                    msg_dict['description'] = 'MQTT Disconnected'
+                    msg_dict['error'] = 'MQTT Disconnected'
                     msg_dict['timestamp'] = int(time.time())
                     #write this error msg once to the output file on one line
                     json.dump(msg_dict, IOFileptr)
@@ -318,8 +318,11 @@ class mqttclient():
                 AliasData[item]['flag'] = True
                 print('Timestamp not progressing for  ', item, '  now = ', now)
                 pprint(AliasData[item])
-                #update msg_dict to include error field
-                msg_dict['error'] = 'Timestamp not progressing for  ' + item + '  now = ' + str(now)
+                #build msg_dict to include error field
+                msg_dict = {}
+                msg_dict['topic'] = 'RVC/ERRORS/1'
+                msg_dict['timestamp'] = int(time.time())
+                msg_dict['error'] = 'Progression error: ' + item + '  now = ' + str(now)
                 #write this error msg to the output file on one line
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
