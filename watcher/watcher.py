@@ -13,7 +13,7 @@ import datetime
 #CONSTANTS
 FILEDIR = './watcherlogs/'
 
-#globals
+#global vars
 topic_prefix = 'RVC'
 TargetTopics = {}
 MQTTNameToAliasName = {}
@@ -27,6 +27,7 @@ IOFile = ''
 IOFileptr = None
 thread_data = {}
 Sample_Period_Sec = 60
+LastTime = 0
 
 
 # Create a class for the window thread
@@ -270,7 +271,7 @@ class mqttclient():
                 if count == 0:
                     #Create msg_dict to indicate error and timestamp
                     msg_dict = {}
-                    msg_dict['topic'] = 'RVC/ERRORS/1'
+                    msg_dict['name'] = 'SYS_ERRORS'
                     msg_dict['error'] = 'MQTT Disconnected'
                     msg_dict['timestamp'] = int(time.time())
                     #write this error msg once to the output file on one line
@@ -283,7 +284,7 @@ class mqttclient():
 
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
-        global TargetTopics, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec
+        global TargetTopics, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec, LastTime
 
         if debug>2:
             print(msg.topic + " " + str(msg.payload))
@@ -309,20 +310,23 @@ class mqttclient():
         now = int(time.time())
         self._UpdateAliasData(msg_dict, now)
 
-        #Check if timestamp is progressing for all AliasData entries
+        #Check if timestamp is progressing for all AliasData entries except for SYS_ERRORS
         LARGESTINTERVAL = 90            #max update interval in seconds of any variable
+        error_cnt = 0
+        msg_dict = {}
+        msg_dict['name'] = 'SYS_ERRORS'
+        msg_dict['timestamp'] = int(time.time())
         for item in AliasData:
-            if int((AliasData[item]['timestamp'])) != 0  \
+            if int(AliasData[item]['timestamp']) != 0  \
                     and int((AliasData[item]['timestamp'])) + LARGESTINTERVAL < now  \
-                    and not AliasData[item]['flag']:
+                    and not AliasData[item]['flag'] \
+                    and item != 'SYS_ERRORS':
                 AliasData[item]['flag'] = True
                 print('Timestamp not progressing for  ', item, '  now = ', now)
                 pprint(AliasData[item])
                 #build msg_dict to include error field
-                msg_dict = {}
-                msg_dict['topic'] = 'RVC/ERRORS/1'
-                msg_dict['timestamp'] = int(time.time())
                 msg_dict['error'] = 'Progression error: ' + item + '  now = ' + str(now)
+                self.pub(msg_dict, qos=0, retain=False)
                 #write this error msg to the output file on one line
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
@@ -330,7 +334,13 @@ class mqttclient():
                 if debug > 0:
                     dt = datetime.datetime.fromtimestamp(time.time())
                     print('wrote error to file: ', dt, msg.topic, msg_dict)
-                #.... update message to MQTT        
+            if AliasData[item]['flag']:
+                error_cnt += 1
+        #Publish error count to MQTT every 5 second 
+        if now - LastTime > 5:      
+            msg_dict['error'] = 'Errors = ', str(error_cnt)
+            self.pub(msg_dict, qos=0, retain=False)
+            LastTime = now      
      
 
     @staticmethod
@@ -581,6 +591,10 @@ Watched_Vars = {
                     "name": "RV_Watcher",
                     "Status":                                       "_var50RV_Watcher_Status",
                     "timestamp":                                    "_var51Timestamp"},
+    "SYS_ERRORS": {
+                    "name": "SYS_ERRORS",
+                    "error":                                        "_var52RVC_ERROR",
+                    "timestamp":                                    "x_var53Timestamp"},
 }
 
 if __name__ == "__main__":
