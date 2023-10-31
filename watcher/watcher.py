@@ -296,7 +296,11 @@ class mqttclient():
             t_time = int(TargetTopics[msg.topic]['timestamp'])
         except:
             t_time = 0
-        if (mode == 'c') and (msg.topic in TargetTopics) and (time.time() - t_time) > Sample_Period_Sec:
+        #don't dump the SYS_ERROR mesages with error count to the log file
+        if (mode == 'c') \
+          and (msg.topic in TargetTopics) \
+          and (time.time() - t_time) > Sample_Period_Sec \
+          and not (msg_dict['name'] == 'SYS_ERRORS' and msg_dict['error'][0] == '#'):
             TargetTopics[msg.topic]['timestamp'] = time.time()
             #writes this dictionary to the output file on one line 
             json.dump(msg_dict, IOFileptr)
@@ -338,7 +342,10 @@ class mqttclient():
                 error_cnt += 1
         #Publish error count to MQTT every 5 second 
         if now - LastTime > 5:      
-            msg_dict['error'] = 'Errors = ', str(error_cnt)
+            msg_dict['error'] = '# Errors = ' + str(error_cnt)
+            if debug > 0:
+                print('pub time ', end='')
+                pprint(msg_dict)
             self.pub(msg_dict, qos=0, retain=False)
             LastTime = now      
      

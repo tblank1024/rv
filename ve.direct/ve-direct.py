@@ -1,103 +1,63 @@
 import serial
 import time
 import threading
+import rvglue
 
 # Configuration
 
 serial_port = '/dev/ttyAMA0'
 baud_rate = 19200
 
-def charger_status(status):
-    match status:
-        case '0':
-            outstr = "Off"
-        case '1':
-            outstr = "Low power (MPPT not used)"
-        case '2':
-            outstr = "Fault"
-        case '3':
-            outstr = "Bulk"
-        case '4':
-            outstr = "Absorption"
-        case '5':
-            outstr = "Float"
-        case '6':
-            outstr = "Storage (MPPT not used)"
-        case '7':
-            outstr = "Equalize (manual)"
-        case '9':
-            outstr = "Inverting (MPPT not used)"
-        case '11':
-            outstr = "Power supply (MPPT not used)"
-        case '245':
-            outstr = "Starting-up"
-        case '246':
-            outstr = "Repeated absorption (MPPT not used)"
-        case '247':
-            outstr = "Auto equalize"
-        case '248':
-            outstr = "BatterySafe (MPPT not used)"
-        case '252':
-            outstr = "External control"
-        case _:
-            outstr = "Unknown"
-    return outstr
+debug = 0
 
-def mppt_status(status):
-    match status:
-        case '0':
-            return("Off")
-        case '1':
-            return("Voltage or current limited")
-        case '2':
-            return("MPPT active")
-        case _:
-            return("Unknown")
+charger_status = {
+    "0": "Off",
+    "1": "Low power (MPPT not used)",
+    "2": "Fault",
+    "3": "Bulk",
+    "4": "Absorption",
+    "5": "Float",
+    "6": "Storage (MPPT not used)",
+    "7": "Equalize (manual)",
+    "9": "Inverting (MPPT not used)",
+    "11": "Power supply (MPPT not used)",
+    "245": "Starting-up",
+    "246": "Repeated absorption (MPPT not used)",
+    "247": "Auto equalize",
+    "248": "BatterySafe (MPPT not used)",
+    "252": "External control"
+}
+
+mppt_status = {
+    "0": "Off",
+    "1": "Voltage or current limited",
+    "2": "MPPT active"
+}
+
+error_status = {
+    "0": "No error",
+    "2": "Battery voltage too high",
+    "17": "Charger temperature too high",
+    "18": "Charger over current",
+    "19": "Charger current reversed",
+    "20": "Bulk time limit exceeded",
+    "21": "Current sensor issue (sensor bias/sensor broken)",
+    "26": "Terminals overheated",
+    "28": "Converter issue (dual converter models only)",
+    "33": "Input voltage too high (solar panel)",
+    "34": "Input current too high (solar panel)",
+    "38": "Input shutdown (due to excessive battery voltage)",
+    "39": "Input shutdown (due to current flow during off mode)",
+    "65": "Lost communication with one of devices",
+    "66": "Synchronised charging device configuration issue",
+    "67": "BMS connection lost",
+    "116": "Factory calibration data lost",
+    "117": "Invalid/incompatible firmware",
+    "119": "User settings invalid"
+}
     
 
-def error_status(status):
-    match status:
-        case '0':
-            outstr = "No error"
-        case '2':
-            outstr = "Battery voltage too high"
-        case '17':
-            outstr = "Charger temperature too high"
-        case '18':
-            outstr = "Charger over current"
-        case '19':
-            outstr = "Charger current reversed"
-        case '20':
-            outstr = "Bulk time limit exceeded"
-        case '21':
-            outstr = "Current sensor issue (sensor bias/sensor broken)"
-        case '26':
-            outstr = "Terminals overheated"
-        case '28':
-            outstr = "Converter issue (dual converter models only)"
-        case '33':
-            outstr = "Input voltage too high (solar panel)"
-        case '34':
-            outstr = "Input current too high (solar panel)"
-        case '38':
-            outstr = "Input shutdown (due to excessive battery voltage)"
-        case '39':
-            outstr = "Input shutdown (due to current flow during off mode)"
-        case '65':
-            outstr = "Lost communication with one of devices"
-        case '66':
-            outstr = "Synchronised charging device configuration issue"
-        case '67':
-            outstr = "BMS connection lost"
-        case '116':
-            outstr = "Factory calibration data lost"
-        case '117':
-            outstr = "Invalid/incompatible firmware"
-        case '119':
-            outstr = "User settings invalid"
-        case _:
-            outstr = "Unknown"
-    return outstr
+
 
 def decode_ve_direct_message(data):
     # VE.Direct message decoding logic
@@ -106,31 +66,42 @@ def decode_ve_direct_message(data):
         return None
     lst[0] = lst[0].lstrip("b'")
     lst[1] = lst[1].rstrip("\\r\\n'")
-    match lst[0]:
-        case 'V':
-            print(f"Battery V: {float(lst[1])/1000}")
-        case 'VPV':
-            print(f"Panel V: {float(lst[1])/1000}")
-        case 'I':
-            print(f"Battery I: {float(lst[1])/1000}")
-        case 'IL':
-            print(f"Load I: {float(lst[1])/1000}")
-        case 'PPV':
-            print(f"Panel Watts: {lst[1]}")
-        case 'CS':
-            outstr = charger_status(lst[1])
-            print(f"Charger state: {outstr}")
-        case 'MPPT':
-            outstr = mppt_status(lst[1])
-            print(f"MPPT: {outstr}")
-        case 'ERR':
-            outstr = error_status(lst[1])
-            print(f"Error: {outstr}")
-        case _:  # Default case
-            #print(f"Unknown: {lst[0], lst[1]}")
-            return None
-        
     decoded_data = {}  # Store decoded data in a dictionary
+    decoded_data = {'op': lst[0]}
+    match lst[0]:
+        case 'V':            
+            decoded_data = {'value': 'Batttery(V)= ' + str(float(lst[1])/1000)}
+        case 'VPV':                        
+            decoded_data = {'value': 'Panel(V)= ' + str(float(lst[1])/1000)}
+        case 'I':
+            decoded_data = {'value': 'Batttery(I)= ' + str(float(lst[1])/1000)}
+        case 'IL':
+            decoded_data = {'value': 'Load(I)= ' + str(float(lst[1])/1000)}
+        case 'PPV':
+            decoded_data = {'value': 'Panel(W) ' + str(float(lst[1])/1000)}
+        case 'CS':
+            if lst[1] in charger_status:
+                decoded_data = {'value': 'Charger State= ' + charger_status[lst[1]]}
+            else:
+                decoded_data = {'value': "Unknown CS code " + lst[1]}
+        case 'MPPT':
+            if lst[1] in mppt_status:
+               decoded_data = {'value': 'MPPT State= ' + mppt_status[lst[1]]}
+            else:
+                decoded_data = {'value': 'MPPT State= ' + "Unknown MPPT code " + lst[1]}
+        case 'ERR':
+            if lst[1] == '0':       # No error so don't bother reporting
+                decoded_data = None
+            elif lst[1] in error_status:
+                decoded_data = {'value': 'ERROR= ' + error_status[lst[1]]}
+            else:
+                decoded_data = {'value': "Unknown ERR code " + lst[1]}
+        case _:  # Default case
+            if debug > 0:
+                print(f"Cmd not tracked: {lst[0]} {lst[1]}")
+                decoded_data = {'value': 'Cmd not tracked: ' + lst[0] + ' ' + lst[1]}
+            else:
+                decoded_data = None
     return decoded_data
 
 def read_serial_data(ser):
@@ -140,7 +111,8 @@ def read_serial_data(ser):
             if data:
                 #print(f"Received data: {data}")
                 decoded_data = decode_ve_direct_message(data)
-                #print(f"Decoded data: {decoded_data}")
+                if decoded_data != None:
+                    print(decoded_data['value'])
     except KeyboardInterrupt:
         print("Thread terminated.")
 
