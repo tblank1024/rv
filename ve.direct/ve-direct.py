@@ -1,15 +1,12 @@
 import serial
 import time
 import threading
-import rvglue
+from  rvglue import MQTTClient
+from rvglue.rvglue import MasterDict
 
-# Configuration
 
-serial_port = '/dev/ttyAMA0'
-baud_rate = 19200
 
-debug = 0
-
+# Victron protocol dictionary sets
 charger_status = {
     "0": "Off",
     "1": "Low power (MPPT not used)",
@@ -56,50 +53,48 @@ error_status = {
     "119": "User settings invalid"
 }
     
-
-
-
 def decode_ve_direct_message(data):
+    global debug
     # VE.Direct message decoding logic
     lst = str(data).split('\\t')
     if len(lst) != 2:
+        # ignore non-variable updates e.g. history data
         return None
     lst[0] = lst[0].lstrip("b'")
     lst[1] = lst[1].rstrip("\\r\\n'")
-    decoded_data = {}  # Store decoded data in a dictionary
     decoded_data = {'op': lst[0]}
     match lst[0]:
         case 'V':            
-            decoded_data = {'value': 'Batttery(V)= ' + str(float(lst[1])/1000)}
+            decoded_data.update({'value': 'Batttery(V)= ' + str(float(lst[1])/1000)})
         case 'VPV':                        
-            decoded_data = {'value': 'Panel(V)= ' + str(float(lst[1])/1000)}
+            decoded_data.update({'value': 'Panel(V)=    ' + str(float(lst[1])/1000)})
         case 'I':
-            decoded_data = {'value': 'Batttery(I)= ' + str(float(lst[1])/1000)}
+            decoded_data.update({'value': 'Batttery(I)= ' + str(float(lst[1])/1000)})
         case 'IL':
-            decoded_data = {'value': 'Load(I)= ' + str(float(lst[1])/1000)}
+            decoded_data.update({'value': 'Load(I)=     ' + str(float(lst[1])/1000)})
         case 'PPV':
-            decoded_data = {'value': 'Panel(W) ' + str(float(lst[1])/1000)}
+            decoded_data.update({'value': 'Panel(W)=    ' + str(float(lst[1]))})
         case 'CS':
             if lst[1] in charger_status:
-                decoded_data = {'value': 'Charger State= ' + charger_status[lst[1]]}
+                decoded_data.update({'value': 'Charger State= ' + charger_status[lst[1]]})
             else:
-                decoded_data = {'value': "Unknown CS code " + lst[1]}
+                decoded_data.update({'value': "Unknown CS code " + lst[1]})
         case 'MPPT':
             if lst[1] in mppt_status:
-               decoded_data = {'value': 'MPPT State= ' + mppt_status[lst[1]]}
+               decoded_data.update({'value': 'MPPT State= ' + mppt_status[lst[1]]})
             else:
-                decoded_data = {'value': 'MPPT State= ' + "Unknown MPPT code " + lst[1]}
+                decoded_data.update({'value': 'MPPT State= ' + "Unknown MPPT code " + lst[1]})
         case 'ERR':
             if lst[1] == '0':       # No error so don't bother reporting
                 decoded_data = None
             elif lst[1] in error_status:
-                decoded_data = {'value': 'ERROR= ' + error_status[lst[1]]}
+                decoded_data.update({'value': 'ERROR= ' + error_status[lst[1]]})
             else:
-                decoded_data = {'value': "Unknown ERR code " + lst[1]}
+                decoded_data.update({'value': "Unknown ERR code " + lst[1]})
         case _:  # Default case
-            if debug > 0:
+            if debug > 1:
                 print(f"Cmd not tracked: {lst[0]} {lst[1]}")
-                decoded_data = {'value': 'Cmd not tracked: ' + lst[0] + ' ' + lst[1]}
+                decoded_data.update({'value': 'Cmd not tracked: ' + lst[0] + ' ' + lst[1]})
             else:
                 decoded_data = None
     return decoded_data
@@ -112,27 +107,57 @@ def read_serial_data(ser):
                 #print(f"Received data: {data}")
                 decoded_data = decode_ve_direct_message(data)
                 if decoded_data != None:
-                    print(decoded_data['value'])
+                    #print(decoded_data['value'])
+                    #Update Solar record dictionary in MasterDict
+                    MasterDict['SOLAR_CONTROLLER_STATUS/1'][decoded_data['op']] = decoded_data['value']
+                                        
     except KeyboardInterrupt:
         print("Thread terminated.")
 
-def main():
+def InitializeSolarMQTTRecord(Client):
+    #Initialize the Solar record dictionary in MasterDict and update MQTT
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['VPV'] = '-0'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPW'] = '-0'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['V'] = '-0'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['I'] = '-0'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['IL'] = '-0'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['CS'] = 'OFF'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['MPPT'] = 'OFF'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['ERR'] = 'No Error'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
+    Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
+
+
+def main(mode,broker, port, varprefix, mqttTopic, debug):
+
+    #setup MQTT client
+    RVC_Client = MQTTClient(mode,broker, port, varprefix, mqttTopic, debug-1)
+
+    #Initialize the Solar record dictionary in MasterDict and pub to MQTT
+    InitializeSolarMQTTRecord(RVC_Client)
+
     # Open the serial port
     try:
         ser = serial.Serial(serial_port, baud_rate, timeout=1, inter_byte_timeout=0.1)
-        print(f"Serial port {serial_port} opened successfully.")
+        if debug > 0:
+            print(f"VE-Direct serial port {serial_port} opened successfully.")
     except Exception as e:
         print(f"Failed to open serial port: {e}")
         return
-
     try:
         # Start a separate thread for reading serial data
         thread = threading.Thread(target=read_serial_data, args=(ser,))
         thread.start()
-
-        # Main program loop (can be empty as the reading is handled in a separate thread)
+        print(f"VE-Direct/Solar to MQTT Running")
+        # Main loop
         while True:
-            time.sleep(10)  # Add any additional processing or logic here
+            #update MQTT record every 2 seconds
+            time.sleep(2) 
+            MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
+            RVC_Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
+            if debug > 0:
+                print(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
+                print('---------------------------------------------------------------------------------------------')
 
     except KeyboardInterrupt:
         print("Program terminated by user.")
@@ -143,4 +168,13 @@ def main():
         print("Serial port closed.")
 
 if __name__ == "__main__":
-    main()
+    # Configuration
+    serial_port = '/dev/ttyAMA0'
+    baud_rate = 19200
+    mode = 'pub'
+    broker = 'localhost'
+    port = 1883
+    mqttTopic = 'RVC'
+    varprefix = '_var'
+    debug = 0  # 0 - no debug, 1 - print MQTT record, 2 - print MQTT record, all serial data, and rvglue debug
+    main(mode,broker, port, varprefix, mqttTopic, debug)
