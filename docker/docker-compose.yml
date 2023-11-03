@@ -76,6 +76,21 @@ services:
     volumes:
       - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
 
+  ve.direct:
+    build:
+      context: /home/tblank/code/tblank1024/rv/ve.direct
+      dockerfile: Dockerfile
+    container_name: solar
+    network_mode: host
+    devices:
+      - /dev/ttyAMA0:/dev/ttyAMA0
+    restart: always
+    image: solar:latest
+    privileged: false
+    depends_on:
+      - mqtt 
+
+#
 # bat2mqtt used to work in Buster but can't get to work in Bullseye
 #
 #  bat2mqtt:
