@@ -1,3 +1,2 @@
 rvglue @ git+https://github.com/tblank1024/rvglue
 pyserial
-#paho-mqtt==1.6.1

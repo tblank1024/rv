@@ -2,7 +2,7 @@ import serial
 import time
 import threading
 from  rvglue import MQTTClient
-from rvglue.rvglue import MasterDict
+from rvglue import MasterDict
 
 
 
@@ -53,8 +53,7 @@ error_status = {
     "119": "User settings invalid"
 }
     
-def decode_ve_direct_message(data):
-    global debug
+def decode_ve_direct_message(data, debug):
     # VE.Direct message decoding logic
     lst = str(data).split('\\t')
     if len(lst) != 2:
@@ -99,13 +98,13 @@ def decode_ve_direct_message(data):
                 decoded_data = None
     return decoded_data
 
-def read_serial_data(ser):
+def read_serial_data(ser, debug):
     try:
         while True:
             data = ser.readline()
             if data:
                 #print(f"Received data: {data}")
-                decoded_data = decode_ve_direct_message(data)
+                decoded_data = decode_ve_direct_message(data, debug)
                 if decoded_data != None:
                     #print(decoded_data['value'])
                     #Update Solar record dictionary in MasterDict
@@ -127,8 +126,7 @@ def InitializeSolarMQTTRecord(Client):
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
     Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
 
-
-def main(mode,broker, port, varprefix, mqttTopic, debug):
+def main(serial_port:str, baud_rate:int, mode:str, broker:str, port:int, varprefix:str, mqttTopic:str, debug:int)->None:
 
     #setup MQTT client
     RVC_Client = MQTTClient(mode,broker, port, varprefix, mqttTopic, debug-1)
@@ -146,7 +144,7 @@ def main(mode,broker, port, varprefix, mqttTopic, debug):
         return
     try:
         # Start a separate thread for reading serial data
-        thread = threading.Thread(target=read_serial_data, args=(ser,))
+        thread = threading.Thread(target=read_serial_data, args=(ser, debug,))
         thread.start()
         print(f"VE-Direct/Solar to MQTT Running")
         # Main loop
@@ -168,13 +166,14 @@ def main(mode,broker, port, varprefix, mqttTopic, debug):
         print("Serial port closed.")
 
 if __name__ == "__main__":
-    # Configuration
-    serial_port = '/dev/ttyAMA0'
-    baud_rate = 19200
-    mode = 'pub'
-    broker = 'localhost'
-    port = 1883
-    mqttTopic = 'RVC'
-    varprefix = '_var'
-    debug = 0  # 0 - no debug, 1 - print MQTT record, 2 - print MQTT record, all serial data, and rvglue debug
-    main(mode,broker, port, varprefix, mqttTopic, debug)
+
+    main(
+        serial_port='/dev/ttyAMA0',
+        baud_rate=19200,
+        mode='pub',
+        broker='localhost', 
+        port=1883, 
+        varprefix='_var', 
+        mqttTopic='RVC', 
+        debug=0,    # 0 - no debug, 1 - print MQTT record, 2 - print MQTT record, all serial data, and rvglue debug
+    )
