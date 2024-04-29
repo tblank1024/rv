@@ -43,7 +43,7 @@ services:
       dockerfile: Dockerfile
     container_name: webserver
     network_mode: host
-    image: react2:latest
+    #image: react2:latest
     restart: always
     depends_on:
       - mqtt

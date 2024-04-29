@@ -9,6 +9,8 @@ from pprint import pprint
 import tkinter as tk
 import threading
 import datetime
+import psutil
+
 
 #CONSTANTS
 FILEDIR = './watcherlogs/'
@@ -170,6 +172,9 @@ class mqttclient():
                 print("Can't open .log file for reading  -- exiting", IOFile + '.log')
                 exit()
 
+
+    
+   
     def _UpdateAliasData(self, msg_dict, now):
         global AliasData, MQTTNameToAliasName, IOFileptr
 
@@ -282,6 +287,18 @@ class mqttclient():
                 time.sleep(10)
                 count += 1
 
+    # check for remaining disk space
+    # The function takes a single argument, percent_free, which is the minimum percentage of free disk space that should be available.                
+    def check_disk_space(self, percent_free):
+        # Get disk usage statistics
+        disk_usage = psutil.disk_usage('/')
+
+        # Calculate the percentage of free disk space
+        free_percent = disk_usage.free / disk_usage.total * 100
+
+        # return whether the remaining disk capacity is greater than the provided percent free
+        return free_percent > percent_free
+                    
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
         global TargetTopics, AliasData, MQTTNameToAliasName, LastStatus, TargetTopics, IOFileptr, debug, mode, Sample_Period_Sec, LastTime
@@ -302,10 +319,13 @@ class mqttclient():
           and (time.time() - t_time) > Sample_Period_Sec \
           and not (msg_dict['name'] == 'SYS_ERRORS' and msg_dict['error'][0] == '#'):
             TargetTopics[msg.topic]['timestamp'] = time.time()
-            #writes this dictionary to the output file on one line 
-            json.dump(msg_dict, IOFileptr)
-            IOFileptr.write("\n")
-            IOFileptr.flush()
+            #writes this dictionary to the output file on one line if enough disk space is available
+            if self.check_disk_space(20):
+                json.dump(msg_dict, IOFileptr)
+                IOFileptr.write("\n")
+                IOFileptr.flush()
+            else:
+                print('Disk space too low to write to file')
             if debug > 0:
                 dt = datetime.datetime.fromtimestamp(time.time())
                 print('wrote to file: ', dt, msg.topic, msg_dict)

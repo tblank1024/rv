@@ -115,14 +115,14 @@ def read_serial_data(ser, debug):
 
 def InitializeSolarMQTTRecord(Client):
     #Initialize the Solar record dictionary in MasterDict and update MQTT
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['VPV'] = '-0'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPW'] = '-0'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['V'] = '-0'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['I'] = '-0'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['IL'] = '-0'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['CS'] = 'OFF'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['MPPT'] = 'OFF'
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['ERR'] = 'No Error'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['VPV'] =    -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPW'] =    -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['V'] =      -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['I'] =      -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['IL'] =     -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['CS'] =     'OFF'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['MPPT'] =   'OFF'
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['ERR'] =    'No Error'
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
     Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
 
