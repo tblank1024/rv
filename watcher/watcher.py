@@ -25,7 +25,7 @@ client = None
 mode = 'c'
 debug = 0
 LastStatus = ''
-IOFile = ''
+#IOFile = ''
 IOFileptr = None
 thread_data = {}
 Sample_Period_Sec = 60
@@ -90,12 +90,53 @@ class WindowDisplayThread(threading.Thread):
 
 
 class mqttclient():
+ 
+    # Function to return file pointer for operation
+    # Input  parameters: opmode - operation mode
+    # Output parameters: file pointer
+    # uses file naming convention of the form: currentMonth.log
+    # If the file does not exist, it is created
+    # If the file exists, it is opened in append mode unless 
+    #   the creation date is greater than 6 months old in which case the file is opened in write mode
+    def __get_output_file_pointer(self):
+        global IOFilename, IOFileptr
 
-    def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, debug, opmode, IOFilename):
-        global client, Watched_Vars, AliasData, MQTTNameToAliasName, TargetTopics, mode, IOFile, IOFileptr
+        current_month = datetime.datetime.now().strftime("%B")
+        file_name = f"{FILEDIR}{current_month}.log" 
+        if IOFileptr is not None and IOFileptr.name != file_name:
+            IOFileptr.close()
+        if IOFilename != FILEDIR:
+            #keep user supplied name
+            file_name = f"{IOFilename}.log"
+        # Check if the file exists
+        if os.path.exists(file_name):
+            # Get the creation date of the file
+            creation_date = datetime.datetime.fromtimestamp(os.path.getctime(file_name))
+            
+            # Calculate the difference in months between the current date and the creation date
+            months_diff = (datetime.datetime.now().year - creation_date.year) * 12 + (datetime.datetime.now().month - creation_date.month)
+            
+            # Check if the file is older than 6 months
+            if months_diff > 6:
+                # Open the file in write mode
+                IOFileptr = open(file_name, "w")
+            else:
+                # Open the file in append mode
+                IOFileptr = open(file_name, "a")
+        else:
+            # Create the file if it doesn't exist
+            IOFileptr = open(file_name, "w")
+        
+        return IOFileptr
+
+    def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, debug, opmode):
+        global client, Watched_Vars, AliasData, MQTTNameToAliasName, TargetTopics, mode, IOFilename, IOFileptr
 
         mode = opmode
-        IOFile = IOFilename
+
+        
+        
+            
 
         #Build data structures for the watched variables
         #   TargetTopics is a dictionary of dictionaries.  The first key is the MQTT topic and the second key is the variable name
@@ -149,8 +190,8 @@ class mqttclient():
             if mode == 'c':
                 #open the .log file for writing
                 try:
-                    print('opening file: ', IOFile + '.log')
-                    IOFileptr = open(IOFile + '.log', "a")
+                    IOFileptr = self.__get_output_file_pointer() 
+                    print('opening file: ', IOFileptr.name)
                 except FileNotFoundError as e:
                     print(f"An FileNotFount error occurred: {e}")
                     exit()
@@ -167,9 +208,9 @@ class mqttclient():
         else:   #mode is output; reads from log file and outputs selected vars to csv file
             #open the .log file for reading
             try:
-                IOFileptr = open(IOFile + '.log', "r")
+                IOFileptr = open(IOFilename + '.log', "r")
             except:
-                print("Can't open .log file for reading  -- exiting", IOFile + '.log')
+                print("Can't open .log file for reading  -- exiting", IOFilename + '.log')
                 exit()
 
 
@@ -206,11 +247,15 @@ class mqttclient():
         msg_counter = 0
         LastTimestamp = 0
 
+        if IOFilename == FILEDIR:
+            print('No input file specified for output mode')
+            exit()
+
         #open the input file
         try:
-            fp_out = open(IOFile + '.csv', "w")
+            fp_out = open(IOFilename + '.csv', "w")
         except:
-            print("Can't open file for writing -- exiting", IOFile + '.csv')
+            print("Can't open file for writing -- exiting", IOFilename + '.csv')
             exit()
         #input one line from the input file
         while True:
@@ -315,15 +360,16 @@ class mqttclient():
             t_time = 0
         #don't dump the SYS_ERROR mesages with error count to the log file
         if (mode == 'c') \
-          and (msg.topic in TargetTopics) \
+      and (msg.topic in TargetTopics) \
           and (time.time() - t_time) > Sample_Period_Sec \
           and not (msg_dict['name'] == 'SYS_ERRORS' and msg_dict['error'][0] == '#'):
             TargetTopics[msg.topic]['timestamp'] = time.time()
             #writes this dictionary to the output file on one line if enough disk space is available
             if self.check_disk_space(20):
+                self.__get_output_file_pointer()
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
-                IOFileptr.flush()
+                #IOFileptr.flush()
             else:
                 print('Disk space too low to write to file')
             if debug > 0:
@@ -631,7 +677,7 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--debug", default = 0, type=int, choices=[0, 1, 2, 3], help="debug level")
     parser.add_argument("-t", "--topic", default = "RVC", help="MQTT topic prefix")
     parser.add_argument("-m", "--Mode", default = "c", help="s - screen only, b - capture MQTT msgs into file and screen output, c - file capture only , o - From xx.log file, output watched vars to xx.csv file")
-    parser.add_argument("-i", "--IOfile", default = "watcher", help="IO file name with no extension")
+    parser.add_argument("-i", "--IOfile", default = "", help="IO file name with no extension")
     parser.add_argument("-s", "--sample_sec", default = 60, help="Capture Sample interval in seconds")
     
     args = parser.parse_args()
@@ -646,8 +692,8 @@ if __name__ == "__main__":
     print('Watcher starting in mode: ', opmode)
     print('debug level = ', debug)
 
-              
-    RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode, FILEDIR+args.IOfile)
+    IOFilename = FILEDIR + args.IOfile         
+    RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode)
 
 
     if opmode == 's' or opmode == 'b':  #screen mode or capture mode
