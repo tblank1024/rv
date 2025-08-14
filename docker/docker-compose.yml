@@ -1,5 +1,3 @@
-version: "2.2"
- 
 services:
 
   mqtt:
@@ -39,7 +37,7 @@ services:
       #- TZ = America/Anchorage
 
     build:
-      context: /home/tblank/code/joram/RVSecurity
+      context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
     container_name: webserver
     network_mode: host
@@ -59,6 +57,23 @@ services:
     restart: always
     image: alarm:latest
     privileged: true
+    environment:
+      - GPIOZERO_PIN_FACTORY=rpigpio
+    devices:
+      - /dev/gpiomem0:/dev/gpiomem0
+      - /dev/gpiomem1:/dev/gpiomem1
+      - /dev/gpiomem2:/dev/gpiomem2
+      - /dev/gpiomem3:/dev/gpiomem3
+      - /dev/gpiomem4:/dev/gpiomem4
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiochip10:/dev/gpiochip10
+      - /dev/gpiochip11:/dev/gpiochip11
+      - /dev/gpiochip12:/dev/gpiochip12
+      - /dev/gpiochip13:/dev/gpiochip13
+      - /dev/mem:/dev/mem
+    volumes:
+      - /sys/class/gpio:/sys/class/gpio
+      - /sys/devices/platform/soc:/sys/devices/platform/soc:ro
     depends_on:
       - mqtt 
 
@@ -83,7 +98,7 @@ services:
     container_name: solar
     network_mode: host
     devices:
-      - /dev/ttyAMA0:/dev/ttyAMA0
+      - /dev/ttyAMA10:/dev/ttyAMA0
     restart: always
     image: solar:latest
     privileged: false

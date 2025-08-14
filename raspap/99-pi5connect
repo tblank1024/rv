@@ -1,0 +1,60 @@
+#!/bin/bash
+# filepath: /etc/NetworkManager/dispatcher.d/99-pi5connect
+
+# Dispatcher script to run pi5connect.sh when a potential uplink interface status changes
+
+# --- Configuration ---
+# Path to the main connection script
+MAIN_SCRIPT="/home/tblank/code/tblank1024/rv/raspap/pi5connect.sh" # Adjusted path
+# Log file used by both dispatcher and main script
+LOG_FILE="/var/log/pi5connect.log"
+# List of KNOWN specific uplink interfaces (e.g., if one consistently gets the same name)
+KNOWN_UPLINKS=("eth1")
+# List of interfaces to EXCLUDE (built-in, wifi, bridge, loopback, docker)
+EXCLUDE_IFACES=("lo" "eth0" "wlan0" "br0" "docker0")
+# --- End Configuration ---
+
+IFACE="$1" # Interface name passed by NetworkManager
+STATUS="$2" # Interface status passed by NetworkManager (e.g., "up", "down", "connectivity-change")
+
+# Function to check if an item is in an array
+containsElement () {
+  local element match="$1"
+  shift
+  for element; do [[ "$element" == "$match" ]] && return 0; done
+  return 1
+}
+
+# --- Determine if this is a potential uplink ---
+is_uplink=false
+
+# 1. Check if it's in the known uplinks list
+if containsElement "$IFACE" "${KNOWN_UPLINKS[@]}"; then
+    is_uplink=true
+else
+    # 2. Check if it matches common patterns AND is not excluded
+    if [[ "$IFACE" == enx* || "$IFACE" == eth* || "$IFACE" == usb* ]]; then
+        if ! containsElement "$IFACE" "${EXCLUDE_IFACES[@]}"; then
+            is_uplink=true
+            echo "[$(date)] NetworkManager dispatcher identified potential uplink $IFACE by pattern." >> "$LOG_FILE"
+        fi
+    fi
+fi
+# --- End Uplink Determination ---
+
+
+# Run the main script if an uplink interface status changes (e.g., "up", "connectivity-change")
+# We run on "up" and "connectivity-change" to handle initial connection and potential IP changes
+if $is_uplink && ( [ "$STATUS" == "up" ] || [ "$STATUS" == "connectivity-change" ] ); then
+    # Log dispatcher action (optional but helpful)
+    echo "[$(date)] NetworkManager dispatcher triggered for $IFACE status $STATUS, running $MAIN_SCRIPT" >> "$LOG_FILE"
+    # Run the script in the background to avoid blocking the dispatcher
+    "$MAIN_SCRIPT" &
+elif $is_uplink && [ "$STATUS" == "down" ]; then
+    # Optional: Log when uplink goes down
+    echo "[$(date)] NetworkManager dispatcher triggered for $IFACE status $STATUS, running $MAIN_SCRIPT" >> "$LOG_FILE"
+    # Running pi5connect.sh again will detect no active interface and set DNS rules.
+    "$MAIN_SCRIPT" &
+fi
+
+exit 0

@@ -1,2 +1,13 @@
-RPi.GPIO==0.7.1a4
+# GPIO libraries for Raspberry Pi 5
+gpiozero>=1.6.2
+lgpio>=0.2.0.0
+
+# Note: libgpiod Python bindings are typically installed via system packages
+# Run: sudo apt install libgpiod-dev python3-libgpiod gpiod
+# Or use the simplified setup command below
+
+# For logging and other utilities
+# Add any other application-specific packages hereozero>=1.6.2
+lgpio>=0.2.2.0
+RPi.GPIO>=0.7.1
 #rpi_hardware_pwm==0.1.4
