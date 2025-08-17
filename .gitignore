@@ -6,3 +6,4 @@ React/
 docker/mqtt/log
 TODO.txt
 mqttclient/TestGui.py
+venv/

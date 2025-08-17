@@ -77,19 +77,19 @@ services:
     depends_on:
       - mqtt 
 
-  watcher:
-    build:
-      context: /home/tblank/code/tblank1024/rv/watcher
-      dockerfile: Dockerfile
-    container_name: watcher
-    network_mode: host
-    restart: always
-    image: watcher:latest
-    privileged: false
-    depends_on:
-      - mqtt 
-    volumes:
-      - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
+  # watcher:
+  #   build:
+  #     context: /home/tblank/code/tblank1024/rv/watcher
+  #     dockerfile: Dockerfile
+  #   container_name: watcher
+  #   network_mode: host
+  #   restart: always
+  #   image: watcher:latest
+  #   privileged: false
+  #   depends_on:
+  #     - mqtt 
+  #   volumes:
+  #     - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
 
   ve.direct:
     build:
