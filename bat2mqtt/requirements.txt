@@ -1,2 +1,2 @@
-bleak == 0.19.5
-paho-mqtt==1.6.1
+bleak>=0.21.0
+paho-mqtt>=1.6.1

@@ -1,4 +1,4 @@
-#!/bin/bash
+color#!/bin/bash
 # Minimal setup for Raspberry Pi 5 - Install system packages only
 # Python packages are handled by requirements.txt
 

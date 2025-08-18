@@ -2,7 +2,7 @@
 # Build: docker build -t alarm .
 # RUN  : sudo docker run -it --device /dev/gpiomem --device /dev/gpiochip0 alarm
 
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Upgrade pip and install system dependencies
 RUN python3 -m pip install --upgrade pip

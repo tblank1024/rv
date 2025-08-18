@@ -28,7 +28,7 @@ CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Char
 
 #global variables
 LastMessage = ""
-#MsgCount = 0
+MsgCount = 0  # Initialize MsgCount
 LastVolt = 0
 LastAmps = 0
 Debug = 0
@@ -153,9 +153,9 @@ def notification_handler_battery(sender, data):
                     print("Time     \tVolt\tTemp\tAmps\tFull\tStat")
                 if LastVolt == Volt and LastAmps == Amps:
                     # No change from last measurement
-                    print("{}\t{}\t{}\t{}\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    print("{}\t{}\t{}\\t{}\\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
                 else:
-                    print("{}\t{}\t{}\t{}\t{}\t{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    print("{}\t{}\t{}\\t{}\\t{}\\t{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
                     file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
                 LastVolt = Volt
                 LastAmps = Amps
@@ -170,10 +170,10 @@ def notification_handler_battery(sender, data):
 async def OneClient(address1, char_uuid):  # need unique address and service address for each  todo
     global file_ptr
 
-    def cleanup():
+    async def cleanup():
         print(f"Disconnecting: {client1.is_connected}")
-        client1.stop_notify(char_uuid)
-        client1.disconnect()
+        await client1.stop_notify(char_uuid)
+        await client1.disconnect()
         print(f"Disconnect client1: {client1.is_connected}")
         if Debug > 0:
             file_ptr.close()
@@ -244,7 +244,7 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 0
+    Debug = 1
 
     time.sleep(10)  # wait for mqtt broker to start:
     if Debug < 2:       #only pub to mqtt if debug is less than 2
@@ -253,6 +253,3 @@ if __name__ == "__main__":
     if Debug > 0:
             file_ptr = open("battery_raw.log","w")
     asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
-    while True:
-        time.sleep(1)
-        print("Sleeping")

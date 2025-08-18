@@ -58,24 +58,11 @@ services:
     image: alarm:latest
     privileged: true
     environment:
-      - GPIOZERO_PIN_FACTORY=rpigpio
-    devices:
-      - /dev/gpiomem0:/dev/gpiomem0
-      - /dev/gpiomem1:/dev/gpiomem1
-      - /dev/gpiomem2:/dev/gpiomem2
-      - /dev/gpiomem3:/dev/gpiomem3
-      - /dev/gpiomem4:/dev/gpiomem4
-      - /dev/gpiochip0:/dev/gpiochip0
-      - /dev/gpiochip10:/dev/gpiochip10
-      - /dev/gpiochip11:/dev/gpiochip11
-      - /dev/gpiochip12:/dev/gpiochip12
-      - /dev/gpiochip13:/dev/gpiochip13
-      - /dev/mem:/dev/mem
+      - GPIOZERO_PIN_FACTORY=lgpio
     volumes:
-      - /sys/class/gpio:/sys/class/gpio
-      - /sys/devices/platform/soc:/sys/devices/platform/soc:ro
+      - /dev:/dev
     depends_on:
-      - mqtt 
+      - mqtt
 
   # watcher:
   #   build:
@@ -105,24 +92,21 @@ services:
     depends_on:
       - mqtt 
 
-#
-# bat2mqtt used to work in Buster but can't get to work in Bullseye
-#
-#  bat2mqtt:
-#    build:
-#      context: /home/tblank/code/tblank1024/rv/bat2mqtt
-#      dockerfile: Dockerfile
-#    container_name: battery
-#    image: bat2mqtt:latest
-#    network_mode: host
-#    depends_on:
-#      - mqtt
-#    volumes:
-#      #- /srv/ha_config:/config
-#      #- /etc/localtime:/etc/localtime:ro
-#      - /run/dbus:/run/dbus:ro
-#    restart: always
-#    privileged: true 
 
 
-    
+  bat2mqtt:
+    build:
+      context: /home/tblank/code/tblank1024/rv/bat2mqtt
+      dockerfile: Dockerfile
+    container_name: battery
+    image: bat2mqtt:latest
+    network_mode: host
+    depends_on:
+      - mqtt
+    volumes:
+      - /run/dbus:/run/dbus:ro
+    restart: always
+    privileged: true
+
+
+
