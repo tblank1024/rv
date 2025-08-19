@@ -1,21 +1,24 @@
+# =================================================================
+# SERVICE CONTROL
+# To disable a service: comment out the entire service block
+# To enable a service: uncomment the service block
+# =================================================================
+
 services:
 
+  # MQTT Broker (Required - always enabled)
   mqtt:
     container_name: broker
     network_mode: host
     image: eclipse-mosquitto:latest
     restart: always
-# ports not used in network_mode: host
-#    ports:
-#      - "1883:1883"
-#      - "9001:9001"
-
     volumes:
       - /home/tblank/code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
       - /home/tblank/code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
       - /home/tblank/code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
       - /home/tblank/code/tblank1024/rv/docker/watcher/log:/watcher/log
 
+  # CAN Bus RV-C Monitoring
   rvc2mqtt:
     build:
       context: /home/tblank/code/linuxkidd/rvc-monitor-py
@@ -27,57 +30,28 @@ services:
     depends_on:
       - mqtt
 
-  webserver:
-    environment:
-      - TZ=America/Los_Angeles
-      #- TZ=America/New_York
-      #- TZ = America/Chicago
-      #- TZ = America/Denver
-      #- TZ = America/Phoenix
-      #- TZ = America/Anchorage
-
+  # Bluetooth Battery Monitoring
+  bat2mqtt:
     build:
-      context: /home/tblank/code/Joram/RVSecurity
+      context: /home/tblank/code/tblank1024/rv/bat2mqtt
       dockerfile: Dockerfile
-    container_name: webserver
+    container_name: battery
+    image: bat2mqtt:latest
     network_mode: host
-    #image: react2:latest
-    restart: always
     depends_on:
       - mqtt
-      - rvc2mqtt
-      - alarm
-
-  alarm:
-    build:
-      context: /home/tblank/code/tblank1024/rv/alarm
-      dockerfile: Dockerfile
-    container_name: alarm
-    network_mode: host
-    restart: always
-    image: alarm:latest
-    privileged: true
-    environment:
-      - GPIOZERO_PIN_FACTORY=lgpio
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
     volumes:
-      - /dev:/dev
-    depends_on:
-      - mqtt
+      - /run/dbus:/run/dbus:ro
+      - /sys/bus/usb:/sys/bus/usb:ro
+    restart: always
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
 
-  # watcher:
-  #   build:
-  #     context: /home/tblank/code/tblank1024/rv/watcher
-  #     dockerfile: Dockerfile
-  #   container_name: watcher
-  #   network_mode: host
-  #   restart: always
-  #   image: watcher:latest
-  #   privileged: false
-  #   depends_on:
-  #     - mqtt 
-  #   volumes:
-  #     - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
-
+  # Victron Solar Monitoring (ve.direct)
   ve.direct:
     build:
       context: /home/tblank/code/tblank1024/rv/ve.direct
@@ -92,21 +66,54 @@ services:
     depends_on:
       - mqtt 
 
-
-
-  bat2mqtt:
+ # GPIO Alarm System
+  # alarm:
+  #   build:
+  #     context: /home/tblank/code/tblank1024/rv/alarm
+  #     dockerfile: Dockerfile
+  #   container_name: alarm
+  #   network_mode: host
+  #   restart: always
+  #   image: alarm:latest
+  #   privileged: true
+  #   environment:
+  #     - GPIOZERO_PIN_FACTORY=lgpio
+  #   volumes:
+  #     - /dev:/dev
+  #   depends_on:
+  #     - mqtt
+ 
+  # Web Dashboard Interface
+  webserver:
+    environment:
+      - TZ=America/Los_Angeles
     build:
-      context: /home/tblank/code/tblank1024/rv/bat2mqtt
+      context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
-    container_name: battery
-    image: bat2mqtt:latest
+    container_name: webserver
     network_mode: host
+    restart: always
     depends_on:
       - mqtt
-    volumes:
-      - /run/dbus:/run/dbus:ro
-    restart: always
-    privileged: true
+      - rvc2mqtt
+  #    - alarm
+
+
+
+  # Data Watcher/Logger (Currently disabled - uncomment to enable)
+  # watcher:
+  #   build:
+  #     context: /home/tblank/code/tblank1024/rv/watcher
+  #     dockerfile: Dockerfile
+  #   container_name: watcher
+  #   network_mode: host
+  #   restart: always
+  #   image: watcher:latest
+  #   privileged: false
+  #   depends_on:
+  #     - mqtt 
+  #   volumes:
+  #     - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
 
 
 

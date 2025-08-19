@@ -118,7 +118,18 @@ def notification_handler_battery(sender, data):
             CurTime = int(time.time())
             Volt    = float(FieldData[0])/100
             Temp    = int(FieldData[5])
+            
+            # Debug: Print field parsing details
+            if Debug > 2:
+                print(f"Raw message: {LastMessage}")
+                print(f"Field 7 (current): '{FieldData[7]}' = {int(FieldData[7])}")
+                print(f"Before 2x multiplication: {int(FieldData[7])}")
+            
             Amps    = 2 * int(FieldData[7])  # 2x since only monitoring 1 of 2 batteries
+            
+            if Debug > 2:
+                print(f"After 2x multiplication: {Amps}")
+            
             #NOTE: positive amps => charging and negative amps => discharging
             Full    = int(FieldData[8])
             Stat    = FieldData[9][0:6]
@@ -232,7 +243,6 @@ async def TwoClient(address1, address2, char_uuid):  # need unique address and s
         await client1.stop_notify(char_uuid)
         await client1.disconnect()  
         await client2.stop_notify(char_uuid)
-        await client2.disconnect()  
         print(f"Disconnect:  Clients 1 & 2 connected?: {client1.is_connected} {client2.is_connected}")
 
 
@@ -244,7 +254,8 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 1
+    Debug = 1  # Changed to 3 to see raw packet data
+    print("debug value = ", Debug)
 
     time.sleep(10)  # wait for mqtt broker to start:
     if Debug < 2:       #only pub to mqtt if debug is less than 2
