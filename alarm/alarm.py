@@ -107,6 +107,13 @@ class Alarm():
         self.debuglevel = debug
 
         try:
+            # Clean up any existing GPIO state first
+            try:
+                from gpiozero import Device
+                Device.pin_factory.reset()
+            except:
+                pass  # Ignore if reset fails
+            
             # Initialize gpiozero devices
             # Output devices (LEDs, buzzer, horn, bike outputs)
             self.red_led = LED(self.REDLEDOUT)
@@ -116,12 +123,12 @@ class Alarm():
             self.bike_out1 = OutputDevice(self.BIKEOUT1)
             self.bike_out2 = OutputDevice(self.BIKEOUT2)
             
-            # Input devices (buttons and sensors)
-            self.red_button = Button(self.REDBUTTONIN, pull_up=True)
+            # Input devices (buttons and sensors) - using pull_up=True with inverted logic
+            self.red_button  = Button(self.REDBUTTONIN, pull_up=True)
             self.blue_button = Button(self.BLUEBUTTONIN, pull_up=True)
-            self.pir_sensor = InputDevice(self.PIRSENSORIN, pull_up=True)
-            self.bike_in1 = InputDevice(self.BIKEIN1, pull_up=True)
-            self.bike_in2 = InputDevice(self.BIKEIN2, pull_up=True)
+            self.pir_sensor  = InputDevice(self.PIRSENSORIN, pull_up=True)
+            self.bike_in1    = InputDevice(self.BIKEIN1, pull_up=True)
+            self.bike_in2    = InputDevice(self.BIKEIN2, pull_up=True)
             
             # Set initial states
             self.red_led.off()
@@ -195,24 +202,24 @@ class Alarm():
                 self.AlarmTime = self.LoopTime
     
     def _check_interior(self):
-        if self.InteriorState == States.STARTING and self.pir_sensor.is_active: 
-             #Alarm triggered but starting
+        if self.InteriorState == States.STARTING and not self.pir_sensor.is_active: 
+             #Alarm triggered but starting (with pull_up=True, is_active=False means movement detected)
             self.set_state(AlarmTypes.Interior, States.STARTERROR)
-        elif self.InteriorState == States.ON and self.pir_sensor.is_active: 
-            #Alarm triggered
+        elif self.InteriorState == States.ON and not self.pir_sensor.is_active: 
+            #Alarm triggered (with pull_up=True, is_active=False means movement detected)
             self.set_state(AlarmTypes.Interior, States.TRIGDELAY)
             self.AlarmTime = self.LoopTime
             if self.debuglevel > 0:
                 logging.info("Interior Alarm triggered")
 
     def _check_buttons(self):
-        BUTTONDELAY = 1             # Time (sec) before button _toggle((s
+        BUTTONDELAY = 1             # Time (sec) before button press is registered
 
         NowTime = self.LoopTime
         RedButton = self.red_button.is_pressed     #Interior Alarm control
         BlueButton = self.blue_button.is_pressed    #Bike Alarm control
         
-        if(RedButton == 0 and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
+        if(RedButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
             if self.InteriorState == States.OFF:
                 self.set_state(AlarmTypes.Interior,States.STARTING)
                 if self.debuglevel > 0:
@@ -223,8 +230,8 @@ class Alarm():
                     logging.info("Red Stopping")
             self.LastButtonTime = NowTime
 
-        if BlueButton == 0 and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
-            #_toggle((
+        if BlueButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
+            #Toggle
             if self.BikeState == States.OFF:
                 self.set_state(AlarmTypes.Bike, States.STARTING)
                 if self.debuglevel > 0:
