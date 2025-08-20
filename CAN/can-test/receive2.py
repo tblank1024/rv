@@ -1,14 +1,15 @@
 import os
 import can
 
-can0 = can.interface.Bus(channel= 'can0', bustype = 'socketcan')
-#can0 = can.interface.Bus(channel = 'can0', bustype = 'socketcan')# socketcan_nativewdocker
+print("Starting CAN receiver on can0...")
+can0 = can.interface.Bus(channel= 'can0', interface = 'socketcan')  # Updated API
 
-#msg = can.Message(arbitration_id=0x123, data=[0, 1, 2, 3, 4, 5, 6, 7], extended_id=False)
+print("Listening for messages... (Ctrl+C to stop)")
+timeout = 5.0
 for x in range(600):
-    msg = can0.recv(10.0)
+    msg = can0.recv(timeout)  
     if msg is None:
-        print('+++ Timeout occurred, no message.')
+        print(f'Rcvr: +++ Timeout {x+1}: no message.')
     else:
-        print (msg)
+        print(f"Rcvr: Message {x+1}: {msg}")
 
