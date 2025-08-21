@@ -17,14 +17,96 @@ from pprint import pprint
 import logging
 import mqttclient
 import random
+import subprocess
+import re
 
 logging.basicConfig()
 logging.getLogger('BLEAK_LOGGING').setLevel(logging.DEBUG)
+
+def get_bluetooth_adapter():
+    """
+    Detect available Bluetooth adapters and return the preferred one.
+    Prioritizes USB adapters over built-in UART adapters.
+    """
+    try:
+        # Run hciconfig to get adapter info
+        result = subprocess.run(['hciconfig'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("Warning: Could not run hciconfig, using default adapter")
+            return None
+            
+        output = result.stdout
+        adapters = []
+        
+        # Parse hciconfig output to find adapters
+        for line in output.split('\n'):
+            if ':' in line and ('Type:' in line):
+                # Extract adapter name and type
+                parts = line.split()
+                adapter_name = parts[0].rstrip(':')
+                
+                # Check if it's UP and RUNNING
+                if 'UP RUNNING' in line:
+                    # Check the bus type in the next lines
+                    if 'Bus: USB' in output:
+                        adapters.append((adapter_name, 'USB', True))
+                    elif 'Bus: UART' in output:
+                        adapters.append((adapter_name, 'UART', True))
+                    else:
+                        adapters.append((adapter_name, 'UNKNOWN', True))
+        
+        # Alternative method - parse more carefully
+        if not adapters:
+            adapter_blocks = output.split('\n\n')
+            for block in adapter_blocks:
+                if 'hci' in block and 'Type:' in block:
+                    lines = block.split('\n')
+                    adapter_name = None
+                    bus_type = 'UNKNOWN'
+                    is_up = False
+                    
+                    for line in lines:
+                        if line.startswith('hci') and ':' in line:
+                            adapter_name = line.split(':')[0].strip()
+                        elif 'Bus:' in line:
+                            if 'USB' in line:
+                                bus_type = 'USB'
+                            elif 'UART' in line:
+                                bus_type = 'UART'
+                        elif 'UP RUNNING' in line:
+                            is_up = True
+                    
+                    if adapter_name and is_up:
+                        adapters.append((adapter_name, bus_type, is_up))
+        
+        if not adapters:
+            print("Warning: No running Bluetooth adapters found")
+            return None
+            
+        # Prioritize USB adapters
+        usb_adapters = [a for a in adapters if a[1] == 'USB']
+        if usb_adapters:
+            selected = usb_adapters[0][0]
+            print(f"Selected USB Bluetooth adapter: {selected}")
+            return selected
+            
+        # Fallback to any running adapter
+        selected = adapters[0][0]
+        print(f"Selected Bluetooth adapter: {selected} (type: {adapters[0][1]})")
+        return selected
+        
+    except Exception as e:
+        print(f"Error detecting Bluetooth adapter: {e}")
+        return None
 
 #CONSTANTS
 DEV_MAC1 = 'F8:33:31:56:ED:16'
 DEV_MAC2 = 'F8:33:31:56:FB:8E'
 CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'          #GATT Characteristic UUID
+
+# Bluetooth adapter configuration - prioritize USB adapter
+PREFERRED_ADAPTER = "hci1"  # USB adapter
+FALLBACK_ADAPTER = "hci0"   # Built-in adapter (fallback only)
 
 #global variables
 LastMessage = ""
@@ -32,6 +114,8 @@ MsgCount = 0  # Initialize MsgCount
 LastVolt = 0
 LastAmps = 0
 Debug = 0
+SELECTED_ADAPTER = None  # Will be set at startup
+DataReceived = False  # Flag to log "Receiving Battery Data" only once
 
 def _MqttConnect():
     global MqttPubClient
@@ -101,7 +185,7 @@ def notification_handler_battery(sender, data):
     """
     
     global LastMessage, LastAmps, LastVolt, Debug, MsgCount
-    global file_ptr
+    global file_ptr, DataReceived
     
     # raw print of all data
     if Debug > 2:
@@ -114,62 +198,89 @@ def notification_handler_battery(sender, data):
     LastMessage += data.decode("utf-8")
     if data[len(data)-1] == 0x0A:  # end of record with 0x0A LF
         if len(LastMessage) < 45:          # end of complete record with 40 or so bytes
-            FieldData = LastMessage.split(",")
-            CurTime = int(time.time())
-            Volt    = float(FieldData[0])/100
-            Temp    = int(FieldData[5])
+            # Clean the message and split by comma
+            cleaned_message = LastMessage.strip().replace('\n', '').replace('\r', '')
+            FieldData = cleaned_message.split(",")
             
-            # Debug: Print field parsing details
-            if Debug > 2:
-                print(f"Raw message: {LastMessage}")
-                print(f"Field 7 (current): '{FieldData[7]}' = {int(FieldData[7])}")
-                print(f"Before 2x multiplication: {int(FieldData[7])}")
+            # Validate we have enough fields
+            if len(FieldData) < 9:
+                if Debug > 1:
+                    print(f"Warning: Incomplete data - only {len(FieldData)} fields: {cleaned_message}")
+                LastMessage = ""
+                return
             
-            Amps    = 2 * int(FieldData[7])  # 2x since only monitoring 1 of 2 batteries
-            
-            if Debug > 2:
-                print(f"After 2x multiplication: {Amps}")
-            
-            #NOTE: positive amps => charging and negative amps => discharging
-            Full    = int(FieldData[8])
-            Stat    = FieldData[9][0:6]
+            # Log "Receiving Battery Data" only once when first valid data arrives
+            if not DataReceived:
+                print("Receiving Battery Data")
+                DataReceived = True
+                
+            try:
+                CurTime = int(time.time())
+                Volt    = float(FieldData[0])/100
+                Temp    = int(FieldData[5])
+                
+                # Debug: Print field parsing details
+                if Debug > 2:
+                    print(f"Raw message: {LastMessage}")
+                    print(f"Cleaned message: {cleaned_message}")
+                    print(f"Field 7 (current): '{FieldData[7]}' = {int(FieldData[7])}")
+                    print(f"Before 2x multiplication: {int(FieldData[7])}")
+                
+                Amps    = 2 * int(FieldData[7])  # 2x since only monitoring 1 of 2 batteries
+                
+                if Debug > 2:
+                    print(f"After 2x multiplication: {Amps}")
+                
+                #NOTE: positive amps => charging and negative amps => discharging
+                Full    = int(FieldData[8])
+                Stat    = FieldData[9][0:6] if len(FieldData) > 9 else "000000"
 
-            #Now publish to MQTT           
-            """  target topic copied from json file provides easy tag IDs
-            "BATTERY_STATUS":{                         
-                    "instance":1,
-                    "name":"BATTERY_STATUS",
-                    "DC_voltage":                                               "_var18Batt_voltage",
-                    "DC_current":                                               "_var19Batt_current",
-                    "State_of_charge":                                          "_var20Batt_charge",
-                    "Status":                                                    ""},
-            """ 
-            #create dictionary with new data and publish
-            AllData = {}
-            AllData["instance"] = 1
-            AllData["name"] = "BATTERY_STATUS"
-            AllData["DC_voltage"] = Volt
-            AllData["DC_current"] = Amps
-            AllData["State_of_charge"] = Full
-            AllData["Status"] = Stat
-            AllData["timestamp"] = CurTime
-            
-            if Debug < 2:
-                (RtnCode, MsgCount) = MqttPubClient.pub(AllData)
-                if RtnCode != 0:
-                    print("MQTT pubclient error = ", RtnCode)
-                    _MqttConnect()  #wait until reconnected to mqtt broker
-            if Debug > 0:
-                if MsgCount % 20 == 0:
-                    print("Time     \tVolt\tTemp\tAmps\tFull\tStat")
-                if LastVolt == Volt and LastAmps == Amps:
-                    # No change from last measurement
-                    print("{}\t{}\t{}\\t{}\\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                else:
-                    print("{}\t{}\t{}\\t{}\\t{}\\t{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                    file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
-                LastVolt = Volt
-                LastAmps = Amps
+                #Now publish to MQTT           
+                """  target topic copied from json file provides easy tag IDs
+                "BATTERY_STATUS":{                         
+                        "instance":1,
+                        "name":"BATTERY_STATUS",
+                        "DC_voltage":                                               "_var18Batt_voltage",
+                        "DC_current":                                               "_var19Batt_current",
+                        "State_of_charge":                                          "_var20Batt_charge",
+                        "Status":                                                    ""},
+                """ 
+                #create dictionary with new data and publish
+                AllData = {}
+                AllData["instance"] = 1
+                AllData["name"] = "BATTERY_STATUS"
+                AllData["DC_voltage"] = Volt
+                AllData["DC_current"] = Amps
+                AllData["State_of_charge"] = Full
+                AllData["Status"] = Stat
+                AllData["timestamp"] = CurTime
+                
+                if Debug < 2:
+                    (RtnCode, MsgCount) = MqttPubClient.pub(AllData)
+                    if RtnCode != 0:
+                        print("MQTT pubclient error = ", RtnCode)
+                        _MqttConnect()  #wait until reconnected to mqtt broker
+                if Debug > 0:
+                    if MsgCount % 20 == 0:
+                        print("Time     \tVolt\tTemp\tAmps\tFull\tStat")
+                    if LastVolt == Volt and LastAmps == Amps:
+                        # No change from last measurement
+                        print("{}\t{}\t{}\t{}\t{}\t{}".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    else:
+                        print("{}\t{}\t{}\t{}\t{}\t{}<".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                        if 'file_ptr' in globals():
+                            file_ptr.write("{},{},{},{},{},{}\n".format(CurTime, Volt, Temp, Amps,Full,Stat))
+                    LastVolt = Volt
+                    LastAmps = Amps
+                
+            except (ValueError, IndexError) as e:
+                if Debug > 0:
+                    print(f"Error parsing battery data: {e}")
+                    print(f"Raw message: '{LastMessage}'")
+                    print(f"Cleaned message: '{cleaned_message}'")
+                    print(f"Fields: {FieldData}")
+                LastMessage = ""
+                return
 
 
         #Reset Vars
@@ -191,14 +302,22 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
 
     #make sure BLE stack isn't hung on this MAC address
     print('OneClient BLE watcher starting')
-    stream = os.popen('bluetoothctl disconnect ' + address1)
-    output = stream.read()
-    print('Bluetoothctl output = ', output)
+    if Debug > 1:  # Only show bluetoothctl output in verbose debug mode
+        stream = os.popen('bluetoothctl disconnect ' + address1)
+        output = stream.read()
+        print('Bluetoothctl output = ', output)
+    else:
+        # Silent cleanup
+        os.popen('bluetoothctl disconnect ' + address1).read()
     time.sleep(2)
 
     
     while True:
-        client1 = BleakClient(address1)
+        # Use the globally selected adapter
+        if SELECTED_ADAPTER:
+            client1 = BleakClient(address1, adapter=SELECTED_ADAPTER)
+        else:
+            client1 = BleakClient(address1)
         try:
             await client1.connect()
             atexit.register(cleanup)
@@ -222,11 +341,16 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
 
 async def TwoClient(address1, address2, char_uuid):  # need unique address and service address for each  todo
     #note: TwoClient is not as resiliant as the OneClient version;  could be updated to be more like OneClient todo
-    client1 = BleakClient(address1)
+    if SELECTED_ADAPTER:
+        client1 = BleakClient(address1, adapter=SELECTED_ADAPTER)
+        client2 = BleakClient(address2, adapter=SELECTED_ADAPTER)
+    else:
+        client1 = BleakClient(address1)
+        client2 = BleakClient(address2)
+        
     await client1.connect()
     print(f"Connectted 1: {client1.is_connected}")
 
-    client2 = BleakClient(address2)
     await client2.connect()
     print(f"Connectted 2: {client2.is_connected}")
 
@@ -254,13 +378,39 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 1  # Changed to 3 to see raw packet data
+    Debug = 0
     print("debug value = ", Debug)
+
+    # Detect and select the best Bluetooth adapter
+    print("Detecting Bluetooth adapters...")
+    SELECTED_ADAPTER = get_bluetooth_adapter()
+    if SELECTED_ADAPTER:
+        print(f"Using Bluetooth adapter: {SELECTED_ADAPTER}")
+    else:
+        print("Warning: Could not detect optimal adapter, using system default")
+
+    # Initialize file_ptr
+    file_ptr = None
 
     time.sleep(10)  # wait for mqtt broker to start:
     if Debug < 2:       #only pub to mqtt if debug is less than 2
-        _MqttConnect()
+        try:
+            _MqttConnect()
+        except Exception as e:
+            print(f"MQTT connection failed: {e}")
+            if Debug > 0:
+                print("Continuing in debug mode without MQTT...")
 
     if Debug > 0:
+        try:
             file_ptr = open("battery_raw.log","w")
-    asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
+            print("Opened log file: battery_raw.log")
+        except Exception as e:
+            print(f"Failed to open log file: {e}")
+    
+    print(f"Attempting to connect to Bluetooth device: {DEV_MAC1}")
+    try:
+        asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
+    except Exception as e:
+        print(f"Bluetooth connection failed: {e}")
+        print("Make sure the Bluetooth device is available and MAC address is correct")
