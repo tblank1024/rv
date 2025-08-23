@@ -6,6 +6,32 @@
 
 services:
 
+  # raspap:
+  #   container_name: raspap
+  #   image: ghcr.io/raspap/raspap-docker:latest
+  #   build: 
+  #     context: /home/tblank/code/raspap-docker
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "8081:8081"
+  #   privileged: true
+  #   network_mode: host
+  #   cgroup: host # uncomment when using an ARM device
+  #   environment:
+  #     - RASPAP_SSID=Sophie
+  #     - RASPAP_SSID_PASS=Buckley
+  #     - RASPAP_COUNTRY=GB
+  #     - RASPAP_WEBGUI_USER=admin
+  #     - RASPAP_WEBGUI_PASS=1Loki...
+  #     - RASPAP_WEBGUI_PORT=80
+  #   cap_add:
+  #     - SYS_ADMIN
+  #   volumes:
+  #     - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  #   restart: unless-stopped
+
+
+
   # MQTT Broker (Required - always enabled)
   mqtt:
     container_name: broker
@@ -40,16 +66,12 @@ services:
     network_mode: host
     depends_on:
       - mqtt
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
     volumes:
       - /run/dbus:/run/dbus:ro
-      - /sys/bus/usb:/sys/bus/usb:ro
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
     restart: always
     privileged: true
-    cap_add:
-      - NET_ADMIN
-      - SYS_ADMIN
 
   # Victron Solar Monitoring (ve.direct)
   ve.direct:
@@ -67,26 +89,27 @@ services:
       - mqtt 
 
  # GPIO Alarm System
-  # alarm:
-  #   build:
-  #     context: /home/tblank/code/tblank1024/rv/alarm
-  #     dockerfile: Dockerfile
-  #   container_name: alarm
-  #   network_mode: host
-  #   restart: always
-  #   image: alarm:latest
-  #   privileged: true
-  #   environment:
-  #     - GPIOZERO_PIN_FACTORY=lgpio
-  #   volumes:
-  #     - /dev:/dev
-  #   depends_on:
-  #     - mqtt
+  alarm:
+    build:
+      context: /home/tblank/code/tblank1024/rv/alarm
+      dockerfile: Dockerfile
+    container_name: alarm
+    network_mode: host
+    restart: always
+    image: alarm:latest
+    privileged: true
+    environment:
+      - GPIOZERO_PIN_FACTORY=lgpio
+    volumes:
+      - /dev:/dev
+    depends_on:
+      - mqtt
  
   # Web Dashboard Interface
   webserver:
     environment:
       - TZ=America/Los_Angeles
+      - PYTHONUNBUFFERED=1
     build:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
