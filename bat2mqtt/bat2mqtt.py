@@ -23,80 +23,171 @@ import re
 logging.basicConfig()
 logging.getLogger('BLEAK_LOGGING').setLevel(logging.DEBUG)
 
+def configure_bluetooth_adapters():
+    """
+    Comprehensive Bluetooth adapter configuration.
+    Ensures USB adapter is enabled and built-in adapter is disabled.
+    Returns True if configuration was successful.
+    """
+    print("=== Comprehensive Bluetooth Configuration ===")
+    
+    try:
+        # Stop bluetooth service for clean configuration
+        print("Stopping bluetooth service for clean configuration...")
+        subprocess.run(['sudo', 'systemctl', 'stop', 'bluetooth'], capture_output=True)
+        time.sleep(2)
+        
+        # Unblock all bluetooth devices
+        print("Unblocking all Bluetooth devices...")
+        subprocess.run(['sudo', 'rfkill', 'unblock', 'bluetooth'], capture_output=True)
+        
+        # Check what adapters exist
+        print("Checking available adapters...")
+        result = subprocess.run(['hciconfig'], capture_output=True, text=True)
+        
+        has_hci0 = 'hci0:' in result.stdout
+        has_hci1 = 'hci1:' in result.stdout
+        
+        print(f"Built-in adapter (hci0): {'Found' if has_hci0 else 'Not found'}")
+        print(f"USB adapter (hci1): {'Found' if has_hci1 else 'Not found'}")
+        
+        # Disable built-in adapter if it exists
+        if has_hci0:
+            print("Disabling built-in adapter (hci0)...")
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], capture_output=True)
+        
+        # Configure USB adapter if it exists
+        if has_hci1:
+            print("Configuring USB adapter (hci1)...")
+            # Down first to reset
+            subprocess.run(['sudo', 'hciconfig', 'hci1', 'down'], capture_output=True)
+            time.sleep(1)
+            # Bring it up
+            subprocess.run(['sudo', 'hciconfig', 'hci1', 'up'], capture_output=True)
+            time.sleep(2)
+        else:
+            print("[ERROR] USB adapter (hci1) not found - check USB connection")
+            return False
+        
+        # Restart bluetooth service
+        print("Restarting bluetooth service...")
+        subprocess.run(['sudo', 'systemctl', 'start', 'bluetooth'], capture_output=True)
+        time.sleep(3)
+        
+        # Force disable hci0 again after service restart (it tends to come back up)
+        if has_hci0:
+            print("Force disabling hci0 again (post-service restart)...")
+            subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], capture_output=True)
+            time.sleep(1)
+        
+        # Verify final configuration
+        result = subprocess.run(['hciconfig'], capture_output=True, text=True)
+        
+        hci0_running = has_hci0 and 'hci0:' in result.stdout and 'UP RUNNING' in result.stdout
+        hci1_running = has_hci1 and 'hci1:' in result.stdout and 'UP RUNNING' in result.stdout
+        
+        print("=== Configuration Results ===")
+        if has_hci0:
+            print(f"Built-in adapter (hci0): {'RUNNING (conflict!)' if hci0_running else 'DISABLED (good)'}")
+        if has_hci1:
+            print(f"USB adapter (hci1): {'RUNNING (good)' if hci1_running else 'FAILED'}")
+        
+        success = hci1_running and (not has_hci0 or not hci0_running)
+        print(f"Overall configuration: {'SUCCESS' if success else 'PARTIAL SUCCESS' if hci1_running else 'FAILED'}")
+        
+        return hci1_running  # Return success if hci1 is running, even if hci0 is still up
+        
+    except Exception as e:
+        print(f"[ERROR] Configuration failed: {e}")
+        return False
+
+
 def get_bluetooth_adapter():
     """
     Detect available Bluetooth adapters and return the preferred one.
     Prioritizes USB adapters over built-in UART adapters.
     """
+    print("=== Bluetooth Adapter Detection ===")
+    
     try:
         # Run hciconfig to get adapter info
         result = subprocess.run(['hciconfig'], capture_output=True, text=True)
         if result.returncode != 0:
-            print("Warning: Could not run hciconfig, using default adapter")
+            print("ERROR: Could not run hciconfig - is bluetoothctl installed?")
             return None
             
         output = result.stdout
+        print("Current adapter status:")
+        print(output)
+        print("=" * 40)
+        
         adapters = []
         
-        # Parse hciconfig output to find adapters
-        for line in output.split('\n'):
-            if ':' in line and ('Type:' in line):
-                # Extract adapter name and type
-                parts = line.split()
-                adapter_name = parts[0].rstrip(':')
+        # Parse hciconfig output block by block
+        adapter_blocks = output.split('\n\n')
+        for block in adapter_blocks:
+            if not block.strip() or 'hci' not in block:
+                continue
                 
-                # Check if it's UP and RUNNING
-                if 'UP RUNNING' in line:
-                    # Check the bus type in the next lines
-                    if 'Bus: USB' in output:
-                        adapters.append((adapter_name, 'USB', True))
-                    elif 'Bus: UART' in output:
-                        adapters.append((adapter_name, 'UART', True))
-                    else:
-                        adapters.append((adapter_name, 'UNKNOWN', True))
-        
-        # Alternative method - parse more carefully
-        if not adapters:
-            adapter_blocks = output.split('\n\n')
-            for block in adapter_blocks:
-                if 'hci' in block and 'Type:' in block:
-                    lines = block.split('\n')
-                    adapter_name = None
-                    bus_type = 'UNKNOWN'
-                    is_up = False
-                    
-                    for line in lines:
-                        if line.startswith('hci') and ':' in line:
-                            adapter_name = line.split(':')[0].strip()
-                        elif 'Bus:' in line:
-                            if 'USB' in line:
-                                bus_type = 'USB'
-                            elif 'UART' in line:
-                                bus_type = 'UART'
-                        elif 'UP RUNNING' in line:
-                            is_up = True
-                    
-                    if adapter_name and is_up:
-                        adapters.append((adapter_name, bus_type, is_up))
-        
-        if not adapters:
-            print("Warning: No running Bluetooth adapters found")
-            return None
+            lines = block.split('\n')
+            adapter_name = None
+            bus_type = 'UNKNOWN'
+            is_up = False
+            is_running = False
             
-        # Prioritize USB adapters
+            for line in lines:
+                line = line.strip()
+                if line.startswith('hci') and ':' in line:
+                    # Extract adapter name from first line
+                    adapter_name = line.split(':')[0].strip()
+                elif 'Bus:' in line:
+                    if 'USB' in line:
+                        bus_type = 'USB'
+                    elif 'UART' in line:
+                        bus_type = 'UART'
+                elif 'UP' in line and 'RUNNING' in line:
+                    is_up = True
+                    is_running = True
+                elif 'DOWN' in line:
+                    is_up = False
+            
+            if adapter_name:
+                adapters.append((adapter_name, bus_type, is_up, is_running))
+                status = "UP and RUNNING" if (is_up and is_running) else "DOWN or not running"
+                print(f"Found adapter: {adapter_name} (Bus: {bus_type}, Status: {status})")
+        
+        if not adapters:
+            print("ERROR: No Bluetooth adapters found!")
+            return None
+        
+        print(f"\nTotal adapters found: {len(adapters)}")
+        
+        # Prioritize USB adapters that are running
+        running_usb_adapters = [a for a in adapters if a[1] == 'USB' and a[2] and a[3]]
+        if running_usb_adapters:
+            selected = running_usb_adapters[0][0]
+            print(f"[OK] Selected running USB adapter: {selected}")
+            return selected
+        
+        # Check if USB adapter exists but isn't running
         usb_adapters = [a for a in adapters if a[1] == 'USB']
         if usb_adapters:
             selected = usb_adapters[0][0]
-            print(f"Selected USB Bluetooth adapter: {selected}")
+            print(f"[WARN] USB adapter found but not running: {selected}")
             return selected
             
-        # Fallback to any running adapter
-        selected = adapters[0][0]
-        print(f"Selected Bluetooth adapter: {selected} (type: {adapters[0][1]})")
-        return selected
+        # Last resort - any running adapter
+        running_adapters = [a for a in adapters if a[2] and a[3]]
+        if running_adapters:
+            selected = running_adapters[0][0]
+            print(f"[WARN] Selected fallback adapter: {selected} (type: {running_adapters[0][1]})")
+            return selected
+        
+        print("[ERROR] No suitable Bluetooth adapters found!")
+        return None
         
     except Exception as e:
-        print(f"Error detecting Bluetooth adapter: {e}")
+        print(f"ERROR in Bluetooth adapter detection: {e}")
         return None
 
 #CONSTANTS
@@ -301,39 +392,83 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
             file_ptr.close()
 
     #make sure BLE stack isn't hung on this MAC address
-    print('OneClient BLE watcher starting')
+    print('=== OneClient BLE Connection Starting ===')
+    print(f"Target device MAC: {address1}")
+    print(f"Selected Bluetooth adapter: {SELECTED_ADAPTER}")
+    
     if Debug > 1:  # Only show bluetoothctl output in verbose debug mode
         stream = os.popen('bluetoothctl disconnect ' + address1)
         output = stream.read()
-        print('Bluetoothctl output = ', output)
+        print('Bluetoothctl disconnect output:', output)
     else:
         # Silent cleanup
         os.popen('bluetoothctl disconnect ' + address1).read()
     time.sleep(2)
 
+    connection_attempts = 0
+    max_attempts = 10
     
-    while True:
+    while connection_attempts < max_attempts:
+        connection_attempts += 1
+        print(f"\n--- Connection attempt {connection_attempts}/{max_attempts} ---")
+        
         # Use the globally selected adapter
         if SELECTED_ADAPTER:
+            print(f"Creating BleakClient with adapter: {SELECTED_ADAPTER}")
             client1 = BleakClient(address1, adapter=SELECTED_ADAPTER)
         else:
+            print("Creating BleakClient with system default adapter")
             client1 = BleakClient(address1)
+            
         try:
+            print(f"Attempting to connect to {address1}...")
             await client1.connect()
             atexit.register(cleanup)
-            print(f"OneClient Connected 1: {client1.is_connected}")
+            print(f"[OK] OneClient Connected: {client1.is_connected}")
+            
+            # Verify which adapter we're actually using
+            try:
+                # Try to get device info to confirm connection
+                if hasattr(client1, '_device'):
+                    print(f"Connected device info: {client1._device}")
+                if hasattr(client1, '_backend') and hasattr(client1._backend, '_adapter'):
+                    print(f"Backend adapter: {client1._backend._adapter}")
+            except Exception as e:
+                print(f"Could not get detailed connection info: {e}")
+                
             break
-        except:
-            print("BLE trying again")
-            time.sleep(2)
-            stream = os.popen('bluetoothctl disconnect ' + address1)
-            output = stream.read()
-            print('Bluetoothctl output = ', output)
             
+        except Exception as e:
+            print(f"[ERROR] Connection attempt {connection_attempts} failed: {e}")
             
+            if connection_attempts < max_attempts:
+                print("Cleaning up and retrying...")
+                time.sleep(5)
+                
+                # Try to disconnect any hanging connections
+                stream = os.popen('bluetoothctl disconnect ' + address1)
+                output = stream.read()
+                if Debug > 1:
+                    print('Bluetoothctl cleanup output:', output)
+                    
+                # If we're having trouble and this is a later attempt, try reconfiguring
+                if connection_attempts >= 3:
+                    print("Multiple failures - attempting to reconfigure Bluetooth...")
+                    try:
+                        subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], capture_output=True)
+                        subprocess.run(['sudo', 'hciconfig', 'hci1', 'up'], capture_output=True)
+                        time.sleep(3)
+                    except Exception as config_e:
+                        print(f"Could not reconfigure adapters: {config_e}")
+            else:
+                print(f"[ERROR] All {max_attempts} connection attempts failed!")
+                raise e
 
+    print(f"Starting notifications on characteristic: {char_uuid}")
     await client1.start_notify(char_uuid, notification_handler_battery)
+    print("[OK] Notifications started successfully")
     
+    print("Entering main loop - waiting for battery data...")
     while True:
         await asyncio.sleep(5.0)
     
@@ -378,39 +513,109 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 0
-    print("debug value = ", Debug)
+    Debug = 0  # Production mode
+    print("=== bat2mqtt Starting ===")
+    print(f"Debug level: {Debug}")
+    print(f"Target device MAC: {DEV_MAC1}")
+    print(f"Characteristic UUID: {CHARACTERISTIC_UUID}")
 
     # Detect and select the best Bluetooth adapter
-    print("Detecting Bluetooth adapters...")
+    print("\n=== Bluetooth Adapter Configuration ===")
+    
+    # First, try to detect current state
     SELECTED_ADAPTER = get_bluetooth_adapter()
+    
+    # If no USB adapter is running, try comprehensive configuration
+    if not SELECTED_ADAPTER or SELECTED_ADAPTER != 'hci1':
+        print("\nUSB adapter not optimal - attempting comprehensive configuration...")
+        if configure_bluetooth_adapters():
+            print("Configuration successful - re-detecting adapters...")
+            SELECTED_ADAPTER = get_bluetooth_adapter()
+        else:
+            print("Configuration failed - proceeding with current state...")
+    
+    # Force preference for hci1 if available
+    if SELECTED_ADAPTER != 'hci1':
+        print("Checking for USB adapter (hci1) availability...")
+        try:
+            result = subprocess.run(['hciconfig', 'hci1'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("Found hci1 (USB adapter)")
+                if 'UP RUNNING' in result.stdout:
+                    SELECTED_ADAPTER = 'hci1'
+                    print("[OK] Forcing use of USB adapter: hci1")
+                else:
+                    print("[WARN] hci1 exists but is not UP RUNNING")
+            else:
+                print("[INFO] hci1 (USB adapter) not found")
+        except Exception as e:
+            print(f"[WARN] Error checking hci1: {e}")
+    
+    
     if SELECTED_ADAPTER:
-        print(f"Using Bluetooth adapter: {SELECTED_ADAPTER}")
+        print(f"[OK] Final selected adapter: {SELECTED_ADAPTER}")
+        
+        # Verify the selected adapter is actually working
+        try:
+            result = subprocess.run(['hciconfig', SELECTED_ADAPTER], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"Adapter status for {SELECTED_ADAPTER}:")
+                print(result.stdout)
+                if 'UP RUNNING' in result.stdout:
+                    print(f"[OK] Adapter {SELECTED_ADAPTER} is UP and RUNNING")
+                else:
+                    print(f"[WARN]  Adapter {SELECTED_ADAPTER} is not in optimal state")
+            else:
+                print(f"[ERROR] Could not query adapter {SELECTED_ADAPTER}")
+        except Exception as e:
+            print(f"[WARN]  Could not verify adapter status: {e}")
     else:
-        print("Warning: Could not detect optimal adapter, using system default")
+        print("[ERROR] CRITICAL: No suitable Bluetooth adapter found!")
+        print("Please ensure:")
+        print("1. USB Bluetooth adapter is connected")
+        print("2. Run the configure_bluetooth.sh script")
+        print("3. Bluetooth services are running")
+        sys.exit(1)
 
     # Initialize file_ptr
     file_ptr = None
 
+    print(f"\nWaiting 10 seconds for MQTT broker to start...")
     time.sleep(10)  # wait for mqtt broker to start:
+    
     if Debug < 2:       #only pub to mqtt if debug is less than 2
         try:
+            print("Connecting to MQTT broker...")
             _MqttConnect()
+            print("[OK] MQTT connection established")
         except Exception as e:
-            print(f"MQTT connection failed: {e}")
+            print(f"[ERROR] MQTT connection failed: {e}")
             if Debug > 0:
                 print("Continuing in debug mode without MQTT...")
+            else:
+                print("MQTT is required for normal operation. Set Debug > 0 to continue without MQTT.")
+                sys.exit(1)
 
     if Debug > 0:
         try:
             file_ptr = open("battery_raw.log","w")
-            print("Opened log file: battery_raw.log")
+            print("[OK] Opened log file: battery_raw.log")
         except Exception as e:
-            print(f"Failed to open log file: {e}")
+            print(f"[WARN]  Failed to open log file: {e}")
     
-    print(f"Attempting to connect to Bluetooth device: {DEV_MAC1}")
+    print(f"\n=== Starting Bluetooth Connection ===")
+    print(f"Connecting to device: {DEV_MAC1}")
+    print(f"Using adapter: {SELECTED_ADAPTER}")
+    
     try:
         asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
+    except KeyboardInterrupt:
+        print("\n[STOP] Keyboard interrupt received - shutting down gracefully")
     except Exception as e:
-        print(f"Bluetooth connection failed: {e}")
-        print("Make sure the Bluetooth device is available and MAC address is correct")
+        print(f"[ERROR] Bluetooth connection failed: {e}")
+        print("\nTroubleshooting steps:")
+        print("1. Verify the Bluetooth device is powered on and in range")
+        print("2. Check that the MAC address is correct:", DEV_MAC1)
+        print("3. Run configure_bluetooth.sh to ensure proper adapter configuration")
+        print("4. Try running with Debug = 1 for more detailed output")
+        sys.exit(1)
