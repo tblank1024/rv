@@ -1,0 +1,12 @@
+[Unit]
+Description=RaspAP Bridge Setup
+After=network.target systemd-networkd.service
+Wants=systemd-networkd.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/tblank/code/tblank1024/rv/raspap/setup-bridge.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
