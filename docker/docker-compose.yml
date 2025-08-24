@@ -30,8 +30,6 @@ services:
   #     - /sys/fs/cgroup:/sys/fs/cgroup:rw
   #   restart: unless-stopped
 
-
-
   # MQTT Broker (Required - always enabled)
   mqtt:
     container_name: broker
