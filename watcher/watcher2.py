@@ -254,9 +254,9 @@ class mqttclient():
         # reconnect then subscriptions will be renewed.
         # client.subscribe("$SYS/#")
         
-        # Subscribe to both specific topics and wildcard patterns for battery data
-        client.subscribe("RVC/BATTERY_STATUS/+", 0)  # Subscribe to all instances
-        client.subscribe("RVC/BATTERY_STATUS", 0)    # Subscribe to base topic
+        # Subscribe to battery status topics
+        client.subscribe("RVC/BATTERY_STATUS/+", 0)     # Subscribe to all instances of BATTERY_STATUS
+        client.subscribe("RVC/BATTERY_STATUS", 0)       # Subscribe to base topic
         
         for name in TargetTopics:
             if debug>0:
@@ -264,7 +264,6 @@ class mqttclient():
             client.subscribe(name,0)
         if debug > 0:
             print('Conected to MQTT and Running')
-            print('Also subscribed to: RVC/BATTERY_STATUS/+ for all instances')
     
     def _on_disconnect(self, client, userdata, rc):
         print('Disconnected from MQTT server.  Result code = ', rc)
@@ -298,31 +297,19 @@ class mqttclient():
         msg_dict = json.loads(msg.payload.decode('utf-8'))
         msg_dict['topic'] = msg.topic   #add MQTT topic to the dictionary
         
-        # Enhanced console output for battery data from bat2mqtt
-        if msg.topic == "RVC/BATTERY_STATUS/1":
+        # Enhanced console output for battery data
+        if msg.topic.startswith("RVC/BATTERY_STATUS"):
             timestamp = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
             print(f"\n=== BATTERY DATA RECEIVED ===")
             print(f"Timestamp: {timestamp}")
             print(f"Topic: {msg.topic}")
             
             # Print all available battery data
-            if "DC_voltage" in msg_dict:
-                print(f"Voltage: {msg_dict['DC_voltage']}V")
-            if "DC_current" in msg_dict:
-                print(f"Current: {msg_dict['DC_current']}A")
-            if "State_of_charge" in msg_dict:
-                print(f"State of Charge: {msg_dict['State_of_charge']}%")
-            if "Status" in msg_dict:
-                print(f"Status: {msg_dict['Status']}")
-            if "timestamp" in msg_dict:
-                print(f"Data Timestamp: {msg_dict['timestamp']}")
-            
-            # Print raw message for debugging
-            if debug > 0:
-                print(f"Raw MQTT Payload: {msg.payload.decode('utf-8')}")
-            print("============================\n")
-        
-        # Also print any other RVC messages for debugging
+            for key, value in msg_dict.items():
+                if key != 'topic':
+                    print(f"{key}: {value}")
+            print("=" * 30)
+
         elif msg.topic.startswith("RVC/") and debug > 0:
             timestamp = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{timestamp}] Other RVC Message - Topic: {msg.topic}, Data: {msg_dict}")
@@ -421,7 +408,7 @@ Watched_list = {
 }
 
 Watched_Vars = {
-    "BATTERY_STATUS": {
+    "BATTERY_STATUS/1": {
         "instance": 1,
         "name": "BATTERY_STATUS",
         "DC_voltage": "_var18Batt_voltage",

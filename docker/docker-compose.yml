@@ -86,7 +86,7 @@ services:
   bat2mqtt:
     build:
       context: /home/tblank/code/tblank1024/rv/bat2mqtt
-      dockerfile: Dockerfile.gatttool
+      dockerfile: Dockerfile
     container_name: battery
     image: bat2mqtt:gatttool
     network_mode: host
