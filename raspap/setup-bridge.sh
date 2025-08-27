@@ -20,4 +20,27 @@ fi
 # Ensure iptables forwarding is enabled for the bridge
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
+# Configure custom DNS entries for dnsmasq
+DNSMASQ_CONFIG="/etc/dnsmasq.d/090_br0.conf"
+if [ -f "$DNSMASQ_CONFIG" ]; then
+    # Check if custom DNS entries already exist
+    if ! grep -q "address=/sophie/10.0.0.1" "$DNSMASQ_CONFIG"; then
+        echo "[$(date)] Adding custom DNS entries to dnsmasq" >> "$LOG_FILE"
+        echo "" >> "$DNSMASQ_CONFIG"
+        echo "# Custom DNS entries" >> "$DNSMASQ_CONFIG"
+        echo "address=/sophie/10.0.0.1" >> "$DNSMASQ_CONFIG"
+        echo "address=/www.sophie/10.0.0.1" >> "$DNSMASQ_CONFIG"
+        
+        # Restart dnsmasq to apply changes
+        if systemctl is-active --quiet dnsmasq; then
+            systemctl restart dnsmasq
+            echo "[$(date)] dnsmasq restarted with new DNS entries" >> "$LOG_FILE"
+        fi
+    else
+        echo "[$(date)] Custom DNS entries already exist in dnsmasq config" >> "$LOG_FILE"
+    fi
+else
+    echo "[$(date)] Warning: dnsmasq config file not found at $DNSMASQ_CONFIG" >> "$LOG_FILE"
+fi
+
 echo "[$(date)] Bridge setup complete" >> "$LOG_FILE"

@@ -1,0 +1,6 @@
+# Minimal requirements for pygatt implementation
+# This bypasses BlueZ D-Bus issues completely
+
+pygatt>=4.0.5
+paho-mqtt>=1.6.1  
+pexpect>=4.8.0

@@ -7,7 +7,7 @@ import json
 import asyncio
 import platform
 
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 import atexit
 import time
 import os
@@ -140,6 +140,11 @@ def get_bluetooth_adapter():
                 if line.startswith('hci') and ':' in line:
                     # Extract adapter name from first line
                     adapter_name = line.split(':')[0].strip()
+                    # Check for bus type in the same line
+                    if 'Bus: USB' in line:
+                        bus_type = 'USB'
+                    elif 'Bus: UART' in line:
+                        bus_type = 'UART'
                 elif 'Bus:' in line:
                     if 'USB' in line:
                         bus_type = 'USB'
@@ -189,6 +194,116 @@ def get_bluetooth_adapter():
     except Exception as e:
         print(f"ERROR in Bluetooth adapter detection: {e}")
         return None
+
+
+async def scan_for_devices(adapter=None, scan_time=10.0):
+    """
+    Scan for BLE devices and return information about discovered devices.
+    This helps debug connectivity issues by showing what devices are visible.
+    """
+    print(f"\n=== Scanning for BLE devices (scan time: {scan_time}s) ===")
+    
+    try:
+        if adapter:
+            print(f"Using adapter: {adapter}")
+            scanner = BleakScanner(adapter=adapter)
+        else:
+            print("Using default adapter")
+            scanner = BleakScanner()
+        
+        print("Starting scan...")
+        devices = await scanner.discover(timeout=scan_time)
+        
+        print(f"Found {len(devices)} devices:")
+        print("-" * 80)
+        
+        target_found = False
+        for device in devices:
+            # Check if this is our target device
+            is_target = device.address.upper() == DEV_MAC1.upper() or device.address.upper() == DEV_MAC2.upper()
+            if is_target:
+                target_found = True
+                print(f"*** TARGET DEVICE FOUND ***")
+            
+            print(f"Address: {device.address}")
+            print(f"Name: {device.name or 'Unknown'}")
+            # Handle RSSI safely (some BLE devices may not have this attribute)
+            try:
+                print(f"RSSI: {device.rssi} dBm")
+            except AttributeError:
+                print("RSSI: Not available")
+            
+            # Print advertisement data if available
+            if hasattr(device, 'metadata') and device.metadata:
+                print(f"Metadata: {device.metadata}")
+            
+            print("-" * 40)
+        
+        if target_found:
+            print(f"\n[OK] Target device {DEV_MAC1} was found during scan!")
+            return True
+        else:
+            print(f"\n[WARN] Target device {DEV_MAC1} was NOT found during scan")
+            print("Possible issues:")
+            print("1. Device is not powered on or in range")
+            print("2. Device is not in advertising/discoverable mode") 
+            print("3. Device is already connected to another system")
+            print("4. Device requires bonding/pairing first")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] Device scan failed: {e}")
+        return False
+
+
+async def check_device_bonding(address, adapter=None):
+    """
+    Check if a device is bonded/paired and attempt to manage the connection.
+    """
+    print(f"\n=== Checking device bonding for {address} ===")
+    
+    try:
+        # Check if device is already bonded using bluetoothctl
+        result = subprocess.run(['bluetoothctl', 'paired-devices'], 
+                              capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            paired_devices = result.stdout
+            if address.upper() in paired_devices.upper():
+                print(f"[OK] Device {address} is already paired")
+                
+                # Try to connect via bluetoothctl
+                print(f"Attempting to connect via bluetoothctl...")
+                connect_result = subprocess.run(['bluetoothctl', 'connect', address],
+                                              capture_output=True, text=True, timeout=10)
+                
+                if connect_result.returncode == 0:
+                    print(f"[OK] Successfully connected to {address} via bluetoothctl")
+                    return True
+                else:
+                    print(f"[WARN] bluetoothctl connect failed: {connect_result.stderr}")
+            else:
+                print(f"[INFO] Device {address} is not paired")
+                
+                # Attempt to pair
+                print(f"Attempting to pair with {address}...")
+                pair_result = subprocess.run(['bluetoothctl', 'pair', address],
+                                           capture_output=True, text=True, timeout=15)
+                
+                if pair_result.returncode == 0:
+                    print(f"[OK] Successfully paired with {address}")
+                    return True
+                else:
+                    print(f"[WARN] Pairing failed: {pair_result.stderr}")
+        
+        return False
+        
+    except subprocess.TimeoutExpired:
+        print("[WARN] Bonding check timed out")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Bonding check failed: {e}")
+        return False
 
 #CONSTANTS
 DEV_MAC1 = 'F8:33:31:56:ED:16'
@@ -396,6 +511,18 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
     print(f"Target device MAC: {address1}")
     print(f"Selected Bluetooth adapter: {SELECTED_ADAPTER}")
     
+    # Perform device scan first to see what's available
+    print("\n=== Pre-connection Device Discovery ===")
+    device_found = await scan_for_devices(adapter=SELECTED_ADAPTER, scan_time=10.0)
+    
+    if not device_found:
+        print(f"\n[WARN] Target device not found in initial scan")
+        print("Attempting extended scan...")
+        device_found = await scan_for_devices(adapter=SELECTED_ADAPTER, scan_time=20.0)
+    
+    # Check device bonding status
+    bonding_ok = await check_device_bonding(address1, adapter=SELECTED_ADAPTER)
+    
     if Debug > 1:  # Only show bluetoothctl output in verbose debug mode
         stream = os.popen('bluetoothctl disconnect ' + address1)
         output = stream.read()
@@ -412,6 +539,11 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
         connection_attempts += 1
         print(f"\n--- Connection attempt {connection_attempts}/{max_attempts} ---")
         
+        # Perform a quick scan before each connection attempt (after the first few failures)
+        if connection_attempts >= 3:
+            print("Performing quick device scan before connection attempt...")
+            await scan_for_devices(adapter=SELECTED_ADAPTER, scan_time=5.0)
+        
         # Use the globally selected adapter
         if SELECTED_ADAPTER:
             print(f"Creating BleakClient with adapter: {SELECTED_ADAPTER}")
@@ -422,7 +554,7 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
             
         try:
             print(f"Attempting to connect to {address1}...")
-            await client1.connect()
+            await client1.connect(timeout=20.0)  # Increased timeout
             atexit.register(cleanup)
             print(f"[OK] OneClient Connected: {client1.is_connected}")
             
@@ -442,8 +574,9 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
             print(f"[ERROR] Connection attempt {connection_attempts} failed: {e}")
             
             if connection_attempts < max_attempts:
-                print("Cleaning up and retrying...")
-                time.sleep(5)
+                retry_delay = min(5 + connection_attempts * 2, 15)  # Progressive backoff
+                print(f"Cleaning up and retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
                 
                 # Try to disconnect any hanging connections
                 stream = os.popen('bluetoothctl disconnect ' + address1)
@@ -452,16 +585,37 @@ async def OneClient(address1, char_uuid):  # need unique address and service add
                     print('Bluetoothctl cleanup output:', output)
                     
                 # If we're having trouble and this is a later attempt, try reconfiguring
-                if connection_attempts >= 3:
+                if connection_attempts >= 5:
                     print("Multiple failures - attempting to reconfigure Bluetooth...")
                     try:
                         subprocess.run(['sudo', 'hciconfig', 'hci0', 'down'], capture_output=True)
+                        subprocess.run(['sudo', 'hciconfig', 'hci1', 'down'], capture_output=True)
+                        time.sleep(2)
                         subprocess.run(['sudo', 'hciconfig', 'hci1', 'up'], capture_output=True)
                         time.sleep(3)
                     except Exception as config_e:
                         print(f"Could not reconfigure adapters: {config_e}")
+                        
+                # Try connecting via bluetoothctl as a fallback
+                if connection_attempts >= 7:
+                    print("Attempting bluetoothctl connection as fallback...")
+                    try:
+                        connect_result = subprocess.run(['bluetoothctl', 'connect', address1],
+                                                      capture_output=True, text=True, timeout=15)
+                        if connect_result.returncode == 0:
+                            print("[OK] bluetoothctl connect succeeded - retrying BLE connection")
+                        else:
+                            print(f"[WARN] bluetoothctl connect failed: {connect_result.stderr}")
+                    except Exception as bt_e:
+                        print(f"[WARN] bluetoothctl fallback failed: {bt_e}")
             else:
                 print(f"[ERROR] All {max_attempts} connection attempts failed!")
+                print("\nFinal troubleshooting suggestions:")
+                print("1. Verify device is powered on and in range")
+                print("2. Check if device is connected to another system")
+                print("3. Try manual pairing: bluetoothctl -> scan on -> pair <address>")
+                print("4. Restart the Bluetooth device")
+                print("5. Check container privileges and device mappings")
                 raise e
 
     print(f"Starting notifications on characteristic: {char_uuid}")
@@ -513,7 +667,8 @@ if __name__ == "__main__":
     # 2 - does not log to mqtt and all of #1
     # 3 - #2 plus outputs raw packets received
     
-    Debug = 0  # Production mode
+    # Check for environment variable to set debug level
+    Debug = int(os.environ.get('DEBUG_LEVEL', '0'))  # Default to production mode
     print("=== bat2mqtt Starting ===")
     print(f"Debug level: {Debug}")
     print(f"Target device MAC: {DEV_MAC1}")
@@ -604,11 +759,49 @@ if __name__ == "__main__":
             print(f"[WARN]  Failed to open log file: {e}")
     
     print(f"\n=== Starting Bluetooth Connection ===")
-    print(f"Connecting to device: {DEV_MAC1}")
-    print(f"Using adapter: {SELECTED_ADAPTER}")
+    
+    # First try to find which device is available
+    available_device = None
+    device_name = None
     
     try:
-        asyncio.run( OneClient(DEV_MAC1,CHARACTERISTIC_UUID ) )
+        # Quick scan to see which device is available
+        import asyncio
+        async def find_available_device():
+            try:
+                if SELECTED_ADAPTER:
+                    scanner = BleakScanner(adapter=SELECTED_ADAPTER)
+                else:
+                    scanner = BleakScanner()
+                
+                devices = await scanner.discover(timeout=10.0)
+                
+                for device in devices:
+                    if device.address.upper() == DEV_MAC1.upper():
+                        return DEV_MAC1, device.name or "Battery1"
+                    elif device.address.upper() == DEV_MAC2.upper():
+                        return DEV_MAC2, device.name or "Battery2"
+                
+                return None, None
+            except Exception as e:
+                print(f"Device discovery error: {e}")
+                return None, None
+        
+        available_device, device_name = asyncio.run(find_available_device())
+        
+        if available_device:
+            print(f"Found available device: {available_device} ({device_name})")
+            print(f"Using adapter: {SELECTED_ADAPTER}")
+        else:
+            print(f"No target devices found, defaulting to: {DEV_MAC1}")
+            available_device = DEV_MAC1
+            
+    except Exception as e:
+        print(f"Device discovery failed: {e}, defaulting to: {DEV_MAC1}")
+        available_device = DEV_MAC1
+    
+    try:
+        asyncio.run( OneClient(available_device, CHARACTERISTIC_UUID ) )
     except KeyboardInterrupt:
         print("\n[STOP] Keyboard interrupt received - shutting down gracefully")
     except Exception as e:

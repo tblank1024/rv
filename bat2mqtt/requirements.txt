@@ -1,2 +1,7 @@
 bleak>=0.21.0
+# Original bat2mqtt requirements (bleak-based approach)
+bleak>=0.21.0
 paho-mqtt>=1.6.1
+
+# For gatttool approach, use requirements_gatttool.txt instead
+# For pygatt approach, use requirements_pygatt.txt instead

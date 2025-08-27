@@ -20,6 +20,7 @@ COPY bat2mqtt.py .
 COPY mqttclient.py .
 COPY requirements.txt .
 COPY dgn_variables.json .
+COPY bluetooth_debug.py .
 
 RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install -r requirements.txt

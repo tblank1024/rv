@@ -7,6 +7,8 @@
 services:
 
 
+
+
   # raspap:
   #   container_name: raspap
   #   image: ghcr.io/raspap/raspap-docker:latest
@@ -56,22 +58,54 @@ services:
     depends_on:
       - mqtt
 
-  # Bluetooth Battery Monitoring
+  # Bluetooth Battery Monitoring - LEGACY BLEAK APPROACH (COMMENTED OUT)
+  # bat2mqtt_bleak:
+  #   build:
+  #     context: /home/tblank/code/tblank1024/rv/bat2mqtt
+  #     dockerfile: Dockerfile
+  #   container_name: battery_bleak
+  #   image: bat2mqtt:bleak
+  #   network_mode: host
+  #   depends_on:
+  #     - mqtt
+  #   volumes:
+  #     - /run/dbus:/run/dbus:rw
+  #     - /var/run/dbus:/var/run/dbus:rw
+  #   devices:
+  #     - /dev/bus/usb:/dev/bus/usb
+  #   restart: always
+  #   privileged: true
+  #   cap_add:
+  #     - NET_ADMIN
+  #     - SYS_ADMIN
+  #   environment:
+  #     - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+
+  # Bluetooth Battery Monitoring - gatttool implementation
+  # Uses direct gatttool subprocess calls for reliable BLE connection
   bat2mqtt:
     build:
       context: /home/tblank/code/tblank1024/rv/bat2mqtt
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gatttool
     container_name: battery
-    image: bat2mqtt:latest
+    image: bat2mqtt:gatttool
     network_mode: host
     depends_on:
       - mqtt
     volumes:
+      - /home/tblank/code/tblank1024/rv/bat2mqtt/logs:/app/bat2mqtt/logs
       - /run/dbus:/run/dbus:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
     restart: always
     privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      - DEBUG_LEVEL=1
+      - MQTT_HOST=localhost
+      - MQTT_PORT=1883
 
   # Victron Solar Monitoring (ve.direct)
   ve.direct:
@@ -114,6 +148,7 @@ services:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
     container_name: webserver
+    image: webserver:latest
     network_mode: host
     restart: always
     depends_on:

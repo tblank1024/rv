@@ -1,0 +1,39 @@
+FROM python:3.11-slim-bookworm
+
+# Install system dependencies for Bluetooth and DBus
+RUN apt-get update && apt-get install -y \
+    dbus \
+    libdbus-1-dev \
+    bluez \
+    bluez-tools \
+    dbus-x11 \
+    bluetooth \
+    libbluetooth-dev \
+    pkg-config \
+    rfkill \
+    libglib2.0-dev \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/bat2mqtt
+WORKDIR /app/bat2mqtt
+
+# Copy only the files needed for pygatt implementation
+COPY bat2mqtt_pygatt.py .
+COPY mqttclient.py .
+COPY dgn_variables.json .
+COPY bluetooth_debug.py .
+COPY bt_stack_reset.sh .
+COPY requirements_pygatt.txt .
+
+# Install Python dependencies - minimal set for pygatt
+RUN python3 -m pip install --upgrade pip
+RUN python3 -m pip install -r requirements_pygatt.txt
+
+# Make reset script executable
+RUN chmod +x bt_stack_reset.sh
+
+# Start the pygatt implementation directly
+CMD ["python3", "-u", "bat2mqtt_pygatt.py"]
+
+# To build: docker build -f Dockerfile.pygatt -t bat2mqtt:pygatt .
