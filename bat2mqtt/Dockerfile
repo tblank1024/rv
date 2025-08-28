@@ -18,17 +18,17 @@ RUN apt-get update && apt-get install -y \
 RUN mkdir -p /app/bat2mqtt
 WORKDIR /app/bat2mqtt
 
-# Copy only the files needed for pygatt implementation
-COPY bat2mqtt_pygatt.py .
+# Copy only the files needed for bat2mqtt implementation
+COPY bat2mqtt.py .
 COPY mqttclient.py .
 COPY dgn_variables.json .
-COPY requirements_pygatt.txt .
+COPY requirements.txt .
 
-# Install Python dependencies - minimal set for pygatt
+# Install Python dependencies
 RUN python3 -m pip install --upgrade pip
-RUN python3 -m pip install -r requirements_pygatt.txt
+RUN python3 -m pip install -r requirements.txt
 
-# Start the pygatt implementation directly
-CMD ["python3", "-u", "bat2mqtt_pygatt.py"]
+# Start the regular implementation directly
+CMD ["python3", "-u", "bat2mqtt.py"]
 
 # To build: docker build -f Dockerfile.pygatt -t bat2mqtt:pygatt .

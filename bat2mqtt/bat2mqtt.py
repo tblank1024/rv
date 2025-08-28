@@ -41,11 +41,12 @@ msg_count = 0
 
 class MqttClient:
     """Simple MQTT client wrapper"""
-    def __init__(self, host="localhost", port=1883):
+    def __init__(self, host="localhost", port=1883, debug_level=0):
         self.host = host
         self.port = port
         self.connected = False
         self.msg_count = 0
+        self.debug_level = debug_level
         
         try:
             import paho.mqtt.client as mqtt
@@ -101,7 +102,8 @@ class MqttClient:
             
             if result.rc == self.mqtt.MQTT_ERR_SUCCESS:
                 self.msg_count += 1
-                logger.info(f"Published to {topic}: {data}")
+                if self.debug_level > 0:
+                    logger.info(f"Published to {topic}: {data}")
                 return True
             else:
                 logger.error(f"MQTT publish failed: {result.rc}")
@@ -411,7 +413,7 @@ def main():
     # Setup MQTT if not in debug mode
     if debug_level < 2:
         logger.info("Setting up MQTT connection...")
-        mqtt_client = MqttClient()
+        mqtt_client = MqttClient(debug_level=debug_level)
         if not mqtt_client.connect():
             logger.warning("MQTT connection failed - continuing without MQTT")
     

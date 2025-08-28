@@ -103,7 +103,7 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
     environment:
-      - DEBUG_LEVEL=1
+      - DEBUG_LEVEL=0
       - MQTT_HOST=localhost
       - MQTT_PORT=1883
 
