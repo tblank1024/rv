@@ -342,16 +342,16 @@ def notification_handler_battery(sender, data):
     in a BCD format seperated by commas.  The end of record termination is \r.
     Data is comma seperated BCD ASCII values; Not necessarily in a fixed position but close
     CSV datafields are:
-    1 - Battery voltage (assume 2 decimal positions)
-    2 - Battery cell 1 status
-    3 - Battery cell 2 status
-    4 - Battery cell 3 status
-    5 - Battery cell 4 status
-    6 - Battery Temp in F
-    7 - Battery Mgmnt Sys Temp in F
-    8 - Current in amps +/-
-    9 - Percent Battery full
-    10 - Battery Status
+    0 - Battery voltage (assume 2 decimal positions)
+    1 - Battery cell 1 status
+    2 - Battery cell 2 status
+    3 - Battery cell 3 status
+    4 - Battery cell 4 status
+    5 - Battery Temp in F
+    6 - Battery Mgmnt Sys Temp in F
+    7 - Current in amps +/-
+    8 - Percent Battery full
+    9 - Battery Status
     (Total number of bytes seems constant at 40 across 3 messsages)
 
     Each return provides 20 bytes in the following format (that changes a little depending on result values)
