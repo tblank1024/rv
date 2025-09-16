@@ -95,6 +95,8 @@ services:
     volumes:
       - /home/tblank/code/tblank1024/rv/bat2mqtt/logs:/app/bat2mqtt/logs
       - /run/dbus:/run/dbus:ro
+      - /sys/class/bluetooth:/sys/class/bluetooth:ro
+      - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
     restart: always

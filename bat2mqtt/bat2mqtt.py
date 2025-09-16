@@ -15,7 +15,6 @@ import logging
 import signal
 import re
 import json
-from queue import Queue, Empty
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,7 +26,7 @@ DEV_MAC2 = 'F8:33:31:56:FB:8E'
 CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'
 NOTIFICATION_HANDLE = '0x0013'  # The handle that worked in manual testing
 DATA_HANDLE = '0x0012'  # The actual data handle (discovered from testing!)
-ADAPTER = 'hci1'  # USB adapter
+ADAPTER = 'hci1'  # Default USB adapter - will be auto-detected and updated
 
 # Global variables
 debug_level = 0
@@ -102,7 +101,7 @@ class MqttClient:
             
             if result.rc == self.mqtt.MQTT_ERR_SUCCESS:
                 self.msg_count += 1
-                if self.debug_level > 0:
+                if self.debug_level > 1:
                     logger.info(f"Published to {topic}: {data}")
                 return True
             else:
@@ -113,9 +112,126 @@ class MqttClient:
             logger.error(f"MQTT publish error: {e}")
             return False
 
+def detect_usb_bluetooth_adapter():
+    """
+    Automatically detect which Bluetooth adapter is USB-connected.
+    Returns the adapter name (e.g., 'hci1') or None if not found.
+    """
+    logger.info("=== Detecting USB Bluetooth Adapters ===")
+    
+    try:
+        # Method 1: Check hciconfig output for Bus type
+        result = subprocess.run(['hciconfig'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            usb_adapters = []
+            lines = result.stdout.split('\n')
+            current_adapter = None
+            
+            for line in lines:
+                # Look for adapter lines like "hci1:   Type: Primary  Bus: USB"
+                if line.startswith('hci') and ':' in line:
+                    current_adapter = line.split(':')[0].strip()
+                    # Check if the bus type is on the same line
+                    if 'Type: Primary  Bus: USB' in line:
+                        usb_adapters.append(current_adapter)
+                        logger.info(f"✓ Found USB Bluetooth adapter: {current_adapter}")
+                elif current_adapter and 'Bus: USB' in line:
+                    usb_adapters.append(current_adapter)
+                    logger.info(f"✓ Found USB Bluetooth adapter: {current_adapter}")
+            
+            if usb_adapters:
+                # Return the first USB adapter found
+                selected_adapter = usb_adapters[0]
+                
+                # Method 2: Double-check by examining sysfs uevent
+                try:
+                    uevent_path = f"/sys/class/bluetooth/{selected_adapter}/device/uevent"
+                    with open(uevent_path, 'r') as f:
+                        uevent_content = f.read()
+                    
+                    if 'DEVTYPE=usb_interface' in uevent_content or 'DRIVER=btusb' in uevent_content:
+                        logger.info(f"✓ Verified {selected_adapter} is USB-connected via sysfs")
+                        
+                        # Method 3: Cross-reference with lsusb
+                        lsusb_result = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
+                        if lsusb_result.returncode == 0 and 'bluetooth' in lsusb_result.stdout.lower():
+                            logger.info("✓ USB Bluetooth device confirmed via lsusb")
+                        
+                        return selected_adapter
+                    else:
+                        logger.warning(f"Adapter {selected_adapter} not confirmed as USB via sysfs")
+                        
+                except (IOError, OSError) as e:
+                    logger.warning(f"Could not verify {selected_adapter} via sysfs: {e}")
+                    # Still return the adapter if hciconfig shows it as USB
+                    return selected_adapter
+            
+            else:
+                logger.error("No USB Bluetooth adapters found")
+                return None
+                
+        else:
+            logger.error("Failed to run hciconfig")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        logger.error("Bluetooth adapter detection timed out")
+        return None
+    except Exception as e:
+        logger.error(f"Bluetooth adapter detection failed: {e}")
+        return None
+
+def verify_adapter_is_usb(adapter_name):
+    """
+    Verify that the specified adapter is actually USB-connected.
+    Returns True if confirmed USB, False otherwise.
+    """
+    try:
+        # Check hciconfig output
+        result = subprocess.run(['hciconfig', adapter_name], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and ('Bus: USB' in result.stdout or 'Type: Primary  Bus: USB' in result.stdout):
+            logger.info(f"✓ {adapter_name} confirmed as USB adapter via hciconfig")
+            
+            # Double-check via sysfs
+            try:
+                uevent_path = f"/sys/class/bluetooth/{adapter_name}/device/uevent"
+                with open(uevent_path, 'r') as f:
+                    uevent_content = f.read()
+                
+                if 'DEVTYPE=usb_interface' in uevent_content or 'DRIVER=btusb' in uevent_content:
+                    logger.info(f"✓ {adapter_name} USB connection verified via sysfs")
+                    return True
+                else:
+                    logger.warning(f"✗ {adapter_name} is NOT a USB adapter (found: {uevent_content.split('DRIVER=')[1].split()[0] if 'DRIVER=' in uevent_content else 'unknown driver'})")
+                    return False
+                    
+            except (IOError, OSError) as e:
+                logger.warning(f"Could not verify {adapter_name} via sysfs: {e}")
+                # Fall back to hciconfig result
+                return True
+                
+        else:
+            logger.warning(f"✗ {adapter_name} is not a USB adapter or not available")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        logger.error(f"Verification of {adapter_name} timed out")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to verify {adapter_name}: {e}")
+        return False
+
 def configure_bluetooth():
     """Configure Bluetooth adapters for optimal operation"""
     logger.info("=== Configuring Bluetooth Adapters ===")
+    
+    # Auto-detect the USB Bluetooth adapter
+    usb_adapter = detect_usb_bluetooth_adapter()
+    if not usb_adapter:
+        logger.error("No USB Bluetooth adapter found - cannot continue")
+        return False
+    
+    logger.info(f"Using USB adapter: {usb_adapter}")
     
     try:
         # Stop bluetooth service
@@ -128,14 +244,27 @@ def configure_bluetooth():
         subprocess.run(['rfkill', 'unblock', 'bluetooth'], 
                       capture_output=True, timeout=5)
         
-        # Configure adapters
+        # Configure adapters - shut down all first
         logger.info("Configuring adapters...")
-        subprocess.run(['hciconfig', 'hci0', 'down'], 
-                      capture_output=True, timeout=5)
-        subprocess.run(['hciconfig', 'hci1', 'down'], 
-                      capture_output=True, timeout=5)
+        # Get all available adapters
+        hci_result = subprocess.run(['hciconfig'], capture_output=True, text=True, timeout=5)
+        if hci_result.returncode == 0:
+            # Extract all adapter names
+            adapters = []
+            for line in hci_result.stdout.split('\n'):
+                if line.startswith('hci') and ':' in line:
+                    adapter_name = line.split(':')[0].strip()
+                    adapters.append(adapter_name)
+            
+            # Shut down all adapters
+            for adapter in adapters:
+                subprocess.run(['hciconfig', adapter, 'down'], 
+                              capture_output=True, timeout=5)
+        
         time.sleep(1)
-        subprocess.run(['hciconfig', 'hci1', 'up'], 
+        
+        # Bring up only the USB adapter
+        subprocess.run(['hciconfig', usb_adapter, 'up'], 
                       capture_output=True, timeout=5)
         time.sleep(2)
         
@@ -146,13 +275,17 @@ def configure_bluetooth():
         time.sleep(3)
         
         # Verify configuration
-        result = subprocess.run(['hciconfig'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['hciconfig', usb_adapter], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            if 'hci1:' in result.stdout and 'UP RUNNING' in result.stdout:
-                logger.info("✓ USB adapter (hci1) is UP and RUNNING")
+            if 'UP RUNNING' in result.stdout:
+                logger.info(f"✓ USB adapter ({usb_adapter}) is UP and RUNNING")
+                # Update the global ADAPTER variable
+                global ADAPTER
+                ADAPTER = usb_adapter
+                logger.info(f"✓ Updated ADAPTER to: {ADAPTER}")
                 return True
             else:
-                logger.warning("USB adapter (hci1) not in optimal state")
+                logger.warning(f"USB adapter ({usb_adapter}) not in optimal state")
                 return False
         else:
             logger.error("Failed to query adapter status")
@@ -397,7 +530,7 @@ def main():
     
     # Get debug level from environment
     debug_level = int(os.environ.get('DEBUG_LEVEL', '0'))
-    
+    debug_level = 1
     logger.info("=== bat2mqtt Direct gatttool Implementation ===")
     logger.info(f"Debug level: {debug_level}")
     logger.info(f"Target device: {DEV_MAC1}")
@@ -431,428 +564,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# -*- coding: utf-8 -*-
-"""
-Alternative bat2mqtt implementation using pygatt for better reliability
-pygatt provides more direct BlueZ integration and better connection stability
-"""
-
-import logging
-import os
-import subprocess
-import sys
-import time
-import threading
-from queue import Queue, Empty
-
-try:
-    import pygatt
-except ImportError:
-    print("pygatt not installed. Install with: pip install pygatt")
-    sys.exit(1)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Device constants
-BATTERY_DEVICES = {
-    'DEV_MAC1': 'F8:33:31:56:ED:16',
-    'DEV_MAC2': 'F8:33:31:56:FB:8E'
-}
-CHARACTERISTIC_UUID = '0000ffe1-0000-1000-8000-00805f9b34fb'
-
-# Connection settings
-MAX_CONNECTION_ATTEMPTS = 10
-CONNECTION_TIMEOUT = 30
-SCAN_TIMEOUT = 15
-RETRY_DELAY = 10
-
-# Global variables
-adapter = None
-device = None
-LastMessage = ""
-MsgCount = 0
-Debug = 0
-DataReceived = False
-mqtt_client = None
-shutdown_event = threading.Event()
-message_queue = Queue()
-
-def reset_bluetooth_stack():
-    """Reset Bluetooth stack to clear any stuck states"""
-    logger.info("Performing Bluetooth stack reset...")
-    try:
-        # Run the reset script
-        result = subprocess.run(['./bt_stack_reset.sh', '-s'], 
-                              capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            logger.info("✓ Bluetooth stack reset successful")
-            return True
-        else:
-            logger.warning(f"Reset script returned {result.returncode}: {result.stderr}")
-            return False
-    except Exception as e:
-        logger.warning(f"Reset script failed: {e}")
-        return False
-
-def configure_bluetooth_for_pygatt():
-    """Configure Bluetooth specifically for pygatt usage"""
-    logger.info("=== Bluetooth Configuration for pygatt ===")
-    
-    try:
-        # In container, we're already root, so no sudo needed
-        # Stop bluetooth service
-        subprocess.run(['systemctl', 'stop', 'bluetooth'], 
-                      capture_output=True, timeout=10)
-        time.sleep(2)
-        
-        # Unblock bluetooth
-        subprocess.run(['rfkill', 'unblock', 'bluetooth'], 
-                      capture_output=True, timeout=5)
-        
-        # Reset USB adapter if available
-        result = subprocess.run(['hciconfig'], capture_output=True, text=True)
-        if 'hci1:' in result.stdout:
-            logger.info("Resetting USB adapter...")
-            subprocess.run(['hciconfig', 'hci1', 'down'], capture_output=True)
-            subprocess.run(['hciconfig', 'hci1', 'up'], capture_output=True)
-            time.sleep(2)
-            adapter_name = 'hci1'
-        elif 'hci0:' in result.stdout:
-            logger.info("Using built-in adapter...")
-            subprocess.run(['hciconfig', 'hci0', 'down'], capture_output=True)
-            subprocess.run(['hciconfig', 'hci0', 'up'], capture_output=True)
-            time.sleep(2)
-            adapter_name = 'hci0'
-        else:
-            logger.error("No Bluetooth adapter found")
-            return None
-        
-        # Start bluetooth service
-        subprocess.run(['systemctl', 'start', 'bluetooth'], 
-                      capture_output=True, timeout=10)
-        time.sleep(3)
-        
-        logger.info(f"✓ Bluetooth configured for adapter: {adapter_name}")
-        return adapter_name
-        
-    except Exception as e:
-        logger.error(f"Bluetooth configuration failed: {e}")
-        return None
-
-def discover_battery_devices(adapter):
-    """Discover available battery devices using pygatt"""
-    logger.info("=== Battery Device Discovery ===")
-    
-    try:
-        logger.info(f"Scanning for devices (timeout: {SCAN_TIMEOUT}s)...")
-        devices = adapter.scan(timeout=SCAN_TIMEOUT)
-        
-        # Reset adapter after scan when running as root (required by pygatt)
-        try:
-            adapter.reset()
-            logger.debug("✓ Adapter reset after scan")
-        except Exception as e:
-            logger.warning(f"Adapter reset warning: {e}")
-        
-        logger.info(f"Found {len(devices)} devices")
-        
-        available_batteries = []
-        
-        for device_info in devices:
-            device_address = device_info['address'].upper()
-            device_name = device_info.get('name', 'Unknown')
-            
-            for battery_id, battery_mac in BATTERY_DEVICES.items():
-                if device_address == battery_mac.upper():
-                    available_batteries.append({
-                        'id': battery_id,
-                        'mac': device_info['address'],
-                        'name': device_name,
-                        'rssi': device_info.get('rssi', 'N/A')
-                    })
-                    logger.info(f"*** FOUND BATTERY: {battery_id} ***")
-                    logger.info(f"    MAC: {device_info['address']}")
-                    logger.info(f"    Name: {device_name}")
-                    logger.info(f"    RSSI: {device_info.get('rssi', 'N/A')} dBm")
-        
-        return available_batteries
-        
-    except Exception as e:
-        logger.error(f"Device discovery failed: {e}")
-        return []
-
-def notification_callback(handle, value):
-    """Callback for battery data notifications"""
-    global LastMessage, MsgCount, DataReceived, mqtt_client
-    
-    try:
-        if not DataReceived:
-            logger.info("✓ Receiving battery data...")
-            DataReceived = True
-        
-        # Add to message queue for processing
-        message_queue.put(value)
-        
-    except Exception as e:
-        logger.error(f"Notification callback error: {e}")
-
-def process_battery_data():
-    """Process battery data from the message queue"""
-    global LastMessage, MsgCount, mqtt_client, Debug
-    
-    while not shutdown_event.is_set():
-        try:
-            # Get data with timeout
-            data = message_queue.get(timeout=1.0)
-            
-            if Debug > 2:
-                logger.debug(f"Raw data: {data}")
-            
-            LastMessage += data.decode("utf-8", errors='ignore')
-            
-            # Check for end of message
-            if LastMessage.endswith('\n'):
-                if Debug > 0:
-                    logger.info(f"Complete message: {repr(LastMessage.strip())}")
-                
-                # Parse and process battery data
-                if len(LastMessage) > 30:  # Valid message length
-                    try:
-                        parts = LastMessage.split(',')
-                        if len(parts) >= 4:
-                            volt_str = parts[0].strip()
-                            if volt_str.replace('.', '').isdigit():
-                                volt = float(volt_str)
-                                
-                                # Publish to MQTT if available and not in debug mode
-                                if Debug < 2 and mqtt_client:
-                                    try:
-                                        mqtt_client.publish_single("battery/voltage", volt)
-                                        MsgCount += 1
-                                        if MsgCount % 10 == 0:
-                                            logger.info(f"Published {MsgCount} battery messages")
-                                    except Exception as e:
-                                        logger.error(f"MQTT publish failed: {e}")
-                    
-                    except (ValueError, IndexError) as e:
-                        logger.warning(f"Data parsing error: {e}")
-                
-                LastMessage = ""  # Reset for next message
-            
-            message_queue.task_done()
-            
-        except Empty:
-            continue  # Timeout, check shutdown event
-        except Exception as e:
-            logger.error(f"Data processing error: {e}")
-
-def connect_to_battery(adapter, battery_mac):
-    """Connect to battery and setup notifications using pygatt"""
-    global device
-    
-    logger.info(f"=== Connecting to Battery ===")
-    logger.info(f"Target: {battery_mac}")
-    
-    for attempt in range(MAX_CONNECTION_ATTEMPTS):
-        try:
-            logger.info(f"Connection attempt {attempt + 1}/{MAX_CONNECTION_ATTEMPTS}")
-            
-            # Disconnect any existing connection
-            if device:
-                try:
-                    device.disconnect()
-                except:
-                    pass
-                device = None
-            
-            # Connect to device
-            device = adapter.connect(battery_mac, timeout=CONNECTION_TIMEOUT)
-            logger.info(f"✓ Connected to {battery_mac}")
-            
-            # Setup notifications
-            logger.info(f"Setting up notifications for {CHARACTERISTIC_UUID}")
-            device.subscribe(CHARACTERISTIC_UUID, callback=notification_callback)
-            logger.info("✓ Notifications setup complete")
-            
-            return True
-            
-        except pygatt.exceptions.NotConnectedError:
-            logger.error(f"Connection failed - device not reachable")
-        except pygatt.exceptions.BLEError as e:
-            logger.error(f"BLE error: {e}")
-        except Exception as e:
-            logger.error(f"Connection error: {e}")
-        
-        # Perform Bluetooth reset after 3 failed attempts
-        if attempt == 2:  # After 3rd attempt (0-indexed)
-            logger.info("Multiple connection failures - attempting Bluetooth reset...")
-            reset_bluetooth_stack()
-            time.sleep(5)  # Give reset time to take effect
-        
-        if attempt < MAX_CONNECTION_ATTEMPTS - 1:
-            logger.info(f"Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
-    
-    logger.error("All connection attempts failed")
-    return False
-
-def monitor_connection():
-    """Monitor connection health and handle reconnections"""
-    global device, adapter
-    
-    logger.info("=== Connection Monitor Started ===")
-    
-    while not shutdown_event.is_set():
-        try:
-            if device:
-                # Simple connection check - try to read a characteristic
-                try:
-                    # This will raise an exception if disconnected
-                    device.char_read(CHARACTERISTIC_UUID)
-                    time.sleep(30)  # Check every 30 seconds
-                    continue
-                except:
-                    logger.warning("Connection lost - attempting reconnection")
-                    device = None
-            
-            # Need to reconnect
-            logger.info("Attempting to reconnect...")
-            
-            # Rediscover devices
-            batteries = discover_battery_devices(adapter)
-            if batteries:
-                battery = batteries[0]  # Use first available
-                if connect_to_battery(adapter, battery['mac']):
-                    logger.info("✓ Reconnection successful")
-                else:
-                    logger.error("Reconnection failed")
-                    time.sleep(60)  # Wait before trying again
-            else:
-                logger.error("No battery devices found for reconnection")
-                time.sleep(60)
-        
-        except Exception as e:
-            logger.error(f"Connection monitor error: {e}")
-            time.sleep(30)
-
-def _mqtt_connect():
-    """Connect to MQTT broker"""
-    global mqtt_client
-    
-    try:
-        from mqttclient import MqttPubClient
-        
-        max_attempts = 5
-        for attempt in range(max_attempts):
-            try:
-                mqtt_client = MqttPubClient()
-                logger.info(f"✓ MQTT connected")
-                return True
-            except Exception as e:
-                logger.warning(f"MQTT connection attempt {attempt + 1} failed: {e}")
-                if attempt < max_attempts - 1:
-                    time.sleep(5)
-        
-        logger.error("MQTT connection failed")
-        return False
-        
-    except ImportError:
-        logger.error("mqttclient module not found")
-        return False
-
-def main():
-    """Main function using pygatt"""
-    global Debug, adapter, device
-    
-    # Get debug level
-    Debug = int(os.environ.get('DEBUG_LEVEL', '0'))
-    
-    logger.info("=== pygatt bat2mqtt Starting ===")
-    logger.info(f"Debug level: {Debug}")
-    
-    try:
-        # Configure Bluetooth
-        adapter_name = configure_bluetooth_for_pygatt()
-        if not adapter_name:
-            logger.error("Bluetooth configuration failed")
-            return False
-        
-        # Create pygatt adapter
-        logger.info("Initializing pygatt adapter...")
-        adapter = pygatt.GATTToolBackend()
-        adapter.start()
-        logger.info("✓ pygatt adapter started")
-        
-        # Wait for MQTT broker
-        logger.info("Waiting for MQTT broker...")
-        time.sleep(10)
-        
-        # Connect to MQTT
-        if Debug < 2:
-            _mqtt_connect()
-        
-        # Start data processing thread
-        processing_thread = threading.Thread(target=process_battery_data, daemon=True)
-        processing_thread.start()
-        
-        # Discover and connect to battery
-        batteries = discover_battery_devices(adapter)
-        if not batteries:
-            logger.error("No battery devices found")
-            return False
-        
-        # Use first available battery
-        battery = batteries[0]
-        logger.info(f"Selected battery: {battery['id']} ({battery['mac']})")
-        
-        if not connect_to_battery(adapter, battery['mac']):
-            logger.error("Initial connection failed")
-            return False
-        
-        # Start connection monitor
-        monitor_thread = threading.Thread(target=monitor_connection, daemon=True)
-        monitor_thread.start()
-        
-        # Main loop
-        logger.info("=== Main Loop Started ===")
-        logger.info("Press Ctrl+C to stop")
-        
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("Shutdown requested")
-        
-    except Exception as e:
-        logger.error(f"Main function error: {e}")
-        return False
-    
-    finally:
-        # Cleanup
-        logger.info("Cleaning up...")
-        shutdown_event.set()
-        
-        if device:
-            try:
-                device.disconnect()
-            except:
-                pass
-        
-        if adapter:
-            try:
-                adapter.stop()
-            except:
-                pass
-        
-        logger.info("pygatt bat2mqtt shutdown complete")
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)

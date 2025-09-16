@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     rfkill \
     libglib2.0-dev \
+    usbutils \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
