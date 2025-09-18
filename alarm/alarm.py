@@ -1,11 +1,25 @@
 import sys
 sys.path.append('/home/pi/Code/tblank1024/rv/mqttclient')
 import time
-import RPi.GPIO as GPIO
-#from rpi_hardware_pwm import HardwarePWM
-import time
 import logging
+import os
 #import mqttclient
+
+# Import GPIO libraries for Raspberry Pi 5
+from gpiozero import Device, LED, Button, OutputDevice, InputDevice
+
+# For Raspberry Pi 5, use lgpio pin factory (preferred) or fallback
+try:
+    from gpiozero.pins.lgpio import LGPIOFactory
+    Device.pin_factory = LGPIOFactory()
+    print("Using LGPIO pin factory for Raspberry Pi 5")
+except ImportError:
+    try:
+        from gpiozero.pins.rpigpio import RPiGPIOFactory
+        Device.pin_factory = RPiGPIOFactory()
+        print("Using RPi.GPIO pin factory (legacy)")
+    except ImportError:
+        print("No compatible GPIO library found")
 
 # https://pypi.org/project/rpi-hardware-pwm/
 # GPIO_18 as the pin for PWM0  aka Pin12
@@ -55,30 +69,23 @@ class Alarm():
     LOOPDELAY       = float(.3)          # time in seconds pausing between running loop
     LOUDENABLE      = True
     
-    # Pin Definitons using board connector numbering and RP.gpio:
+    # Pin Definitions using BCM GPIO numbering for gpiozero:
+    # Board pin -> BCM GPIO mapping for RPi
+    BUZZEROUT       = 22  # Board pin 15 -> GPIO22
+    HORNOUT         = 27  # Board pin 13 -> GPIO27
 
-    BUZZEROUT       = 15
-    HORNOUT         = 13
-
-    PIRSENSORIN     = 29
+    PIRSENSORIN     = 5   # Board pin 29 -> GPIO5
     
-    REDBUTTONIN     = 31
-    REDLEDOUT       = 32
-    BLUEBUTTONIN    = 33
-    BLUELEDOUT      = 35
+    REDBUTTONIN     = 6   # Board pin 31 -> GPIO6
+    REDLEDOUT       = 12  # Board pin 32 -> GPIO12
+    BLUEBUTTONIN    = 13  # Board pin 33 -> GPIO13
+    BLUELEDOUT      = 19  # Board pin 35 -> GPIO19
 
-    BIKEIN1         = 36
-    BIKEIN2         = 38
-    BIKEOUT1        = 37
-    BIKEOUT2        = 40
+    BIKEIN1         = 16  # Board pin 36 -> GPIO16
+    BIKEIN2         = 20  # Board pin 38 -> GPIO20
+    BIKEOUT1        = 26  # Board pin 37 -> GPIO26
+    BIKEOUT2        = 21  # Board pin 40 -> GPIO21
     
-    
-
-
-
-    PINSINPUT       = [REDBUTTONIN, BLUEBUTTONIN, BIKEIN1, BIKEIN2, PIRSENSORIN]
-    PINSOUTPUT      = [REDLEDOUT, BLUELEDOUT, BIKEOUT1, BIKEOUT2, BUZZEROUT, HORNOUT]
-
 
     # Class variables
     AlarmTime: float        = 0.0
@@ -96,34 +103,57 @@ class Alarm():
 
 
     def __init__(self, debug):
-        #New Setup using raw RPI GPIO
-        global debuglevel
-        debuglevel = debug
+        """Initialize the Alarm system with GPIO devices"""
+        self.debuglevel = debug
 
-        GPIO.setmode(GPIO.BOARD)                    #use board numbering scheme
-        GPIO.setwarnings(False)
-        GPIO.setup(self.PINSINPUT, GPIO.IN, pull_up_down=GPIO.PUD_UP) 
-        GPIO.setup(self.PINSOUTPUT, GPIO.OUT) 
-        GPIO.output(self.REDLEDOUT, False)
-        GPIO.output(self.BLUELEDOUT, False)
-        GPIO.output(self.HORNOUT, False)
-        GPIO.output(self.BUZZEROUT, False)
-        GPIO.output(self.BIKEOUT1, False)
-        GPIO.output(self.BIKEOUT2, True)
-
-        
-        
-
-        #TINK.clrLED(self.TINKERADDR,0)            # Note LED0 is surrogate for buzzer 
-        #TINK.clrDOUT(self.TINKERADDR,6)           # Surrogate Alarm horn
+        try:
+            # Clean up any existing GPIO state first
+            try:
+                from gpiozero import Device
+                Device.pin_factory.reset()
+            except:
+                pass  # Ignore if reset fails
+            
+            # Initialize gpiozero devices
+            # Output devices (LEDs, buzzer, horn, bike outputs)
+            self.red_led = LED(self.REDLEDOUT)
+            self.blue_led = LED(self.BLUELEDOUT)
+            self.buzzer = OutputDevice(self.BUZZEROUT)
+            self.horn = OutputDevice(self.HORNOUT)
+            self.bike_out1 = OutputDevice(self.BIKEOUT1)
+            self.bike_out2 = OutputDevice(self.BIKEOUT2)
+            
+            # Input devices (buttons and sensors) - using pull_up=True with inverted logic
+            self.red_button  = Button(self.REDBUTTONIN, pull_up=True)
+            self.blue_button = Button(self.BLUEBUTTONIN, pull_up=True)
+            self.pir_sensor  = InputDevice(self.PIRSENSORIN, pull_up=True)
+            self.bike_in1    = InputDevice(self.BIKEIN1, pull_up=True)
+            self.bike_in2    = InputDevice(self.BIKEIN2, pull_up=True)
+            
+            # Set initial states
+            self.red_led.off()
+            self.blue_led.off()
+            self.horn.off()
+            self.buzzer.off()
+            self.bike_out1.off()
+            self.bike_out2.on()
+            
+            print("GPIO devices initialized successfully")
+            
+        except Exception as e:
+            print(f"Error initializing GPIO devices: {e}")
+            raise
         
         self.BikeState = States.OFF
         self.InteriorState = States.OFF
 
 
-    def _toggle(self, outpin):
-        outval = GPIO.input(outpin)
-        GPIO.output(outpin, not outval)
+    def _toggle(self, device):
+        """Toggle an output device on/off"""
+        if device.is_active:
+            device.off()
+        else:
+            device.on()
         
     
      
@@ -144,18 +174,18 @@ class Alarm():
             return self.BikeState
          
     def _bikewire_error_chk(self) -> bool:
-        wire1in = GPIO.input(self.BIKEIN1)
-        wire2in = GPIO.input(self.BIKEIN2)
-        wire1out = GPIO.input(self.BIKEOUT1)
-        wire2out = GPIO.input(self.BIKEOUT2)
+        wire1in = self.bike_in1.is_active
+        wire2in = self.bike_in2.is_active
+        wire1out = self.bike_out1.is_active
+        wire2out = self.bike_out2.is_active
         if (wire1in == wire1out) and (wire2in == wire2out):
             error_status = False
         else:
             error_status = True
-            if debuglevel > 0:
+            if self.debuglevel > 0:
                 logging.info("Bike Alarm triggered")
-        self._toggle(self.BIKEOUT1)
-        self._toggle(self.BIKEOUT2)
+        self._toggle(self.bike_out1)
+        self._toggle(self.bike_out2)
         return (error_status)                                       # returns true if error detected            
 
 
@@ -172,48 +202,47 @@ class Alarm():
                 self.AlarmTime = self.LoopTime
     
     def _check_interior(self):
-        if self.InteriorState == States.STARTING and GPIO.input(self.PIRSENSORIN): 
-             #Alarm triggered but starting
+        if self.InteriorState == States.STARTING and not self.pir_sensor.is_active: 
+             #Alarm triggered but starting (with pull_up=True, is_active=False means movement detected)
             self.set_state(AlarmTypes.Interior, States.STARTERROR)
-        elif self.InteriorState == States.ON and GPIO.input(self.PIRSENSORIN): 
-            #Alarm triggered
+        elif self.InteriorState == States.ON and not self.pir_sensor.is_active: 
+            #Alarm triggered (with pull_up=True, is_active=False means movement detected)
             self.set_state(AlarmTypes.Interior, States.TRIGDELAY)
             self.AlarmTime = self.LoopTime
-            if debuglevel > 0:
+            if self.debuglevel > 0:
                 logging.info("Interior Alarm triggered")
 
     def _check_buttons(self):
-        BUTTONDELAY = 1             # Time (sec) before button _toggle((s
+        BUTTONDELAY = 1             # Time (sec) before button press is registered
 
         NowTime = self.LoopTime
-        RedButton = GPIO.input(self.REDBUTTONIN)     #Interior Alarm control
-        BlueButton = GPIO.input(self.BLUEBUTTONIN)    #Bike Alarm control
+        RedButton = self.red_button.is_pressed     #Interior Alarm control
+        BlueButton = self.blue_button.is_pressed    #Bike Alarm control
         
-        if(RedButton == 0 and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
+        if(RedButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
             if self.InteriorState == States.OFF:
                 self.set_state(AlarmTypes.Interior,States.STARTING)
-                if debuglevel > 0:
+                if self.debuglevel > 0:
                     logging.info("Red Starting")
             else:
                 self.set_state(AlarmTypes.Interior,States.OFF)
-                if debuglevel > 0:
+                if self.debuglevel > 0:
                     logging.info("Red Stopping")
             self.LastButtonTime = NowTime
 
-        if BlueButton == 0 and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
-            #_toggle((
+        if BlueButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
+            #Toggle
             if self.BikeState == States.OFF:
                 self.set_state(AlarmTypes.Bike, States.STARTING)
-                if debuglevel > 0:
+                if self.debuglevel > 0:
                     logging.info("Blue Starting")
             else:
                 self.set_state(AlarmTypes.Bike, States.OFF)
-                if debuglevel > 0:
+                if self.debuglevel > 0:
                     logging.info("Blue Stopping")
             self.LastButtonTime = NowTime
 
     def _display(self):
-        global debuglevel
         
         IntState    = self.StateConsts[self.InteriorState]
         BkState     = self.StateConsts[self.BikeState]
@@ -221,21 +250,21 @@ class Alarm():
         NightTime =  mytime.tm_hour < 8 or mytime.tm_hour > 20
 
         if IntState[0] == 0:
-            GPIO.output(self.REDLEDOUT, 0) #Red light off
+            self.red_led.off() #Red light off
         elif IntState[0] == 1:
             #Red light on
             if NightTime:
-                GPIO.output(self.REDLEDOUT,1)    #dim on
+                self.red_led.on()    #dim on (gpiozero doesn't support PWM on LED by default)
             else:
-                GPIO.output(self.REDLEDOUT,100)    #strong on
+                self.red_led.on()    #strong on
         if BkState[0] == 0:
-            GPIO.output(self.BLUELEDOUT, 0) #Blue light off
+            self.blue_led.off() #Blue light off
         elif BkState[0] == 1:
             #Blue light on
             if NightTime:
-                GPIO.output(self.BLUELEDOUT,1)    #Dim on
+                self.blue_led.on()    #Dim on
             else:
-                GPIO.output(self.BLUELEDOUT,100)  #strong on
+                self.blue_led.on()  #strong on
 
         
         # Combined Buzzer and Alarm values
@@ -243,54 +272,54 @@ class Alarm():
         AlarmVal = IntState[2] + BkState[2]
 
         if BuzzerVal == 0:
-            GPIO.output(self.BUZZEROUT, 0)
+            self.buzzer.off()
         elif BuzzerVal == 1:
             if self.LOUDENABLE:
-                    GPIO.output(self.BUZZEROUT, 1)
+                    self.buzzer.on()
             #TINK.setLED(self.TINKERADDR,0)
         
         if AlarmVal == 0:
-            GPIO.output(self.HORNOUT, 0)
+            self.horn.off()
         elif AlarmVal == 1:
             if self.LOUDENABLE:
-                GPIO.output(self.HORNOUT, 1)
+                self.horn.on()
             #TINK.setDOUT(self.TINKERADDR,6)
 
         if BuzzerVal > 1 or AlarmVal > 1 or IntState[0] > 1 or BkState[0] > 1:
-             # Someone needs to _toggle(( now
+             # Someone needs to _toggle now
             if self.LoopCount % self.SLOWBLINK == 0:
                 if IntState[0] > 2:            # Red Light
                     self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    GPIO.output(self.REDLEDOUT,self.RedPWMVal)
+                    self.red_led.on()  # simplified for gpiozero
                 if BkState[0] > 2:                # Blue Light
                     self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    GPIO.output(self.BLUELEDOUT, self.BluePWMVal)
+                    self.blue_led.on()  # simplified for gpiozero
                 if BuzzerVal > 2:
                     if self.LOUDENABLE:
-                        self._toggle(self.BUZZEROUT)
+                        self._toggle(self.buzzer)
                     #TINK._toggle((LED(self.TINKERADDR,0)
                 if AlarmVal > 2:
                     if self.LOUDENABLE:
-                        self._toggle(self.HORNOUT)
+                        self._toggle(self.horn)
                     #TINK._toggle((DOUT(self.TINKERADDR,6)
             elif (self.LoopCount % self.FASTBLINK) == 0:
                 if IntState[0] > 8:            # Red Light
                     self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    GPIO.output(self.REDLEDOUT,self.RedPWMVal)
+                    self.red_led.on()  # simplified for gpiozero
                 if BkState[0] > 8:                # Blue Light
                     self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    GPIO.output(self.BLUELEDOUT, self.BluePWMVal)
+                    self.blue_led.on()  # simplified for gpiozero
                 if BuzzerVal > 8:
                     if self.LOUDENABLE:
-                        self._toggle(self.BUZZEROUT)
+                        self._toggle(self.buzzer)
                     #TINK._toggle((LED(self.TINKERADDR,0)
                 if AlarmVal > 8:
                     if self.LOUDENABLE:
-                        self._toggle(self.HORNOUT)
+                        self._toggle(self.horn)
                     #TINK._toggle((DOUT(self.TINKERADDR,6)
-        if debuglevel == 1:
+        if self.debuglevel == 1:
             if self.LoopCount % 3 == 0:
-                print (IntState, "\t", BkState, "\t", AlarmVal, "\t\t", BuzzerVal, "\t\t", GPIO.input(self.BIKEIN1), "\t", GPIO.input(self.BIKEIN2))
+                print (IntState, "\t", BkState, "\t", AlarmVal, "\t\t", BuzzerVal, "\t\t", self.bike_in1.is_active, "\t", self.bike_in2.is_active)
             if self.LoopCount % 50 == 1:
                 print("IntState\tBkState \tAlarmVal\tBuzzerVal\tBike1\tBike2")
                 
@@ -317,32 +346,32 @@ class Alarm():
         Bike = self.BikeState
         if (Bike in [States.STARTING, States.STARTERROR]) and (self.LoopTime - self.BikeTime) > self.ENTRYEXITDELAY:
             #self.BikeState = States.ON
-            self.set_state(Bike, States.ON)
+            self.set_state(AlarmTypes.Bike, States.ON)
       
         elif (Bike ==  States.TRIGGERED) and ((self.LoopTime - self.AlarmTime) > (60 * self.MAXALARMTIME)):
             #self.BikeState = States.SILENCED
-            self.set_state(Bike, States.SILENCED)
+            self.set_state(AlarmTypes.Bike, States.SILENCED)
 
     def _InternalTest(self):
         #blink red and blue leds
         self.LoopCount += 1
 
         if self.LoopCount % 3 == 0:
-            print(GPIO.input(self.PIRSENSORIN), "\t", GPIO.input(self.BLUEBUTTONIN), "\t", GPIO.input(self.REDBUTTONIN), "\t", GPIO.input(self.BIKEIN1), "\t", GPIO.input(self.BIKEIN2))
-            if GPIO.input(self.REDBUTTONIN):
-                GPIO.output(self.REDLEDOUT,1)
+            print(self.pir_sensor.is_active, "\t", self.blue_button.is_pressed, "\t", self.red_button.is_pressed, "\t", self.bike_in1.is_active, "\t", self.bike_in2.is_active)
+            if self.red_button.is_pressed:
+                self.red_led.on()
             else:
-                GPIO.output(self.REDLEDOUT,0)
-            if GPIO.input(self.BLUEBUTTONIN):
-                GPIO.output(self.BLUELEDOUT,1)
+                self.red_led.off()
+            if self.blue_button.is_pressed:
+                self.blue_led.on()
             else:
-                GPIO.output(self.BLUELEDOUT,0)
-            # self._toggle(self.REDLEDOUT)
-            # self._toggle(self.BLUELEDOUT)
-            self._toggle(self.BUZZEROUT)
-            self._toggle(self.HORNOUT)
-            self._toggle(self.BIKEOUT1)
-            self._toggle(self.BIKEOUT2)
+                self.blue_led.off()
+            # self._toggle(self.red_led)
+            # self._toggle(self.blue_led)
+            self._toggle(self.buzzer)
+            self._toggle(self.horn)
+            self._toggle(self.bike_out1)
+            self._toggle(self.bike_out2)
         if self.LoopCount % 50 == 1:
             print("PIR\tRED\tBlu\tBK1\tBK2")
   
@@ -351,7 +380,7 @@ class Alarm():
         # run alarm code forever
         while True:                    
             
-            if debuglevel == 10:
+            if self.debuglevel == 10:
                 self._InternalTest()
             else:
                 if self.InteriorState == States.OFF and self.BikeState == States.OFF and self.LoopCount > 10000:

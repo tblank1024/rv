@@ -1,4 +1,5 @@
-#mqtt watcher tracks a set of variables and publishes a message when they change to stdout
+# This is a simplified watcher.py program primarily used for test.
+# mqtt watcher tracks a set of variables and publishes a message when they change to stdout
 #optionally outputs vars to csv file
 #based on mqttclient.py
 
@@ -252,6 +253,11 @@ class mqttclient():
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
         # client.subscribe("$SYS/#")
+        
+        # Subscribe to battery status topics
+        client.subscribe("RVC/BATTERY_STATUS/+", 0)     # Subscribe to all instances of BATTERY_STATUS
+        client.subscribe("RVC/BATTERY_STATUS", 0)       # Subscribe to base topic
+        
         for name in TargetTopics:
             if debug>0:
                 print('Subscribing to: ', name)
@@ -290,6 +296,23 @@ class mqttclient():
             print(msg.topic + " " + str(msg.payload))
         msg_dict = json.loads(msg.payload.decode('utf-8'))
         msg_dict['topic'] = msg.topic   #add MQTT topic to the dictionary
+        
+        # Enhanced console output for battery data
+        if msg.topic.startswith("RVC/BATTERY_STATUS"):
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\n=== BATTERY DATA RECEIVED ===")
+            print(f"Timestamp: {timestamp}")
+            print(f"Topic: {msg.topic}")
+            
+            # Print all available battery data
+            for key, value in msg_dict.items():
+                if key != 'topic':
+                    print(f"{key}: {value}")
+            print("=" * 30)
+
+        elif msg.topic.startswith("RVC/") and debug > 0:
+            timestamp = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[{timestamp}] Other RVC Message - Topic: {msg.topic}, Data: {msg_dict}")
         
         #Checks if the message is in the TargetTopics and if SAMPLEREATE seconds have passed since the last message of this topic and in mode 'c'
         try:
@@ -383,66 +406,18 @@ Watched_list = {
     "_var20Batt_charge",
     
 }
-"""
+
 Watched_Vars = {
-  
-    "TANK_STATUS/0": {"absolute level": 65535,
-                    "data": "001020FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 0,
-                    "instance definition":                          "x_var28Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "_var29Tank_Level",
-                    "resolution":                                   "x_var30Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var07Timestamp"},  
-    "TANK_STATUS/1": {"absolute level": 65535,
-                    "data": "010A38FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 1,
-                    "instance definition":                          "x_var31Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var32Tank_Level",
-                    "resolution":                                   "x_var33Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var08Timestamp"},
-    "TANK_STATUS/2": {"absolute level": 65535,
-                    "data": "020B38FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 2,
-                    "instance definition":                          "x_var34Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var35Tank_Level",
-                    "resolution":                                   "x_var36Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var09Timestamp"},
-    "TANK_STATUS/3": {"absolute level": 65535,
-                    "data": "034D64FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 3,
-                    "instance definition":                          "x_var37Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var38Tank_Level",
-                    "resolution":                                   "x_var39Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var10Timestamp"},
-    "RV_Loads/1": {
-                    "instance": 1,
-                    "name": "RV_Loads",
-                    "AC Load":                                      "_var24RV_Loads_AC",
-                    "DC Load":                                      "_var25RV_Loads_DC",
-                    "timestamp":                                    "x_var11Timestamp"},
-    "RV_Watcher/1": {
-                    "instance": 1,
-                    "name": "RV_Watcher",
-                    "Status":                                       "_var50RV_Watcher_Status",
-                    "timestamp":                                    "_var51Timestamp"},
-    "SYS_ERRORS": {
-                    "name": "SYS_ERRORS",
-                    "error":                                        "_var52RVC_ERROR",
-                    "timestamp":                                    "x_var53Timestamp"},
+    "BATTERY_STATUS/1": {
+        "instance": 1,
+        "name": "BATTERY_STATUS",
+        "DC_voltage": "_var18Batt_voltage",
+        "DC_current": "_var19Batt_current",
+        "State_of_charge": "_var20Batt_charge",
+        "Status": "_var21Batt_status",
+        "timestamp": "_var22Batt_timestamp"
+    }
 }
-"""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -483,4 +458,4 @@ if __name__ == "__main__":
         RVC_Client.GenOutput()
         print('Finished!')
 
-    
+
