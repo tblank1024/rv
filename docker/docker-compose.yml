@@ -117,7 +117,7 @@ services:
     container_name: solar
     network_mode: host
     devices:
-      - /dev/ttyAMA10:/dev/ttyAMA0
+      - /dev/ttyAMA0:/dev/ttyAMA0
     restart: always
     image: solar:latest
     privileged: false

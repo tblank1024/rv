@@ -4,6 +4,7 @@
 Fixed bat2mqtt implementation using direct gatttool subprocess approach
 Replicates the exact successful manual command:
 sudo gatttool -i hci1 -b F8:33:31:56:ED:16 --char-write-req --handle=0x0013 --value=0100 --listen
+
 """
 
 import subprocess
@@ -304,7 +305,7 @@ def parse_battery_data(raw_data):
         # Clean the data
         cleaned = raw_data.strip().replace('\n', '').replace('\r', '')
         fields = cleaned.split(',')
-        
+        # print(f"Debug: Parsed fields: {fields}")
         if len(fields) < 9:
             logger.warning(f"Incomplete data - only {len(fields)} fields: {cleaned}")
             return None
@@ -530,7 +531,7 @@ def main():
     
     # Get debug level from environment
     debug_level = int(os.environ.get('DEBUG_LEVEL', '0'))
-    debug_level = 1
+
     logger.info("=== bat2mqtt Direct gatttool Implementation ===")
     logger.info(f"Debug level: {debug_level}")
     logger.info(f"Target device: {DEV_MAC1}")
