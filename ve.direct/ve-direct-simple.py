@@ -12,7 +12,7 @@ import sys
 import random
 
 # Configuration - will auto-detect available ports
-potential_ports = ['/dev/ttyAMA0', '/dev/ttyAMA10', '/dev/ttyUSB0', '/dev/ttyUSB1']
+potential_ports = ['/dev/ttyAMA0', '/dev/ttyAMA10', '/dev/ttyAMA1', '/dev/ttyS0', '/dev/ttyUSB0', '/dev/ttyUSB1']
 baud_rate = 19200
 
 def find_serial_ports():
@@ -199,6 +199,7 @@ def main():
         print("Reading VE.Direct data... (Ctrl+C to stop)")
         print("-" * 50)
         line_count = 0
+        no_data_count = 0
         
         while True:
             # Read data from the serial port
@@ -206,6 +207,7 @@ def main():
 
             if data:
                 line_count += 1
+                no_data_count = 0  # Reset counter
                 print(f"[{line_count:03d}] {data}")
                 
                 # Basic parsing attempt
@@ -219,6 +221,10 @@ def main():
                 decoded = decode_ve_direct_message(data)
                 if decoded:
                     print(f"      Decoded: {decoded}")
+            else:
+                no_data_count += 1
+                if no_data_count % 50 == 0:  # Print every 50 empty reads
+                    print(f"No data received for {no_data_count} attempts...")
 
             # Add a delay before reading the next message
             time.sleep(0.1)
