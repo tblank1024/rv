@@ -90,16 +90,20 @@ services:
     container_name: battery
     image: bat2mqtt:gatttool
     network_mode: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - mqtt
     volumes:
-      - /home/tblank/code/tblank1024/rv/bat2mqtt/logs:/app/bat2mqtt/logs
       - /run/dbus:/run/dbus:ro
       - /sys/class/bluetooth:/sys/class/bluetooth:ro
       - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    restart: always
+    restart: "always"  # Re-enabled - duplication issue solved with simplified implementation
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -108,6 +112,8 @@ services:
       - DEBUG_LEVEL=0
       - MQTT_HOST=localhost
       - MQTT_PORT=1883
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
 
   # Victron Solar Monitoring (ve.direct)
   ve.direct:
