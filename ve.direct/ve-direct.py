@@ -64,11 +64,11 @@ def decode_ve_direct_message(data, debug):
     decoded_data = {'op': lst[0]}
     match lst[0]:
         case 'V':            
-            decoded_data.update({'value': 'Batttery(V)= ' + str(float(lst[1])/1000)})
+            decoded_data.update({'value': float(lst[1])/1000})
         case 'VPV':                        
             decoded_data.update({'value': 'Panel(V)=    ' + str(float(lst[1])/1000)})
         case 'I':
-            decoded_data.update({'value': 'Batttery(I)= ' + str(float(lst[1])/1000)})
+            decoded_data.update({'value': float(lst[1])/1000})
         case 'IL':
             decoded_data.update({'value': 'Load(I)=     ' + str(float(lst[1])/1000)})
         case 'PPV':
@@ -175,5 +175,5 @@ if __name__ == "__main__":
         port=1883, 
         varprefix='_var', 
         mqttTopic='RVC', 
-        debug=0,    # 0 - no debug, 1 - print MQTT record, 2 - print MQTT record, all serial data, and rvglue debug
+        debug = 0,    # 0 - no debug, 1 - print MQTT record, 2 - print MQTT record, all serial data, and rvglue debug
     )
