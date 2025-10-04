@@ -1,0 +1,9 @@
+# USB Hub Control Requirements
+# For controlling CoolGear 4-Port USB Hub via serial communication
+
+# Core dependency for serial communication
+pyserial>=3.5
+
+# Standard library modules used (no additional requirements needed):
+# - time (built-in)
+# - sys (built-in)

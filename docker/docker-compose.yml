@@ -158,6 +158,12 @@ services:
     container_name: webserver
     image: webserver:latest
     network_mode: host
+    privileged: true
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyACM1:/dev/ttyACM1
     restart: always
     depends_on:
       - mqtt
