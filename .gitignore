@@ -7,3 +7,4 @@ docker/mqtt/log
 TODO.txt
 mqttclient/TestGui.py
 venv/
+kasa_Pwr_strip/test_env/
