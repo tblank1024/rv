@@ -1,40 +1,86 @@
-# Kasa Power Strip HS300 Controller and Test Suite
+# Kasa Power Strip HS300 Controller
 
-This module provides a Python interface for controlling the Kasa Smart Power Strip HS300, which features 6 individually controllable outlets. The module includes comprehensive unit tests to ensure reliability and correctness.
+Modern Python interface for controlling the Kasa Smart Power Strip HS300 with 6 individually controllable outlets. Uses the official python-kasa library with support for KLAP encryption and modern authentication methods.
+
+## Prerequisites
+
+**IMPORTANT**: You must enable "Third Party Compatibility" in your Kasa app device settings. This allows local network control without requiring TP-Link account authentication each time.
 
 ## Files
 
-- `kasa_ctrl.py` - Main controller module for the Kasa HS300 power strip
-- `test_kasa_ctrl.py` - Comprehensive test suite with unit tests and integration tests
-- `run_tests.py` - Test runner script with various options
-- `requirements-test.txt` - Test dependencies
+- `kasa_ctrl.py` - Modern controller module using python-kasa library
+- `requirements.txt` - Required dependencies
+- `README.md` - This documentation
+
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Features
 
 ### KasaPowerStrip Class
-- Control individual outlets (turn on/off/toggle)
-- Get outlet status and power consumption data
-- Bulk operations (turn all outlets on/off)
-- Robust error handling with custom exceptions
-- Support for Kasa's XOR encryption protocol
+- **Individual outlet control** (turn on/off/toggle by index 0-5)
+- **Real-time power monitoring** per outlet (watts, voltage, current)
+- **Energy consumption tracking** (daily, monthly, total)
+- **Comprehensive power summaries** for entire strip
+- **Test mode** for sequential outlet testing
+- **Power usage monitoring** over time with statistics
+- **Bulk operations** (turn all outlets on/off)
+- **No credentials required** when third party compatibility is enabled
 
-### Test Suite Features
-- **Unit Tests**: Test all individual methods and edge cases
-- **Integration Tests**: Test complete workflows
-- **Mock Testing**: Uses mocks to avoid requiring actual hardware
-- **Error Testing**: Validates error handling and edge cases
-- **Coverage**: Comprehensive test coverage of all functionality
+## Quick Start
 
-## Installation
+### Command Line Usage
 
-1. Install the required dependencies for testing:
 ```bash
-pip install -r requirements-test.txt
+# Demo mode - show system info, outlet status, and power data
+python kasa_ctrl.py
+
+# Test mode - turn on each outlet for 3 seconds sequentially
+python kasa_ctrl.py test 3
+
+# Get detailed power data for outlet 0
+python kasa_ctrl.py power 0
+
+# Get comprehensive power summary
+python kasa_ctrl.py summary
+
+# Monitor outlet 0 for 60 seconds, sampling every 5 seconds
+python kasa_ctrl.py monitor 0 60 5
+
+# Show help
+python kasa_ctrl.py help
 ```
 
-2. Or use the test runner to install dependencies automatically:
-```bash
-python run_tests.py --install
+### Python API Usage
+
+```python
+from kasa_ctrl import KasaPowerStrip
+
+# Initialize (replace with your power strip's IP)
+power_strip = KasaPowerStrip("10.0.0.188")
+power_strip.connect()
+
+# Control individual outlets
+power_strip.turn_on_outlet(0)     # Turn on outlet 0
+power_strip.turn_off_outlet(1)    # Turn off outlet 1
+power_strip.toggle_outlet(2)      # Toggle outlet 2
+
+# Get power data
+power_data = power_strip.get_detailed_power_data(0)
+print(f"Outlet 0: {power_data['current_power_w']}W")
+
+# Get all outlet statuses
+statuses = power_strip.get_all_outlet_status()
+for status in statuses:
+    print(f"Outlet {status['outlet_id']}: {status['alias']} - {'ON' if status['is_on'] else 'OFF'}")
+
+# Monitor power usage over time
+readings = power_strip.monitor_power_usage(0, duration_seconds=30, interval_seconds=2)
+
+power_strip.disconnect()
 ```
 
 ## Usage
