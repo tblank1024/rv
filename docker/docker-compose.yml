@@ -152,6 +152,19 @@ services:
     environment:
       - TZ=America/Los_Angeles
       - PYTHONUNBUFFERED=1
+      - KASA_DISCOVERY_TIMEOUT=10
+      - KASA_DEFAULT_TIMEOUT=10
+      - DISABLE_KASA=false  # Enable Kasa with simplified blocking implementation
+      - KASA_HOST=10.0.0.188  # Direct IP configuration for testing
+      # Fix timezone issues with python-kasa - use a compatible timezone format
+      - PYTHONPATH=/usr/share/zoneinfo
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
+      # Handle PST8PDT timezone that device returns
+      - PST8PDT=America/Los_Angeles
+      # Additional timezone configuration
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
     build:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
@@ -159,6 +172,22 @@ services:
     image: webserver:latest
     network_mode: host
     privileged: true
+    # Enhanced network capabilities for Kasa discovery in Docker
+    cap_add:
+      - NET_ADMIN      # Network administration capabilities
+      - NET_RAW        # Raw socket access for UDP broadcasts
+      - NET_BROADCAST  # Broadcast permissions
+      - SYS_ADMIN      # System administration for USB management
+      - DAC_OVERRIDE   # Override file permissions for /sys access
+    volumes:
+      # Mount safer network information for better discovery
+      - /sys/class/net:/sys/class/net:ro
+      # Add volumes for USB management and MTP handling
+      - /sys/bus/usb:/sys/bus/usb:rw          # USB device binding/unbinding
+      - /sys/devices:/sys/devices:ro          # USB device enumeration
+      - /dev/bus/usb:/dev/bus/usb:rw          # USB device access
+      - /run/dbus:/run/dbus:rw                # D-Bus for system service communication
+      - /var/run/dbus:/var/run/dbus:rw        # Additional D-Bus socket location
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1
