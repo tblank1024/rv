@@ -188,6 +188,11 @@ services:
       - /dev/bus/usb:/dev/bus/usb:rw          # USB device access
       - /run/dbus:/run/dbus:rw                # D-Bus for system service communication
       - /var/run/dbus:/var/run/dbus:rw        # Additional D-Bus socket location
+      # Mount alarm system code for direct GPIO access
+      - /home/tblank/code/tblank1024/rv/alarm:/home/tblank/code/tblank1024/rv/alarm:ro
+      # Mount GPIO devices for alarm system access
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiochip4:/dev/gpiochip4
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1

@@ -3,7 +3,9 @@ sys.path.append('/home/pi/Code/tblank1024/rv/mqttclient')
 import time
 import logging
 import os
-#import mqttclient
+import threading
+import paho.mqtt.client as mqtt
+import json
 
 # Import GPIO libraries for Raspberry Pi 5
 from gpiozero import Device, LED, Button, OutputDevice, InputDevice
@@ -146,6 +148,113 @@ class Alarm():
         
         self.BikeState = States.OFF
         self.InteriorState = States.OFF
+        
+        # Initialize MQTT client
+        self.mqtt_client = None
+        self.mqtt_connected = False
+        self.setup_mqtt()
+
+    def setup_mqtt(self):
+        """Initialize MQTT client for communication with web interface"""
+        try:
+            self.mqtt_client = mqtt.Client()
+            self.mqtt_client.on_connect = self.on_mqtt_connect
+            self.mqtt_client.on_message = self.on_mqtt_message
+            self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
+            
+            # Connect to MQTT broker
+            self.mqtt_client.connect("localhost", 1883, 60)
+            self.mqtt_client.loop_start()
+            print("MQTT client initialized and connecting...")
+            
+        except Exception as e:
+            print(f"Error setting up MQTT client: {e}")
+            self.mqtt_client = None
+
+    def on_mqtt_connect(self, client, userdata, flags, rc):
+        """Callback for when MQTT client connects"""
+        if rc == 0:
+            self.mqtt_connected = True
+            print("Connected to MQTT broker")
+            
+            # Subscribe to alarm command topics
+            client.subscribe("rv/alarm/bike/command")
+            client.subscribe("rv/alarm/interior/command")
+            print("Subscribed to alarm command topics")
+            
+            # Publish initial status
+            self.publish_status()
+        else:
+            print(f"Failed to connect to MQTT broker with code {rc}")
+            self.mqtt_connected = False
+
+    def on_mqtt_disconnect(self, client, userdata, rc):
+        """Callback for when MQTT client disconnects"""
+        self.mqtt_connected = False
+        print(f"Disconnected from MQTT broker with code {rc}")
+
+    def on_mqtt_message(self, client, userdata, msg):
+        """Handle incoming MQTT messages"""
+        try:
+            topic = msg.topic
+            payload = msg.payload.decode('utf-8')
+            print(f"Received MQTT message: {topic} -> {payload}")
+            
+            if topic == "rv/alarm/bike/command":
+                if payload == "on":
+                    self.set_state(AlarmTypes.Bike, States.STARTING)
+                    print("Bike alarm activated via MQTT")
+                elif payload == "off":
+                    self.set_state(AlarmTypes.Bike, States.OFF)
+                    print("Bike alarm deactivated via MQTT")
+            elif topic == "rv/alarm/interior/command":
+                if payload == "on":
+                    self.set_state(AlarmTypes.Interior, States.STARTING)
+                    print("Interior alarm activated via MQTT")
+                elif payload == "off":
+                    self.set_state(AlarmTypes.Interior, States.OFF)
+                    print("Interior alarm deactivated via MQTT")
+            
+            # Publish updated status after processing command
+            self.publish_status()
+            
+        except Exception as e:
+            print(f"Error processing MQTT message: {e}")
+
+    def publish_status(self):
+        """Publish current alarm status to MQTT"""
+        if self.mqtt_client and self.mqtt_connected:
+            try:
+                # Publish individual status
+                bike_status = "on" if self.BikeState != States.OFF else "off"
+                interior_status = "on" if self.InteriorState != States.OFF else "off"
+                
+                self.mqtt_client.publish("rv/alarm/bike/status", bike_status, retain=True)
+                self.mqtt_client.publish("rv/alarm/interior/status", interior_status, retain=True)
+                
+                # Publish detailed status with state names
+                status_data = {
+                    "bike": {"state": self.BikeState.name, "active": self.BikeState != States.OFF},
+                    "interior": {"state": self.InteriorState.name, "active": self.InteriorState != States.OFF},
+                    "timestamp": time.time()
+                }
+                
+                self.mqtt_client.publish("rv/alarm/status", json.dumps(status_data), retain=True)
+                
+            except Exception as e:
+                print(f"Error publishing MQTT status: {e}")
+
+    def cleanup_mqtt(self):
+        """Clean up MQTT client"""
+        if self.mqtt_client:
+            try:
+                self.mqtt_client.loop_stop()
+                self.mqtt_client.disconnect()
+            except Exception as e:
+                print(f"Error cleaning up MQTT client: {e}")
+            finally:
+                self.mqtt_client = None
+                self.mqtt_connected = False
 
 
     def _toggle(self, device):
@@ -166,6 +275,9 @@ class Alarm():
             self.BikeState = state_val
             if state_val == States.STARTING:
                 self.BikeTime = self.LoopTime
+        
+        # Publish status update via MQTT
+        self.publish_status()
 
     def get_state(self, state_var: AlarmTypes) -> States:
         if state_var == AlarmTypes.Interior:
@@ -378,25 +490,34 @@ class Alarm():
     
     def run_alarm_infinite(self):
         # run alarm code forever
-        while True:                    
-            
-            if self.debuglevel == 10:
-                self._InternalTest()
-            else:
-                if self.InteriorState == States.OFF and self.BikeState == States.OFF and self.LoopCount > 10000:
-                #don't let the LoopCount get too big
-                    self.LoopCount = 1      
+        try:
+            while True:                    
+                
+                if self.debuglevel == 10:
+                    self._InternalTest()
                 else:
-                    self.LoopCount += 1
-                self.LoopTime = time.time()
-                self._check_buttons()    
-                self._check_bike_wire()
-                self._check_interior()
-                self._update_timed_transitions()
-                self._display()
-                #if LoopCount % 40 == 0:
-                #    print(AlarmState)
-            time.sleep(self.LOOPDELAY) #sleep
+                    if self.InteriorState == States.OFF and self.BikeState == States.OFF and self.LoopCount > 10000:
+                    #don't let the LoopCount get too big
+                        self.LoopCount = 1      
+                    else:
+                        self.LoopCount += 1
+                    self.LoopTime = time.time()
+                    self._check_buttons()    
+                    self._check_bike_wire()
+                    self._check_interior()
+                    self._update_timed_transitions()
+                    self._display()
+                    #if LoopCount % 40 == 0:
+                    #    print(AlarmState)
+                time.sleep(self.LOOPDELAY) #sleep
+        except KeyboardInterrupt:
+            print("Alarm system shutting down...")
+        except Exception as e:
+            print(f"Error in alarm main loop: {e}")
+        finally:
+            # Clean up MQTT connection on exit
+            self.cleanup_mqtt()
+            print("Alarm system cleanup completed")
 
 if __name__ == "__main__":
     print('Starting Alarm App')
