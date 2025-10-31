@@ -429,11 +429,12 @@ class Alarm():
                     if self.LOUDENABLE:
                         self._toggle(self.horn)
                     #TINK._toggle((DOUT(self.TINKERADDR,6)
-        if self.debuglevel == 1:
-            if self.LoopCount % 3 == 0:
-                print (IntState, "\t", BkState, "\t", AlarmVal, "\t\t", BuzzerVal, "\t\t", self.bike_in1.is_active, "\t", self.bike_in2.is_active)
-            if self.LoopCount % 50 == 1:
-                print("IntState\tBkState \tAlarmVal\tBuzzerVal\tBike1\tBike2")
+        # Debug output commented out to prevent constant printing
+        # if self.debuglevel == 1:
+        #     if self.LoopCount % 3 == 0:
+        #         print (IntState, "\t", BkState, "\t", AlarmVal, "\t\t", BuzzerVal, "\t\t", self.bike_in1.is_active, "\t", self.bike_in2.is_active)
+        #     if self.LoopCount % 50 == 1:
+        #         print("IntState\tBkState \tAlarmVal\tBuzzerVal\tBike1\tBike2")
                 
 
        
