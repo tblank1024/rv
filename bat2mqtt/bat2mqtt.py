@@ -130,19 +130,32 @@ def configure_bluetooth():
         return False
 
 def parse_battery_data(raw_data):
-    """Parse battery data from raw message"""
+    """Parse battery data from raw BLE message.
+    Raw BLE data is a 40-byte comma-separated string in the original format:
+    fields[0] = voltage as integer (e.g. "1361" means 13.61V) -> divide by 100
+    fields[1] = battery cell 1 status
+    fields[2] = battery cell 2 status
+    fields[3] = battery cell 3 status
+    fields[4] = battery cell 4 status
+    fields[5] = temperature (F)
+    fields[6] = BMS temperature (F)
+    fields[7] = current in amps +/-
+    fields[8] = percent battery full (0-100)
+    fields[9] = status code (6 chars, "000000" is good)
+    Example raw: "1361,100,100,100,100,68,68,0100,000000"
+    """
     try:
         cleaned = raw_data.strip().replace('\n', '').replace('\r', '')
         fields = cleaned.split(',')
         
         if len(fields) < 9:
             if DEBUG:
-                log(f"Incomplete data: {len(fields)} fields")
+                log(f"Incomplete data: {len(fields)} fields: {repr(cleaned)}")
             return None
         
-        voltage = float(fields[0]) / 100
+        voltage = float(fields[0]) / 100   # e.g. 1361 -> 13.61
         temperature = int(fields[5])
-        current = 2 * int(fields[7])
+        current = 2 * int(fields[7])       # doubled to account for both batteries
         charge = int(fields[8])
         status = fields[9][:6] if len(fields) > 9 else "000000"
         
@@ -280,6 +293,8 @@ def main():
                 
                 # Parse and publish
                 battery_data = parse_battery_data(message)
+                if DEBUG >= 2:
+                    log(f"Raw message: {repr(message)}")
                 if battery_data:
                     publish_battery_data(
                         battery_data['voltage'],

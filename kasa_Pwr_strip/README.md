@@ -9,8 +9,13 @@ Modern Python interface for controlling the Kasa Smart Power Strip HS300 with 6 
 ## Files
 
 - `kasa_ctrl.py` - Modern controller module using python-kasa library
+- `kasa_power_strip_current.py` - **Current working version** (symlink to RVSecurity implementation)
+- `kasa_power_strip_legacy.py` - Legacy version with asyncio complexity (archived)
 - `requirements.txt` - Required dependencies
 - `README.md` - This documentation
+
+**Note**: The current implementation uses subprocess calls to the kasa CLI tool for better stability
+in Docker environments, avoiding asyncio complexity that caused system issues.
 
 ## Installation
 
