@@ -155,7 +155,9 @@ services:
       - KASA_DISCOVERY_TIMEOUT=10
       - KASA_DEFAULT_TIMEOUT=10
       - DISABLE_KASA=false  # Enable Kasa with simplified blocking implementation
-      - KASA_HOST=10.0.0.188  # Direct IP configuration for testing
+      - KASA_IP=${KASA_IP}  # Kasa power strip IP (set in docker/.env)
+      - KASA_USERNAME=${KASA_USERNAME}  # Kasa cloud account email (set in docker/.env)
+      - KASA_PASSWORD=${KASA_PASSWORD}  # Kasa cloud account password (set in docker/.env)
       # Fix timezone issues with python-kasa - use a compatible timezone format
       - PYTHONPATH=/usr/share/zoneinfo
       - LC_ALL=C.UTF-8
@@ -165,6 +167,9 @@ services:
       # Additional timezone configuration
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
+      # WiFi bridge control - IP/port of the RPi Zero 2W running RPZero2WListener.py
+      - WIFI_BRIDGE_HOST=10.10.0.1
+      - WIFI_BRIDGE_PORT=12345
     build:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
