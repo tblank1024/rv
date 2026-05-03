@@ -90,21 +90,42 @@ def publish_battery_data(voltage, current, temperature, charge, status):
         log(f"MQTT publish error: {e}")
 
 def detect_usb_bluetooth_adapter():
-    """Find USB Bluetooth adapter"""
+    """Find USB Bluetooth adapter by MAC address (pinned) or fall back to first USB adapter.
+    Pinning by MAC ensures correct adapter is used even if hci enumeration order changes
+    when the internal Pi5 BLE adapter (hci0) is re-enabled alongside this USB dongle.
+    USB dongle MAC: 08:BE:AC:35:8E:5E  (hci1 currently, but may change)
+    """
+    PINNED_MAC = os.environ.get('BT_ADAPTER_MAC', '08:BE:AC:35:8E:5E').upper()
     try:
-        result = subprocess.run(['hciconfig'], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(['hciconfig', '-a'], capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
             return None
-            
+
+        current_hci = None
+        current_mac = None
+        current_bus = None
         for line in result.stdout.split('\n'):
-            if line.startswith('hci') and 'Type: Primary  Bus: USB' in line:
+            if line.startswith('hci'):
+                current_hci = line.split(':')[0].strip()
+                current_bus = 'USB' if 'Bus: USB' in line else ('UART' if 'Bus: UART' in line else 'other')
+            if 'BD Address:' in line and current_hci:
+                current_mac = line.strip().split()[2].upper()
+                if current_mac == PINNED_MAC:
+                    log(f"Found pinned USB BT adapter by MAC {PINNED_MAC}: {current_hci}")
+                    return current_hci
+
+        # Fallback: first USB adapter (original behaviour)
+        log(f"Pinned MAC {PINNED_MAC} not found, falling back to first USB adapter")
+        current_hci = None
+        for line in result.stdout.split('\n'):
+            if line.startswith('hci') and 'Bus: USB' in line:
                 adapter = line.split(':')[0].strip()
-                log(f"Found USB Bluetooth adapter: {adapter}")
+                log(f"Found USB Bluetooth adapter (fallback): {adapter}")
                 return adapter
-                
+
         log("No USB Bluetooth adapter found")
         return None
-        
+
     except Exception as e:
         log(f"Bluetooth detection failed: {e}")
         return None

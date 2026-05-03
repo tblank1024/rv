@@ -1,25 +1,25 @@
-FROM python:3.10.11-slim-buster
-RUN python3 -m pip install --upgrade pip
+FROM python:3.11-slim-bookworm
+
+# Install system dependencies for Bluetooth (bleak uses D-Bus/bluetoothd)
 RUN apt-get update && apt-get install -y \
-    dbus \
-    libdbus-1-dev \
     bluez \
-    bluez-tools
+    bluez-tools \
+    bluetooth \
+    rfkill \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/bat2mqtt
+RUN mkdir -p /app/tirelinc
+WORKDIR /app/tirelinc
 
-WORKDIR /app/bat2mqtt
-
-COPY bat2mqtt.py .
-COPY mqttclient.py .
+COPY tirelinc_monitor.py .
 COPY requirements.txt .
-COPY dgn_variables.json .
 
+RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install -r requirements.txt
-RUN apt-get install -y dbus-x11
 
+RUN chmod +x tirelinc_monitor.py
 
-CMD python3 bat2mqtt.py
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
 
-# To build the container:   docker build -t bat .
-# To run the container:     docker run --net=host --privileged -v /dev/bus/usb:/dev/bus/usb bat
+CMD ["python3", "tirelinc_monitor.py"]

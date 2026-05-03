@@ -115,6 +115,49 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
 
+  # TireLinc TPMS Monitoring (Bluetooth GATT via USB dongle hci2)
+  tirelinc:
+    build:
+      context: /home/tblank/code/tblank1024/rv/tirelinc
+      dockerfile: Dockerfile
+    container_name: tirelinc
+    image: tirelinc:latest
+    network_mode: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mqtt
+    volumes:
+      - /run/dbus:/run/dbus:rw
+      - /var/run/dbus:/var/run/dbus:rw
+      - /sys/class/bluetooth:/sys/class/bluetooth:ro
+      - /sys/devices:/sys/devices:ro
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    restart: "always"
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      - DEBUG_LEVEL=0
+      - MQTT_HOST=localhost
+      - MQTT_PORT=1883
+      - TIRELINC_MAC=F4:CF:A2:85:D0:62
+      - BAT2MQTT_ADAPTER_MAC=08:BE:AC:35:8E:5E
+      - RECONNECT_DELAY=45
+      - TIRE_0=FL
+      - TIRE_1=RL_out
+      - TIRE_2=FR
+      - TIRE_3=RL_in
+      - TIRE_4=RR_out
+      - TIRE_5=RR_in
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+
   # Victron Solar Monitoring (ve.direct)
   ve.direct:
     build:
@@ -170,12 +213,14 @@ services:
       # WiFi bridge control - IP/port of the RPi Zero 2W running RPZero2WListener.py
       - WIFI_BRIDGE_HOST=10.10.0.1
       - WIFI_BRIDGE_PORT=12345
+      - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     build:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
     container_name: webserver
     image: webserver:latest
     network_mode: host
+    pid: host
     privileged: true
     # Enhanced network capabilities for Kasa discovery in Docker
     cap_add:
@@ -198,6 +243,9 @@ services:
       # Mount GPIO devices for alarm system access
       - /dev/gpiochip0:/dev/gpiochip0
       - /dev/gpiochip4:/dev/gpiochip4
+      # Mount docker socket and compose file for container management from webserver
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/tblank/code/tblank1024/rv/docker:/home/tblank/code/tblank1024/rv/docker:ro
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1
