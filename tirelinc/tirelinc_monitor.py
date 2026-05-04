@@ -4,7 +4,7 @@ TireLinc TPMS Monitor - GATT to MQTT bridge
 Connects to Lippert TireLinc repeater via GATT, decodes tire pressure/temp
 notifications, and publishes to MQTT.
 
-Requires: display unplugged (repeater allows only 1 GATT connection)
+Requires: Lippert display unplugged (repeater allows only 1 GATT connection)
 
 Usage:
     sudo venv/bin/python3 tirelinc_monitor.py
@@ -35,30 +35,27 @@ from datetime import datetime
 from bleak import BleakClient, BleakScanner, BleakError
 
 # ---------------------------------------------------------------------------
-# Configuration (all overridable via environment)
+# Configuration (defaults are authoritative; env vars override for special cases)
 # ---------------------------------------------------------------------------
 TIRELINC_MAC    = os.environ.get('TIRELINC_MAC',    'F4:CF:A2:85:D0:62')
 MQTT_HOST       = os.environ.get('MQTT_HOST',       'localhost')
 MQTT_PORT       = int(os.environ.get('MQTT_PORT',   '1883'))
 DEBUG           = int(os.environ.get('DEBUG_LEVEL', '0'))
-RECONNECT_DELAY = int(os.environ.get('RECONNECT_DELAY', '10'))  # seconds between reconnect attempts
+RECONNECT_DELAY = int(os.environ.get('RECONNECT_DELAY', '45'))  # seconds between reconnect attempts
 
-# bat2mqtt's USB dongle MAC - tirelinc will skip this when auto-detecting adapter
-BAT2MQTT_ADAPTER_MAC = os.environ.get('BAT2MQTT_ADAPTER_MAC', '08:BE:AC:35:8E:5E').upper()
-
-# Adapter: explicit override, or pinned MAC, or auto-detect (skip bat2mqtt's)
+# Adapter selection: pin by MAC (default), or explicit hci name override
 ADAPTER         = os.environ.get('ADAPTER', '').strip()
-BT_ADAPTER_MAC  = os.environ.get('BT_ADAPTER_MAC', '').upper().strip()
+BT_ADAPTER_MAC  = os.environ.get('BT_ADAPTER_MAC', 'C8:7F:54:97:71:1B').upper().strip()
 
 # Tire position names by index (0-5).
-# Ambiguous tires (indices 2, 3, 5 all read 54 PSI) use placeholder names.
+# Ambiguous tires (indices 2, 5 all read 54 PSI) use placeholder names.
 # Override when pressures differ to disambiguate, e.g.:
 #   sudo TIRE_2=FR TIRE_3=RL_in TIRE_5=RR_in venv/bin/python3 tirelinc_monitor.py
 TIRE_NAMES = {
     0: os.environ.get('TIRE_0', 'FL'),
     1: os.environ.get('TIRE_1', 'RL_out'),
-    2: os.environ.get('TIRE_2', 'FR'),
-    3: os.environ.get('TIRE_3', 'RL_in'),
+    2: os.environ.get('TIRE_2', 'RL_in'),
+    3: os.environ.get('TIRE_3', 'FR'),
     4: os.environ.get('TIRE_4', 'RR_out'),
     5: os.environ.get('TIRE_5', 'RR_in'),
 }
@@ -77,7 +74,7 @@ PKT_CONFIG = 0x02  # config packet:  [0]=0x02 [1]=0x0E [2-3]=sensorID [14-15]=in
 # Validation limits (overridable via environment)
 # ---------------------------------------------------------------------------
 MIN_PRESSURE_PSI  = int(os.environ.get('MIN_PRESSURE_PSI',  '50'))
-MAX_PRESSURE_PSI  = int(os.environ.get('MAX_PRESSURE_PSI',  '60'))
+MAX_PRESSURE_PSI  = int(os.environ.get('MAX_PRESSURE_PSI',  '70'))
 MAX_TEMP_F        = int(os.environ.get('MAX_TEMP_F',        '150'))
 MAX_TEMP_CHANGE_F = int(os.environ.get('MAX_TEMP_CHANGE_F', '60'))
 
@@ -94,6 +91,11 @@ last_published = {}  # sensorID_hex -> (psi, temp_f)
 
 # Track last raw (unmodified) values for temperature-change detection
 last_raw_values: dict = {}  # sensorID_hex -> (raw_psi, raw_temp_f)
+
+# Tire fault silence tracking
+_silenced_until: float = 0.0   # epoch time when 12-hour silence expires
+_silenced_tires: set   = set() # tire names faulted at time of silence
+_current_faults: set   = set() # tire names currently in fault state
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -114,9 +116,8 @@ def dbg(msg):
 def detect_adapter():
     """Return adapter to use.
     Priority:
-      1. ADAPTER env var (explicit override)
-      2. BT_ADAPTER_MAC env var (pin by MAC - for production new dongle)
-      3. Auto-detect: first USB adapter that is NOT bat2mqtt's dongle
+      1. ADAPTER env var (explicit hci name override)
+      2. BT_ADAPTER_MAC (default: tirelinc dongle C8:7F:54:97:71:1B)
     """
     if ADAPTER:
         log(f"Using explicit ADAPTER={ADAPTER}")
@@ -128,43 +129,18 @@ def detect_adapter():
             log("hciconfig failed - falling back to hci1")
             return 'hci1'
 
-        # Parse all adapters
-        adapters = []  # list of (hci_name, bus, mac)
         current_hci = None
-        current_bus = None
         for line in result.stdout.split('\n'):
             if line.startswith('hci'):
-                parts = line.split(':')
-                current_hci = parts[0].strip()
-                current_bus = 'USB' if 'Bus: USB' in line else ('UART' if 'Bus: UART' in line else 'other')
+                current_hci = line.split(':')[0].strip()
             if 'BD Address:' in line and current_hci:
                 mac = line.strip().split()[2].upper()
-                adapters.append((current_hci, current_bus, mac))
+                if mac == BT_ADAPTER_MAC:
+                    log(f"Found adapter by MAC {BT_ADAPTER_MAC}: {current_hci}")
+                    return current_hci
                 current_hci = None
 
-        dbg(f"Found adapters: {adapters}")
-
-        # BT_ADAPTER_MAC pin
-        if BT_ADAPTER_MAC:
-            for hci, bus, mac in adapters:
-                if mac == BT_ADAPTER_MAC:
-                    log(f"Found pinned adapter by MAC {BT_ADAPTER_MAC}: {hci}")
-                    return hci
-            log(f"WARNING: Pinned MAC {BT_ADAPTER_MAC} not found, falling back to auto-detect")
-
-        # Auto-detect: first USB adapter that is not bat2mqtt's
-        for hci, bus, mac in adapters:
-            if bus == 'USB' and mac != BAT2MQTT_ADAPTER_MAC:
-                log(f"Auto-selected adapter {hci} (MAC {mac}, skipped bat2mqtt's {BAT2MQTT_ADAPTER_MAC})")
-                return hci
-
-        # Fallback: any USB adapter
-        for hci, bus, mac in adapters:
-            if bus == 'USB':
-                log(f"WARNING: Using bat2mqtt's adapter {hci} (no other USB adapter found)")
-                return hci
-
-        log("No USB Bluetooth adapter found - falling back to hci1")
+        log(f"WARNING: Adapter with MAC {BT_ADAPTER_MAC} not found - falling back to hci1")
         return 'hci1'
 
     except Exception as e:
@@ -174,6 +150,21 @@ def detect_adapter():
 # ---------------------------------------------------------------------------
 # MQTT
 # ---------------------------------------------------------------------------
+def on_mqtt_message(client, userdata, msg):
+    """Handle incoming MQTT messages (e.g. silence command)."""
+    global _silenced_until, _silenced_tires
+    if msg.topic == 'RVC/TIRE_ALARM/silence':
+        _silenced_until = time.time() + 12 * 3600
+        _silenced_tires = _current_faults.copy()
+        log(f"Tire fault silenced for 12 hours. Faults at silence: {_silenced_tires}")
+        # Stop the alarm buzzer immediately
+        if mqtt_client:
+            try:
+                mqtt_client.publish('rv/tire/buzzer/stop', '1')
+            except Exception as e:
+                log(f"  Buzzer stop publish error: {e}")
+
+
 def setup_mqtt():
     global mqtt_client
     try:
@@ -182,7 +173,9 @@ def setup_mqtt():
             mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
         except (AttributeError, TypeError):
             mqtt_client = mqtt.Client()
+        mqtt_client.on_message = on_mqtt_message
         mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+        mqtt_client.subscribe('RVC/TIRE_ALARM/silence')
         mqtt_client.loop_start()
         log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
         return True
@@ -210,13 +203,13 @@ def publish_tire(sensor_id_hex, index, name, psi, temp_f):
     if psi < MIN_PRESSURE_PSI or psi > MAX_PRESSURE_PSI:
         log(f"  WARNING [{name}] pressure {psi} PSI out of range "
             f"[{MIN_PRESSURE_PSI}-{MAX_PRESSURE_PSI}] - flagging")
-        pub_psi = -abs(psi)
+        pub_psi = -abs(psi) or -1  # use -1 when psi==0 so negative flag is preserved
 
     # --- Validate temperature ---
     pub_temp = temp_f
     if temp_f > MAX_TEMP_F:
         log(f"  WARNING [{name}] temp {temp_f}F exceeds max {MAX_TEMP_F}F - flagging")
-        pub_temp = -abs(temp_f)
+        pub_temp = -abs(temp_f) or -1  # use -1 when temp==0 so negative flag is preserved
     else:
         prev_raw = last_raw_values.get(sensor_id_hex)
         if prev_raw is not None:
@@ -225,10 +218,37 @@ def publish_tire(sensor_id_hex, index, name, psi, temp_f):
             if delta > MAX_TEMP_CHANGE_F:
                 log(f"  WARNING [{name}] temp change {delta}F exceeds max "
                     f"{MAX_TEMP_CHANGE_F}F - flagging")
-                pub_temp = -abs(temp_f)
+                pub_temp = -abs(temp_f) or -1  # use -1 when temp==0 so negative flag is preserved
 
     # Store raw values for next change-detection pass
     last_raw_values[sensor_id_hex] = (psi, temp_f)
+
+    # Track current fault state
+    was_faulted = name in _current_faults
+    if pub_psi < 0 or pub_temp < 0:
+        _current_faults.add(name)
+    else:
+        _current_faults.discard(name)
+
+    # Trigger buzzer indefinitely on fault, unless this tire is currently silenced
+    if (pub_psi < 0 or pub_temp < 0) and mqtt_client:
+        now = time.time()
+        if now >= _silenced_until or name not in _silenced_tires:
+            try:
+                buzzer_payload = json.dumps({"seconds": 0, "tire": name})
+                mqtt_client.publish("rv/tire/buzzer", buzzer_payload)
+                log(f"  Tire fault buzzer triggered indefinitely for [{name}]")
+            except Exception as e:
+                log(f"  Buzzer publish error: {e}")
+        else:
+            log(f"  Tire fault [{name}] suppressed — silenced until {_silenced_until:.0f}")
+    elif was_faulted and mqtt_client:
+        # Fault cleared — stop the buzzer
+        try:
+            mqtt_client.publish('rv/tire/buzzer/stop', '1')
+            log(f"  Tire fault cleared for [{name}] - buzzer stopped")
+        except Exception as e:
+            log(f"  Buzzer stop publish error: {e}")
 
     payload = {
         "instance":     index + 1,  # 1-based for RVC convention
