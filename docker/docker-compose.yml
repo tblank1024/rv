@@ -143,18 +143,6 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
     environment:
-      - DEBUG_LEVEL=0
-      - MQTT_HOST=localhost
-      - MQTT_PORT=1883
-      - TIRELINC_MAC=F4:CF:A2:85:D0:62
-      - BAT2MQTT_ADAPTER_MAC=08:BE:AC:35:8E:5E
-      - RECONNECT_DELAY=45
-      - TIRE_0=FL
-      - TIRE_1=RL_out
-      - TIRE_2=FR
-      - TIRE_3=RL_in
-      - TIRE_4=RR_out
-      - TIRE_5=RR_in
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
 

@@ -101,6 +101,7 @@ class Alarm():
     RedPWMVal: int          = 0          #PWM value from 0 - 100
     BluePWMVal: int         = 0          #PWM value from 0 - 100
     debuglevel: int         = 0
+    _tire_beep_until: float = 0.0        #epoch time until tire beep pattern is active
 
 
 
@@ -180,6 +181,8 @@ class Alarm():
             # Subscribe to alarm command topics
             client.subscribe("rv/alarm/bike/command")
             client.subscribe("rv/alarm/interior/command")
+            client.subscribe("rv/tire/buzzer")
+            client.subscribe("rv/tire/buzzer/stop")
             print("Subscribed to alarm command topics")
             
             # Publish initial status
@@ -215,6 +218,27 @@ class Alarm():
                     self.set_state(AlarmTypes.Interior, States.OFF)
                     print("Interior alarm deactivated via MQTT")
             
+            elif topic == "rv/tire/buzzer/stop":
+                self._tire_beep_until = 0.0
+                print("Tire fault buzzer silenced")
+                return  # no status publish needed
+
+            elif topic == "rv/tire/buzzer":
+                try:
+                    data = json.loads(payload)
+                    seconds = float(data.get("seconds", 30))
+                    tire_name = data.get("tire", "unknown")
+                except Exception:
+                    seconds = 30.0
+                    tire_name = "unknown"
+                if seconds == 0:
+                    self._tire_beep_until = float('inf')  # beep indefinitely
+                    print(f"Tire fault buzzer: [{tire_name}] beeping indefinitely")
+                else:
+                    self._tire_beep_until = time.time() + seconds
+                    print(f"Tire fault buzzer: [{tire_name}] beeping for {seconds}s")
+                return  # no status publish needed for tire beep
+
             # Publish updated status after processing command
             self.publish_status()
             
@@ -388,6 +412,17 @@ class Alarm():
         elif BuzzerVal == 1:
             if self.LOUDENABLE:
                     self.buzzer.on()
+
+        # Tire fault beep pattern: two quick beeps followed by off interval.
+        # Only active when no alarm buzzer is already sounding (BuzzerVal == 0).
+        # seconds=0 means beep indefinitely (_tire_beep_until == float('inf')).
+        if self._tire_beep_until > self.LoopTime and BuzzerVal == 0:
+            pos = self.LoopCount % self.SLOWBLINK
+            if pos == 0 or pos == 2:
+                if self.LOUDENABLE:
+                    self.buzzer.on()
+            else:
+                self.buzzer.off()
             #TINK.setLED(self.TINKERADDR,0)
         
         if AlarmVal == 0:
