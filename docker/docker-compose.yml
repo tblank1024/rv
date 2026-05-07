@@ -205,6 +205,8 @@ services:
     build:
       context: /home/tblank/code/Joram/RVSecurity
       dockerfile: Dockerfile
+      additional_contexts:
+        rv: /home/tblank/code/tblank1024/rv
     container_name: webserver
     image: webserver:latest
     network_mode: host

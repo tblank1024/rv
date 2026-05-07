@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-fix_5g_routing.py  Diagnose and repair routing-table issues that prevent a
-5G USB modem from providing internet access on a Raspberry Pi 5.
+routing-diag.py Diagnose and repair routing-table issues that prevent a
+USB modem from providing internet access on a Raspberry Pi 5.
+There are 4 options for internet access based on USB switch position:
+1. 5g modem (direct USB to USB connection)
+2. hardwired ethernet (ethernet adapter to usb)
+3. WiFi client (connected to another AP)
+4. Starlink (ethernet adapter to usb)
 
 Usage:
-    sudo python3 fix_5g_routing.py            # diagnose only
-    sudo python3 fix_5g_routing.py --fix      # diagnose and apply fixes
-    sudo python3 fix_5g_routing.py --verbose  # extra detail
+    sudo python3 routing-diag.py            # diagnose only
+    sudo python3 routing-diag.py --fix      # diagnose and apply fixes
+    sudo python3 routing-diag.py --verbose  # extra detail
 
 Requirements: Python 3.7+, standard library only (subprocess, re, &).
 """
@@ -39,22 +44,38 @@ def run(cmd: List[str], check: bool = False) -> subprocess.CompletedProcess:
     )
 
 
+# Output capture — populated when diagnose_to_dict() is running
+_capture_sections: list = []
+_capture_current: dict = {}
+_capturing: bool = False
+
+
 def header(msg: str) -> None:
+    global _capture_current
     print(f"\n{'='*60}")
     print(f"  {msg}")
     print('='*60)
+    if _capturing:
+        _capture_current = {"title": msg, "lines": []}
+        _capture_sections.append(_capture_current)
 
 
 def ok(msg: str) -> None:
     print(f"  [OK]  {msg}")
+    if _capturing and _capture_current:
+        _capture_current["lines"].append({"type": "ok", "msg": msg})
 
 
 def warn(msg: str) -> None:
     print(f"  [!!]  {msg}")
+    if _capturing and _capture_current:
+        _capture_current["lines"].append({"type": "warn", "msg": msg})
 
 
 def info(msg: str) -> None:
     print(f"  [--]  {msg}")
+    if _capturing and _capture_current:
+        _capture_current["lines"].append({"type": "info", "msg": msg})
 
 
 # 
@@ -82,7 +103,7 @@ class InterfaceInfo:
     bridge_master: Optional[str] = None  # set if this iface is enslaved to a bridge
 
 
-C@dataclass
+@dataclass
 class DiagResult:
     modem_ifaces: List[InterfaceInfo] = field(default_factory=list)
     all_ifaces: List[InterfaceInfo] = field(default_factory=list)
@@ -340,6 +361,34 @@ def check_dns() -> bool:
         return False
 
 
+
+def _in_container() -> bool:
+    """Best-effort check for Docker / LXC environment."""
+    try:
+        with open("/proc/1/cgroup") as f:
+            return "docker" in f.read() or "lxc" in f.read()
+    except OSError:
+        pass
+    try:
+        return open("/proc/1/comm").read().strip() not in ("systemd", "init")
+    except OSError:
+        return False
+
+
+def _service_active(name: str) -> tuple:
+    """Return (is_active: bool, method: str). Falls back to pgrep in containers."""
+    sc = run(["systemctl", "is-active", name])
+    if sc.stdout.strip() == "active":
+        return True, "systemctl"
+    if sc.returncode in (4, 1) or "not-found" in sc.stdout or not sc.stdout.strip():
+        # systemctl unavailable (container) -- try pgrep
+        pg = run(["pgrep", "-x", name])
+        if pg.returncode == 0:
+            return True, "pgrep"
+        return False, "pgrep"
+    return False, "systemctl"
+
+
 def ping_host(host: str, iface: Optional[str] = None, count: int = 3) -> bool:
     """Ping a host; optionally bind to a specific interface."""
     cmd = ["ping", "-c", str(count), "-W", "2"]
@@ -401,7 +450,7 @@ def diagnose(verbose: bool = False) -> DiagResult:
     ]
 
     if not default_routes:
-        warn("No default (0.0.0.0) route found  internet traffic has nowhere to go!")
+        warn("No default (0.0.0.0) route found â internet traffic has nowhere to go!")
         diag.issues.append("no_default_route")
     elif not modem_defaults:
         others = [(r.iface, r.metric) for r in default_routes]
@@ -434,7 +483,7 @@ def diagnose(verbose: bool = False) -> DiagResult:
                 ok(f"  subnet {r.destination}/{r.netmask} dev {r.iface}")
         else:
             if iface.has_ip:
-                warn(f"No subnet route for {iface.name} (IP={iface.ipv4})  may be missing.")
+                warn(f"No subnet route for {iface.name} (IP={iface.ipv4}) â may be missing.")
                 diag.issues.append(f"no_subnet_route:{iface.name}")
             else:
                 info(f"  {iface.name}: no IP, so no subnet route expected yet.")
@@ -450,13 +499,13 @@ def diagnose(verbose: bool = False) -> DiagResult:
                 diag.issues.append(f"ping_failed:{iface.name}")
 
     if not modem_ifaces:
-        info("Skipping connectivity test  no modem interface found.")
+        info("Skipping connectivity test â no modem interface found.")
     else:
         # General (default-route) connectivity
         if ping_host(FALLBACK_DNS):
             ok(f"General ping {FALLBACK_DNS} (via default route) succeeded")
         else:
-            warn(f"General ping {FALLBACK_DNS} FAILED  no internet connectivity")
+            warn(f"General ping {FALLBACK_DNS} FAILED â no internet connectivity")
             diag.issues.append("no_internet")
 
     #  5. DNS
@@ -546,8 +595,14 @@ def diagnose(verbose: bool = False) -> DiagResult:
     elif fwd_policy_m and fwd_policy_m.group(1) == "ACCEPT":
         ok("FORWARD chain default policy: ACCEPT")
     elif fwd_policy_m:
-        warn(f"FORWARD chain default policy: {fwd_policy_m.group(1)} -- non-matching traffic is dropped")
-        diag.issues.append("forward_policy_drop")
+        policy_val = fwd_policy_m.group(1)
+        # DROP default policy is acceptable when explicit ACCEPT rules cover AP<->modem traffic.
+        # Only flag it as an issue when those rules are also missing.
+        if fwd_ap_to_modem:
+            info(f"FORWARD chain default policy: {policy_val} (OK -- explicit ACCEPT rules present)")
+        else:
+            warn(f"FORWARD chain default policy: {policy_val} -- no explicit ACCEPT rules found")
+            diag.issues.append("forward_policy_drop")
 
     drop_lines = [l for l in fwd_chain.stdout.splitlines()
                   if re.search(r'\b(DROP|REJECT)\b', l) and l.strip() and not l.startswith('Chain')]
@@ -580,17 +635,17 @@ def diagnose(verbose: bool = False) -> DiagResult:
                 diag.issues.append(f"wlan_down:{iface.name}")
 
     # 7b. hostapd
-    hostapd = run(["systemctl", "is-active", "hostapd"])
-    if hostapd.stdout.strip() == "active":
-        ok("hostapd is running")
+    _hostapd_active, _hostapd_via = _service_active("hostapd")
+    if _hostapd_active:
+        ok(f"hostapd is running (checked via {_hostapd_via})")
     else:
-        warn(f"hostapd is {hostapd.stdout.strip()} -- no WiFi AP")
+        warn(f"hostapd not running (checked via {_hostapd_via}) -- no WiFi AP")
         diag.issues.append("hostapd_not_running")
 
     # 7c. dnsmasq
-    dnsmasq = run(["systemctl", "is-active", "dnsmasq"])
-    if dnsmasq.stdout.strip() == "active":
-        ok("dnsmasq is running")
+    _dnsmasq_active, _dnsmasq_via = _service_active("dnsmasq")
+    if _dnsmasq_active:
+        ok(f"dnsmasq is running (checked via {_dnsmasq_via})")
         leases = run(["cat", "/var/lib/misc/dnsmasq.leases"])
         lease_lines = [l for l in leases.stdout.splitlines() if l.strip()]
         if lease_lines:
@@ -600,7 +655,7 @@ def diagnose(verbose: bool = False) -> DiagResult:
         else:
             info("No active DHCP leases -- no clients connected, or lease file elsewhere")
     else:
-        warn(f"dnsmasq is {dnsmasq.stdout.strip()} -- no DHCP/DNS for WiFi clients")
+        warn(f"dnsmasq not running (checked via {_dnsmasq_via}) -- no DHCP/DNS for WiFi clients")
         diag.issues.append("dnsmasq_not_running")
 
     # 7d. Ping AP interface from Pi (sanity check that AP IP is reachable locally)
@@ -667,12 +722,173 @@ def diagnose(verbose: bool = False) -> DiagResult:
     else:
         info("Skipping full chain dump and forward ping test (needs root)")
 
+
+    #  9. WAN Switching (pi5connect)
+    header("9. WAN Switching (pi5connect)")
+
+    _PI5       = "/usr/local/sbin/pi5connect.sh"
+    _DISP      = "/etc/NetworkManager/dispatcher.d/99-pi5connect"
+    _STATE     = "/run/pi5connect-wan"
+    _PI5LOG    = "/var/log/pi5connect.log"
+    import os as _os9
+
+    if _in_container():
+        info("Running in container -- section 9 checks host-only files; results may not apply")
+
+    # 9a. Scripts present and executable
+    for _p9, _lbl9 in [(_PI5, "pi5connect.sh"), (_DISP, "NM dispatcher")]:
+        if _os9.path.isfile(_p9):
+            if _os9.access(_p9, _os9.X_OK):
+                ok(f"{_lbl9} found and executable: {_p9}")
+            else:
+                warn(f"{_lbl9} found but NOT executable: {_p9}")
+                diag.issues.append(f"not_executable:{_lbl9}")
+        else:
+            info(f"{_lbl9} not found: {_p9}")
+
+    # 9b. Dispatcher passes $IFACE $STATUS args
+    try:
+        with open(_DISP) as _f9:
+            _dsrc = _f9.read()
+        if '"$IFACE"' in _dsrc and '"$STATUS"' in _dsrc:
+            ok("Dispatcher passes $IFACE and $STATUS to pi5connect.sh")
+        else:
+            warn("Dispatcher does NOT pass interface/status args -- pi5connect falls back to list scan")
+            diag.issues.append("dispatcher_no_args")
+    except OSError:
+        pass
+
+    # 9c. State file matches active WAN
+    _s9_wan = None
+    try:
+        with open(_STATE) as _f9:
+            _s9_wan = _f9.read().strip()
+    except OSError:
+        pass
+
+    _wan_now9 = [i.name for i in diag.modem_ifaces if not i.bridge_master and i.has_ip]
+    if _s9_wan:
+        if _s9_wan in _wan_now9:
+            ok(f"State file WAN={_s9_wan} matches active WAN interface")
+        else:
+            warn(f"State file WAN={_s9_wan} but active WAN is {_wan_now9 or 'unknown'} -- stale after switch?")
+            diag.issues.append("state_file_stale")
+    else:
+        info("State file absent -- pi5connect has not run yet (expected before first boot trigger)")
+
+    # 9d. iptables rules consistent with the ACTUAL active WAN (root only)
+    # Use the live active WAN interface, not the (potentially stale) state file value.
+    if _is_root:
+        _fwd9  = run(["iptables", "-L", "FORWARD", "-n", "-v"]).stdout
+        _masq9 = run(["iptables", "-t", "nat", "-L", "POSTROUTING", "-n", "-v"]).stdout
+        if _wan_now9:
+            # There is an active uplink — verify rules cover it
+            _check_wan = _wan_now9[0]
+            _hf = _check_wan in _fwd9
+            _hm = _check_wan in _masq9 and "MASQUERADE" in _masq9
+            if _hf and _hm:
+                ok(f"FORWARD and MASQUERADE rules present for active WAN={_check_wan}")
+            else:
+                warn(f"iptables rules missing for active WAN={_check_wan} "
+                     f"(fwd={_hf} masq={_hm}) -- run pi5connect.sh to fix")
+                diag.issues.append("rules_inconsistent_with_state")
+        elif _s9_wan:
+            # No active uplink but state file names one — check for lingering stale rules
+            _hf = _s9_wan in _fwd9
+            _hm = _s9_wan in _masq9 and "MASQUERADE" in _masq9
+            if _hf or _hm:
+                warn(f"Stale iptables rules remain for old WAN={_s9_wan} but no active uplink found")
+                diag.issues.append("rules_inconsistent_with_state")
+
+    # 9e. Recent log activity
+    try:
+        with open(_PI5LOG) as _f9:
+            _ll = _f9.readlines()
+        _recent9 = [l.rstrip() for l in _ll[-5:] if l.strip()]
+        if _recent9:
+            ok(f"pi5connect log: {len(_ll)} entries, last 5:")
+            for _ln in _recent9:
+                info(f"  {_ln}")
+        else:
+            info("pi5connect log is empty")
+    except OSError:
+        info(f"pi5connect log not found: {_PI5LOG}")
+
     return diag
 
 
 # 
 # Fixes
 # 
+
+#
+# WAN switch test
+#
+
+def test_wan_switch(diag: DiagResult) -> None:
+    """Level 1: simulate down->up for the current WAN and verify rules cycle correctly."""
+    header("WAN Switch Test (Level 1)")
+
+    _PI5T = "/usr/local/sbin/pi5connect.sh"
+    import os as _ost
+    if not _ost.path.isfile(_PI5T):
+        warn(f"pi5connect.sh not found at {_PI5T} -- cannot run test")
+        return
+
+    if _in_container():
+        warn("Running in container -- iptables rules affect container namespace only, not host. Results informational only.")
+
+    wan_list = [i.name for i in diag.modem_ifaces if not i.bridge_master and i.has_ip]
+    if not wan_list:
+        warn("No active WAN interface found -- cannot run test.")
+        return
+    wan = wan_list[0]
+    FAKE = "eth99"
+
+    def rules_present(iface: str) -> bool:
+        return iface in run(["iptables", "-L", "FORWARD", "-n"]).stdout
+
+    ok(f"Testing WAN interface: {wan}")
+
+    # down
+    info(f"Calling pi5connect.sh {wan} down ...")
+    r = run([_PI5T, wan, "down"])
+    if r.returncode != 0:
+        warn(f"down failed (exit {r.returncode}): {r.stderr.strip()}")
+        return
+    if rules_present(wan):
+        warn(f"FAIL: rules for {wan} still present after down")
+    else:
+        ok(f"PASS: rules for {wan} removed on down")
+
+    # up
+    info(f"Calling pi5connect.sh {wan} up ...")
+    r = run([_PI5T, wan, "up"])
+    if r.returncode != 0:
+        warn(f"up failed (exit {r.returncode}): {r.stderr.strip()}")
+        return
+    if rules_present(wan):
+        ok(f"PASS: rules for {wan} restored on up")
+    else:
+        warn(f"FAIL: rules for {wan} missing after up")
+
+    # switch simulation with fake interface (no real traffic disrupted)
+    info(f"Simulating switch {wan} -> {FAKE} (fake interface, no real traffic disrupted) ...")
+    run([_PI5T, FAKE, "up"])
+    if rules_present(FAKE) and not rules_present(wan):
+        ok(f"PASS: rules switched to {FAKE}, {wan} rules removed")
+    else:
+        warn(f"FAIL: {wan} still={rules_present(wan)}, {FAKE} present={rules_present(FAKE)}")
+
+    # restore
+    info(f"Restoring {wan} ...")
+    run([_PI5T, wan, "up"])
+    if rules_present(wan) and not rules_present(FAKE):
+        ok(f"PASS: restored to {wan}, {FAKE} cleaned up")
+    else:
+        warn(f"FAIL: {wan} present={rules_present(wan)}, {FAKE} present={rules_present(FAKE)}")
+
+
 
 def apply_fixes(diag: DiagResult, dry_run: bool = False) -> None:
     header("Applying Fixes")
@@ -804,7 +1020,7 @@ def apply_fixes(diag: DiagResult, dry_run: bool = False) -> None:
             if not dry_run:
                 try:
                     with open("/etc/resolv.conf", "a") as f:
-                        f.write(f"\n# added by fix_5g_routing.py\nnameserver {FALLBACK_DNS}\n")
+                        f.write(f"\n# added by routing-diag.py\nnameserver {FALLBACK_DNS}\n")
                     ok(f"Appended nameserver {FALLBACK_DNS} to /etc/resolv.conf")
                     diag.fixes_applied.append(f"Added nameserver {FALLBACK_DNS}")
                 except OSError as exc:
@@ -860,6 +1076,68 @@ def apply_fixes(diag: DiagResult, dry_run: bool = False) -> None:
                 if not wan_ifaces:
                     warn("No eligible WAN interface found for FORWARD rules (all modem ifaces are bridge slaves or have no IP)")
 
+        #  iptables rules don't match the state file WAN (e.g. after WAN switch)
+        elif issue == "rules_inconsistent_with_state":
+            import os as _osfix
+            _PI5FIX  = "/usr/local/sbin/pi5connect.sh"
+            _STATEFIX = "/run/pi5connect-wan"
+
+            # Determine the actual active WAN right now
+            actual_wan = next(
+                (i.name for i in diag.modem_ifaces if not i.bridge_master and i.has_ip),
+                None,
+            )
+
+            if actual_wan and _osfix.path.isfile(_PI5FIX) and _osfix.access(_PI5FIX, _osfix.X_OK):
+                # Read stale state so we can clean up old rules first
+                stale_wan = None
+                try:
+                    with open(_STATEFIX) as _sf:
+                        stale_wan = _sf.read().strip()
+                except OSError:
+                    pass
+
+                if stale_wan and stale_wan != actual_wan:
+                    exec_fix(
+                        f"Remove stale iptables rules for old WAN={stale_wan}",
+                        [_PI5FIX, stale_wan, "down"],
+                    )
+
+                exec_fix(
+                    f"Sync iptables rules and state file for active WAN={actual_wan}",
+                    [_PI5FIX, actual_wan, "up"],
+                )
+            elif actual_wan:
+                warn(f"pi5connect.sh not found; adding rules manually for active WAN={actual_wan}")
+                exec_fix(
+                    f"Add NAT MASQUERADE rule for {actual_wan}",
+                    ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", actual_wan, "-j", "MASQUERADE"],
+                )
+                bridge_ifaces_fix = list({i.bridge_master for i in diag.all_ifaces if i.bridge_master})
+                unbridged_wlan_fix = [i.name for i in diag.all_ifaces
+                                      if i.link_type == "wlan" and not i.bridge_master]
+                for ap in bridge_ifaces_fix + unbridged_wlan_fix:
+                    exec_fix(
+                        f"Allow forwarding {ap} -> {actual_wan}",
+                        ["iptables", "-A", "FORWARD", "-i", ap, "-o", actual_wan, "-j", "ACCEPT"],
+                    )
+                    exec_fix(
+                        f"Allow forwarding {actual_wan} -> {ap} (established)",
+                        ["iptables", "-A", "FORWARD", "-i", actual_wan, "-o", ap,
+                         "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+                    )
+                if not dry_run:
+                    try:
+                        with open(_STATEFIX, "w") as _sf:
+                            _sf.write(actual_wan + "\n")
+                        ok(f"Updated state file {_STATEFIX} -> {actual_wan}")
+                    except OSError as _exc:
+                        warn(f"Could not update state file {_STATEFIX}: {_exc}")
+                else:
+                    info(f"[dry-run] would write '{actual_wan}' to {_STATEFIX}")
+            else:
+                warn("rules_inconsistent_with_state: no active WAN interface found -- connect a WAN first")
+
 
 # 
 # Summary
@@ -896,14 +1174,61 @@ def print_summary(diag: DiagResult) -> None:
     if diag.fixes_applied:
         print(f"\n  Fixes applied ({len(diag.fixes_applied)}):")
         for fix in diag.fixes_applied:
-            print(f"     {fix}")
+            print(f"    â {fix}")
 
     print()
 
 
-# 
+#
+# JSON / API interface
+#
+
+def diagnose_to_dict(verbose: bool = False, do_fixes: bool = False, dry_run: bool = False) -> dict:
+    """Run diagnostics and return structured results as a dict.
+
+    Suitable for use as a FastAPI endpoint response. All print output is still
+    emitted to stdout so container logs remain useful.
+    """
+    global _capturing, _capture_sections, _capture_current
+
+    _capturing = True
+    _capture_sections = []
+    _capture_current = {}
+
+    try:
+        diag = diagnose(verbose=verbose)
+        if do_fixes:
+            apply_fixes(diag, dry_run=dry_run)
+    finally:
+        _capturing = False
+
+    return {
+        "success": True,
+        "issues": diag.issues,
+        "fixes_applied": diag.fixes_applied,
+        "modem_interfaces": [
+            {"name": i.name, "up": i.up, "ip": i.ipv4,
+             "type": i.link_type, "bridge_master": i.bridge_master}
+            for i in diag.modem_ifaces
+        ],
+        "all_interfaces": [
+            {"name": i.name, "up": i.up, "ip": i.ipv4,
+             "type": i.link_type, "bridge_master": i.bridge_master}
+            for i in diag.all_ifaces
+        ],
+        "routes": [
+            {"destination": r.destination, "gateway": r.gateway,
+             "netmask": r.netmask, "flags": r.flags,
+             "iface": r.iface, "metric": r.metric}
+            for r in diag.routes
+        ],
+        "sections": _capture_sections,
+    }
+
+
+#
 # Entry point
-# 
+#
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -922,18 +1247,39 @@ def main() -> int:
         "--verbose", "-v", action="store_true",
         help="Print extra diagnostic detail."
     )
+    parser.add_argument(
+        "--test", action="store_true",
+        help="Run WAN switch simulation (requires root). Briefly cycles rules to verify pi5connect."
+    )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Output results as JSON (for API / machine use)."
+    )
     args = parser.parse_args()
 
-    print("5G Modem Routing Diagnostic Tool")
-    print("Raspberry Pi 5    fix_5g_routing.py")
-
-    if (args.fix or args.dry_run) and sys.platform != "win32":
+    if (args.fix or args.dry_run or args.test) and sys.platform != "win32":
         import os
         if os.geteuid() != 0:
-            print("\nERROR: --fix and --dry-run require root privileges. Re-run with sudo.\n")
+            print("\nERROR: --fix, --dry-run and --test require root privileges. Re-run with sudo.\n")
             return 1
 
+    if args.json:
+        import json as _json
+        result = diagnose_to_dict(
+            verbose=args.verbose,
+            do_fixes=args.fix,
+            dry_run=args.dry_run,
+        )
+        print(_json.dumps(result, indent=2))
+        return 0 if not result["issues"] else 2
+
+    print("5G Modem Routing Diagnostic Tool")
+    print("Raspberry Pi 5 -- routing-diag.py")
+
     diag = diagnose(verbose=args.verbose)
+
+    if args.test:
+        test_wan_switch(diag)
 
     if args.fix or args.dry_run:
         apply_fixes(diag, dry_run=args.dry_run)
