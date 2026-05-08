@@ -74,7 +74,7 @@ PKT_CONFIG = 0x02  # config packet:  [0]=0x02 [1]=0x0E [2-3]=sensorID [14-15]=in
 # Validation limits (overridable via environment)
 # ---------------------------------------------------------------------------
 MIN_PRESSURE_PSI  = int(os.environ.get('MIN_PRESSURE_PSI',  '50'))
-MAX_PRESSURE_PSI  = int(os.environ.get('MAX_PRESSURE_PSI',  '70'))
+MAX_PRESSURE_PSI  = int(os.environ.get('MAX_PRESSURE_PSI',  '75'))
 MAX_TEMP_F        = int(os.environ.get('MAX_TEMP_F',        '150'))
 MAX_TEMP_CHANGE_F = int(os.environ.get('MAX_TEMP_CHANGE_F', '60'))
 
@@ -291,7 +291,8 @@ def decode_packet(data: bytes):
     dbg(f"  PKT type=0x{pkt_type:02X} sensor={sensor_hex}  [{spaced}]")
 
     if pkt_type == PKT_CONFIG:
-        # Config packet - build sensor map
+        # Config packet - build sensor map and update validation limits from hardware
+        global MIN_PRESSURE_PSI, MAX_PRESSURE_PSI, MAX_TEMP_F, MAX_TEMP_CHANGE_F
         tire_index = int.from_bytes(data[14:16], 'big')
         min_psi    = data[7]
         max_psi    = int.from_bytes(data[8:10], 'big')
@@ -300,6 +301,16 @@ def decode_packet(data: bytes):
         name       = TIRE_NAMES.get(tire_index, f"TIRE_{tire_index}")
 
         sensor_map[sensor_hex] = {"index": tire_index, "name": name}
+
+        # Propagate hardware limits into software validation globals
+        if min_psi != MIN_PRESSURE_PSI or max_psi != MAX_PRESSURE_PSI \
+                or max_temp != MAX_TEMP_F or max_dtemp != MAX_TEMP_CHANGE_F:
+            log(f"  Updating SW limits from HW: PSI {min_psi}-{max_psi}"
+                f"  temp<={max_temp}F  dtemp<={max_dtemp}F")
+            MIN_PRESSURE_PSI = min_psi
+            MAX_PRESSURE_PSI = max_psi
+            MAX_TEMP_F       = max_temp
+            MAX_TEMP_CHANGE_F = max_dtemp
 
         log(f"  CONFIG  [{name}] idx={tire_index} sensor={sensor_hex}"
             f"  limits: PSI {min_psi}-{max_psi}  temp<={max_temp}F  dtemp<={max_dtemp}F")
