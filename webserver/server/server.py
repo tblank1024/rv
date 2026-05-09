@@ -1711,10 +1711,10 @@ async def debug_synology_control(action: str):
         import subprocess
         import os
         
-        if action not in ['status', 'power-on', 'power-off']:
+        if action not in ['status', 'power-on', 'power-off', 'standby']:
             return {
                 "success": False,
-                "message": f"Invalid action: {action}. Valid actions: status, power-on, power-off"
+                "message": f"Invalid action: {action}. Valid actions: status, power-on, standby, power-off"
             }
         
         # Get the current directory (server directory)

@@ -425,6 +425,12 @@ function Debug() {
                   Power On
                 </button>
                 <button 
+                  className="action-button standby-button"
+                  onClick={() => controlSynology('standby')}
+                >
+                  Standby
+                </button>
+                <button 
                   className="action-button power-off-button"
                   onClick={() => controlSynology('power-off')}
                 >
