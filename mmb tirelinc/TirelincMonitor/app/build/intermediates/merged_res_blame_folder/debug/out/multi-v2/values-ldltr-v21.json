@@ -1,0 +1,19 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.rv.tirelincmonitor.app-mergeDebugResources-18:/values-ldltr-v21/values-ldltr-v21.xml",
+            "map": [
+                {
+                    "source": "C:\\Users\\tjbla\\.gradle\\caches\\transforms-3\\b6392d9405cd0ec9997b5556aecd6afb\\transformed\\appcompat-1.6.1\\res\\values-ldltr-v21\\values-ldltr-v21.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "112",
+                        "endOffsets": "163"
+                    }
+                }
+            ]
+        }
+    ]
+}

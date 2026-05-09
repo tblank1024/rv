@@ -1,0 +1,121 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.rv.tirelincmonitor"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="21"
+9        android:targetSdkVersion="33" />
+10
+11    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+11-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:4:5-81
+11-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:4:22-78
+12    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+12-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:5:5-77
+12-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:5:22-74
+13
+14    <permission
+14-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:22:5-24:47
+15        android:name="com.rv.tirelincmonitor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+15-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:23:9-81
+16        android:protectionLevel="signature" />
+16-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:24:9-44
+17
+18    <uses-permission android:name="com.rv.tirelincmonitor.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+18-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:26:5-97
+18-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:26:22-94
+19
+20    <application
+20-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:7:5-41:19
+21        android:allowBackup="true"
+21-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:8:9-35
+22        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+22-->[androidx.core:core:1.12.0] C:\Users\tjbla\.gradle\caches\transforms-3\f50d06c60f96e9fc61217bc4dd4e61f4\transformed\core-1.12.0\AndroidManifest.xml:28:18-86
+23        android:debuggable="true"
+24        android:extractNativeLibs="true"
+25        android:label="@string/app_name"
+25-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:9:9-41
+26        android:supportsRtl="true"
+26-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:10:9-35
+27        android:theme="@style/Theme.AppCompat.Light.NoActionBar" >
+27-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:11:9-65
+28
+29        <!-- Launcher activity for manual test trigger -->
+30        <activity
+30-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:14:9-21:20
+31            android:name="com.rv.tirelincmonitor.MainActivity"
+31-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:15:13-41
+32            android:exported="true" >
+32-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:16:13-36
+33            <intent-filter>
+33-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:17:13-20:29
+34                <action android:name="android.intent.action.MAIN" />
+34-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:18:17-69
+34-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:18:25-66
+35
+36                <category android:name="android.intent.category.LAUNCHER" />
+36-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:19:17-77
+36-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:19:27-74
+37            </intent-filter>
+38        </activity>
+39
+40        <!-- Starts BeepService on device boot -->
+41        <receiver
+41-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:24:9-33:20
+42            android:name="com.rv.tirelincmonitor.BootReceiver"
+42-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:25:13-41
+43            android:enabled="true"
+43-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:26:13-35
+44            android:exported="true" >
+44-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:27:13-36
+45            <intent-filter android:priority="1000" >
+45-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:28:13-32:29
+45-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:28:28-51
+46                <action android:name="android.intent.action.BOOT_COMPLETED" />
+46-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:29:17-79
+46-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:29:25-76
+47                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+47-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:30:17-82
+47-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:30:25-79
+48
+49                <category android:name="android.intent.category.DEFAULT" />
+49-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:31:17-76
+49-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:31:27-73
+50            </intent-filter>
+51        </receiver>
+52
+53        <!-- Foreground service: plays startup beep for 30 seconds -->
+54        <service
+54-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:36:9-39:40
+55            android:name="com.rv.tirelincmonitor.BeepService"
+55-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:37:13-40
+56            android:enabled="true"
+56-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:38:13-35
+57            android:exported="false" />
+57-->C:\Users\tjbla\Code\tblank1024\rv\mmb tirelinc\TirelincMonitor\app\src\main\AndroidManifest.xml:39:13-37
+58
+59        <provider
+59-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:24:9-32:20
+60            android:name="androidx.startup.InitializationProvider"
+60-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:25:13-67
+61            android:authorities="com.rv.tirelincmonitor.androidx-startup"
+61-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:26:13-68
+62            android:exported="false" >
+62-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:27:13-37
+63            <meta-data
+63-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:29:13-31:52
+64                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+64-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:30:17-75
+65                android:value="androidx.startup" />
+65-->[androidx.emoji2:emoji2:1.2.0] C:\Users\tjbla\.gradle\caches\transforms-3\e69a62ca39e6198c632e72a391f0c2e8\transformed\emoji2-1.2.0\AndroidManifest.xml:31:17-49
+66            <meta-data
+66-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\tjbla\.gradle\caches\transforms-3\ec9f7bb043b44322456aa803ed066346\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:31:13-33:52
+67                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+67-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\tjbla\.gradle\caches\transforms-3\ec9f7bb043b44322456aa803ed066346\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:32:17-78
+68                android:value="androidx.startup" />
+68-->[androidx.lifecycle:lifecycle-process:2.4.1] C:\Users\tjbla\.gradle\caches\transforms-3\ec9f7bb043b44322456aa803ed066346\transformed\lifecycle-process-2.4.1\AndroidManifest.xml:33:17-49
+69        </provider>
+70    </application>
+71
+72</manifest>
