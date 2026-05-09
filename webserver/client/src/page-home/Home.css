@@ -1,0 +1,375 @@
+/* =====================================================
+   Home Page — pure widget layout, no SVG
+   Phone  (<600px): single column cards
+   MMB / tablet (≥600px): 2-column card grid
+   Desktop (≥960px): 2-column, wider cards
+   ===================================================== */
+
+/* ── Page shell ─────────────────────────────────────── */
+.Home {
+  width: 100%;
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 8px;
+  background-color: #d3dff7;
+  display: flex;
+  justify-content: center;
+}
+
+/* ── Centered wrapper — constrains everything ────────── */
+.home-wrapper {
+  width: 100%;
+  max-width: 900px;
+  box-sizing: border-box;
+}
+
+/* ── Header bar ─────────────────────────────────────── */
+.home-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  background: #1a3a6b;
+  border-radius: 8px;
+  color: white;
+}
+
+.home-title {
+  font-size: 1.2rem;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+}
+
+.home-time {
+  font-size: 0.95rem;
+  opacity: 0.85;
+}
+
+/* ── Card grid ──────────────────────────────────────── */
+.home-grid {
+  display: grid;
+  grid-template-columns: 1fr;          /* phone: 1 column */
+  gap: 10px;
+}
+
+@media (min-width: 600px) {
+  .home-grid {
+    grid-template-columns: 1fr 1fr;    /* MMB / tablet: 2 columns */
+  }
+}
+
+/* ── Base card ──────────────────────────────────────── */
+.home-card {
+  background: white;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.card-title {
+  font-size: 1rem;
+  font-weight: bold;
+  color: #1a3a6b;
+  border-bottom: 2px solid #d3dff7;
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Tighter vertical padding for battery and power cards */
+.home-card--battery,
+.home-card--power {
+  padding: 8px 12px;
+}
+
+/* ── Battery card ───────────────────────────────────── */
+
+/* Stats on left, rotated gauge on right — side by side */
+.battery-body {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.battery-stats {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Gauge sits to the right, rotated so the battery stands upright */
+.battery-widget {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* size=110, aspectRatio=0.5 → rendered ~55w × 110h
+     Rotating -90° swaps width/height visually.
+     We nudge the element so its rotated bounding box doesn't bleed. */
+  transform: rotate(-90deg);
+  width: 110px;
+  height: 55px;
+}
+
+/* Keep battery % text readable after rotation */
+.home-card--battery text {
+  fill: white !important;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.88rem;
+  padding: 1px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.stat-label {
+  color: #666;
+  font-weight: 500;
+}
+
+.stat-value {
+  color: #222;
+  font-weight: bold;
+  text-align: right;
+}
+
+/* ── Power card ─────────────────────────────────────── */
+.power-row {
+  display: flex;
+  justify-content: space-around;
+  gap: 8px;
+}
+
+.power-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  padding: 5px 4px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+/* Icon + label on the same line */
+.power-item-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.power-item--solar  { background: #fffbe6; border: 1px solid #f5c518; }
+.power-item--ac     { background: #f0f0ff; border: 1px solid #6b6bff; }
+.power-item--dc     { background: #f0fff4; border: 1px solid #2ecc71; }
+
+.power-icon  { font-size: 1.0rem; line-height: 1; }
+.power-label { font-size: 0.68rem; color: #555; font-weight: 600; }
+.power-value { font-size: 0.82rem; font-weight: bold; color: #222; }
+
+/* ── Tanks card ─────────────────────────────────────── */
+.tanks-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  justify-items: center;
+}
+
+.tanks-grid .gauge_label {
+  font-size: 0.85rem;
+  margin-top: 4px;
+}
+
+/* ── Tires card ─────────────────────────────────────── */
+.tire-diagram {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tire-axle-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.tire-axle {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+}
+
+.tire-chassis {
+  flex: 1;
+  height: 6px;
+  background: #444;
+  border-radius: 3px;
+  max-width: 80px;
+}
+
+.tire {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #2c2c2c;
+  color: white;
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 52px;
+  box-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.tire--inner {
+  background: #444;
+  min-width: 46px;
+}
+
+.tire-label {
+  font-size: 0.65rem;
+  opacity: 0.75;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tire-reading {
+  font-size: 0.82rem;
+  font-weight: bold;
+  margin-top: 2px;
+}
+
+/* ── Tire control buttons ───────────────────────── */
+.tire-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  justify-content: center;
+}
+
+.tire-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.tire-btn:active { opacity: 0.75; }
+
+.tire-btn--start   { background: #2ecc71; color: white; }
+.tire-btn--stop    { background: #e74c3c; color: white; }
+.tire-btn--silence { background: #f39c12; color: white; }
+
+/* ── Action buttons card ────────────────────────── */
+/* Span full width when grid is 2 columns */
+@media (min-width: 600px) {
+  .home-card--actions {
+    grid-column: 1 / -1;
+  }
+}
+
+.action-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.action-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  min-width: 120px;
+  transition: opacity 0.15s, transform 0.1s;
+}
+
+.action-btn:active { opacity: 0.75; transform: scale(0.97); }
+
+.action-btn--reboot  { background: #9b59b6; color: white; }
+.action-btn--restart { background: #2980b9; color: white; }
+.action-btn--debug   { background: #7f8c8d; color: white; }
+
+/* ── Reboot confirm modal ───────────────────────────── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.confirm-dialog {
+  background: #1e2a3a;
+  border: 1px solid #3a4a5a;
+  border-radius: 12px;
+  padding: 32px 40px;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+.confirm-msg {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #e0e0e0;
+  margin: 0 0 24px;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.confirm-btn {
+  padding: 12px 36px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.confirm-btn--yes { background: #9b59b6; color: white; }
+.confirm-btn--no  { background: #555;    color: white; }
+
+/* ── Mobile scale-down (≤400px) ─────────────────────── */
+@media (max-width: 400px) {
+  .Home {
+    padding: 4px;
+    /* Switch from flex-centering to block so transform math is simpler */
+    display: block;
+  }
+
+  /* Scale the entire content down uniformly.
+     The wrapper is 100% wide. After scale(0.82) it visually becomes 82% wide,
+     leaving 18% gap. Push it right by 9% to center the shrunken content. */
+  .home-wrapper {
+    transform: scale(0.82);
+    transform-origin: top left;
+    width: 100%;
+    margin-left: 9%;
+  }
+
+  .home-grid {
+    gap: 6px;
+  }
+}

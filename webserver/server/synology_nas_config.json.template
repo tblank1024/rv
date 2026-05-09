@@ -1,0 +1,9 @@
+{
+  "ip_address": "192.168.1.100",
+  "mac_address": "00:11:32:44:55:66",
+  "admin_user": "admin",
+  "admin_password": "your_secure_password_here",
+  "port": 5000,
+  "ethernet_port": "eth0",
+  "_comment": "This file contains sensitive information. Do not commit to version control!"
+}

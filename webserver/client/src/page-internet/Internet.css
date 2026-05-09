@@ -1,0 +1,249 @@
+.internet-page {
+  padding: 20px;
+  min-height: 100vh;
+  background-color: #d3dff7; /* Same blue background as Home page */
+}
+
+.internet-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  max-width: 400px; /* Further reduce to match title text width more closely */
+  width: 100%;
+  margin: 20px auto 0 auto; /* Center the container */
+  padding: 0;
+}
+
+.internet-control-card {
+  width: 100% !important; /* 100% of the container width */
+  max-width: none !important; /* No additional max-width constraint */
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+  border-radius: 8px !important;
+  background: white !important;
+  margin: 0 !important;
+}
+
+/* Override semantic-ui Card defaults */
+.internet-control-card.ui.card {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+/* Also override any nested Card.Content width constraints */
+.internet-control-card .content {
+  width: 100% !important;
+}
+
+.internet-status-card {
+  width: 400px !important; /* Reduced to match Home page proportions */
+  min-width: 400px !important; /* Force minimum width */
+  max-width: calc(100vw - 40px); /* Ensures responsive behavior on small screens, accounting for page padding */
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+  border-radius: 8px !important;
+  background: white !important;
+  /* Override container constraints */
+  align-self: center;
+}
+
+.control-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+  justify-content: center;
+}
+
+.control-buttons .button {
+  min-width: 120px;
+}
+
+.wifi-form-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.wifi-form-buttons .button {
+  min-width: 120px;
+}
+
+.wifi-config-card,
+.wifi-output-card {
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+  border-radius: 6px !important;
+}
+
+.status-details {
+  padding: 15px !important;
+  background-color: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 4px;
+  margin-top: 10px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.status-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 0;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.status-item:last-child {
+  border-bottom: none;
+}
+
+.status-item strong {
+  color: #495057;
+  margin-right: 10px;
+  font-size: 1em;
+}
+
+.status-item span {
+  color: #6c757d;
+  font-weight: normal;
+  font-size: 1em;
+}
+
+.countdown-badge {
+  background-color: #007bff;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.9em;
+  margin-left: 10px;
+  font-weight: bold;
+}
+
+/* Radio button styling */
+.ui.form .field .ui.radio {
+  margin-bottom: 8px;
+}
+
+.internet-connection-label {
+  font-size: 1.5em !important;
+  font-weight: 600 !important;
+  color: #495057 !important;
+  margin-bottom: 15px !important;
+  display: block !important;
+}
+
+.ui.form .field .ui.radio label {
+  padding-left: 25px !important;
+  font-size: 1.1em;
+  color: #495057;
+}
+
+.ui.form .field .ui.radio input:checked ~ label {
+  color: #007bff;
+  font-weight: 500;
+}
+
+/* Loading states */
+.internet-control-card.loading {
+  opacity: 0.7;
+}
+
+/* Message styling */
+.ui.message {
+  margin-bottom: 15px !important;
+}
+
+.ui.message .header {
+  margin-bottom: 0.5rem !important;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .internet-page {
+    padding: 10px;
+  }
+  
+  .internet-container {
+    padding: 0 10px;
+    max-width: 100%;
+  }
+  
+  .control-buttons {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .control-buttons .button {
+    width: 100%;
+    margin: 0;
+  }
+  
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .status-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+  
+  .status-item span {
+    padding-left: 10px;
+  }
+}
+
+/* Extra small phones */
+@media (max-width: 480px) {
+  .internet-page {
+    padding: 5px;
+  }
+  
+  .internet-page .ui.header {
+    font-size: 1.4rem !important;
+  }
+  
+  .internet-page .ui.header .sub.header {
+    font-size: 1.1rem !important;
+  }
+  
+  .ui.form .field .ui.radio label {
+    font-size: 1.1em;
+  }
+}
+
+/* Animation for countdown */
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+.countdown-badge {
+  animation: pulse 1s infinite;
+}
+
+/* Status indicator colors */
+.status-item span {
+  display: flex;
+  align-items: center;
+}
+
+.status-item span:contains('✅') {
+  color: #28a745;
+}
+
+.status-item span:contains('⚠️') {
+  color: #ffc107;
+}
+
+.status-item span:contains('❌') {
+  color: #dc3545;
+}
+
+.status-item span:contains('⚪') {
+  color: #6c757d;
+}

@@ -1,0 +1,137 @@
+.plex-svr-page {
+  padding: 20px;
+  min-height: 100vh;
+  background-color: #d3dff7; /* Same blue background as Home page */
+}
+
+.plex-svr-page .ui.container {
+  max-width: 600px !important;
+  margin-top: 30px;
+}
+
+.plex-svr-page .ui.segment {
+  padding: 30px !important;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+  border-radius: 8px !important;
+  background: white !important;
+}
+
+.plex-svr-page .ui.form .field {
+  margin-bottom: 1.2rem !important;
+}
+
+.plex-svr-page .ui.radio.checkbox {
+  font-size: 1.1rem;
+}
+
+.plex-svr-page .ui.radio.checkbox label {
+  padding-left: 2rem !important;
+  color: #333 !important;
+  font-weight: 500;
+}
+
+/* Container is now handled by inline styles for better control */
+
+.plex-svr-page .plex-svr-form-card,
+.plex-svr-page .plex-svr-output-card {
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1) !important;
+  border-radius: 8px !important;
+}
+
+.plex-svr-page .plex-svr-form-card {
+  background: white !important;
+}
+
+.plex-svr-page .plex-svr-output-card {
+  background: white !important;
+}
+
+.form-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.output-segment {
+  padding: 10px !important;
+  background-color: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.output-segment textarea {
+  background: transparent !important;
+  border: none !important;
+  font-family: inherit !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
+  resize: vertical !important;
+  box-shadow: none !important;
+  min-height: 250px !important;
+}
+
+.output-segment textarea:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .plex-svr-page {
+    padding: 10px;
+  }
+  
+  .form-buttons {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .form-buttons .button {
+    width: 100%;
+  }
+  
+  /* Make cards full width on mobile */
+  .plex-svr-page .plex-svr-form-card,
+  .plex-svr-page .plex-svr-output-card {
+    margin: 0 !important;
+  }
+}
+
+/* Extra small phones */
+@media (max-width: 480px) {
+  .plex-svr-page {
+    padding: 5px;
+  }
+  
+  /* Smaller text on very small screens */
+  .plex-svr-page .ui.header {
+    font-size: 1.2rem !important;
+  }
+  
+  .plex-svr-page .ui.header .sub.header {
+    font-size: 0.9rem !important;
+  }
+}
+
+/* Loading state styling */
+.plex-svr-form-card.loading {
+  opacity: 0.7;
+}
+
+/* Status message styling */
+.ui.message {
+  margin-bottom: 15px !important;
+}
+
+/* Form field spacing */
+.ui.form .field {
+  margin-bottom: 1rem;
+}
+
+/* Card header spacing */
+.ui.card > .content > .header {
+  margin-bottom: 0.5rem;
+}

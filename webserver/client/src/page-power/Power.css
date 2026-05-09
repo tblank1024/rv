@@ -1,0 +1,64 @@
+/* =====================================================
+   Power Page — fluid SVG layout
+   The SVG scales via its viewBox. The battery gauge is
+   positioned as a percentage of the container so it
+   moves with the diagram at every screen size.
+   No breakpoints needed.
+   ===================================================== */
+
+.Power {
+  width: 100%;
+  min-height: 100vh;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 10px;
+  transform: scale(0.8);
+  transform-origin: top center;
+}
+
+/* SVG container: centered, max-width so it doesn't get
+   huge on a desktop, aspect-ratio matches Sophie1.svg
+   viewBox (404 wide × 732 tall → 404/732 ≈ 0.552) */
+.base_svg {
+  position: relative;        /* containing block for % overlays */
+  width: 100%;
+  max-width: 500px;          /* prevents over-stretching on wide screens */
+  margin: 0 auto;
+  aspect-ratio: 404 / 732;  /* matches Sophie1.svg viewBox exactly */
+}
+
+/* SVG fills its container completely */
+.base_svg svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+/* Battery gauge: percentage position so it tracks the
+   diagram element at all screen sizes.
+   130/404 = 32.2% left,  269/732 = 36.7% top  */
+.battery {
+  position: absolute;
+  left: 36%;
+  top: 38%;
+  /* Size is controlled by the @media breakpoints below */
+  transform-origin: top left;
+}
+
+@media (max-width: 400px) {
+  .battery {
+    transform: scale(0.75);
+  }
+}
+
+@media (min-width: 401px) and (max-width: 768px) {
+  .battery {
+    transform: scale(0.87);
+  }
+}
+
+@media (min-width: 769px) {
+  .battery {
+    transform: scale(0.99);
+  }
+}

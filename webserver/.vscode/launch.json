@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Attach using Process Id",
+            "type": "debugpy",
+            "request": "attach",
+            "processId": "${command:pickProcess}",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Current File",
+            "cwd": "${fileDirname}",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Watcher Debug",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/home/tblank/code/tblank1024/rv/watcher/watcher.py",
+            "args": [
+                "--debug", "1",
+                "--Mode", "s"
+            ],
+            "console": "integratedTerminal",
+            "python": "/home/tblank/code/tblank1024/rv/watcher/venv/bin/python",
+            "cwd": "/home/tblank/code/tblank1024/rv/watcher",
+            "justMyCode": true
+        }
+    ]
+}

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o StrictHostKeyChecking=no tblank@10.0.0.1 \"echo '=== LINKS ===' && ip link show && echo '=== ADDRS ===' && ip addr show && echo '=== ROUTES ===' && ip route show && echo '=== NAT RULES ===' && sudo iptables -t nat -L POSTROUTING -n -v && echo '=== IP FORWARD ===' && sysctl net.ipv4.ip_forward && echo '=== USB DEVICES ===' && lsusb && echo '=== DMESG USB ===' && dmesg | grep -i 'usb\\\\|wwan\\\\|modem\\\\|cdc\\\\|rndis\\\\|qmi' | tail -20\")",
+      "PowerShell(ls $env:USERPROFILE\\\\.ssh\\\\)",
+      "Bash(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 tblank@10.0.0.1 \"echo '=== LINKS ===' && ip link show && echo '=== ADDRS ===' && ip addr show && echo '=== ROUTES ===' && ip route show && echo '=== NAT RULES ===' && sudo iptables -t nat -L POSTROUTING -n -v && echo '=== IP FORWARD ===' && sysctl net.ipv4.ip_forward && echo '=== USB DEVICES ===' && lsusb && echo '=== DMESG USB ===' && dmesg | grep -i 'usb\\\\|wwan\\\\|modem\\\\|cdc\\\\|rndis\\\\|qmi' | tail -20\")",
+      "Read(//c/Users/tjbla/.ssh/**)",
+      "Bash(ssh -v -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 tblank@10.0.0.1 \"echo ok\")",
+      "Bash(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 tblank@10.0.0.1 \"echo '=== USB DEVICES ===' && lsusb && echo '=== SYS NET INTERFACES ===' && ls /sys/class/net/ && echo '=== TTY USB ===' && ls /dev/ttyUSB* /dev/cdc-wdm* /dev/ttyACM* 2>&1 && echo '=== DMESG USB ===' && dmesg | grep -i 'usb\\\\|wwan\\\\|modem\\\\|cdc\\\\|rndis\\\\|qmi\\\\|ecm\\\\|ncm' | tail -30 && echo '=== NETWORKCTL ===' && networkctl list 2>/dev/null && echo '=== MODEMMANAGER ===' && mmcli -L 2>&1\")",
+      "Bash(ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 tblank@10.0.0.1 \"dmesg | grep -i 'usb\\\\|wwan\\\\|modem\\\\|cdc\\\\|rndis\\\\|qmi\\\\|ecm\\\\|ncm\\\\|modeswitch' | tail -40\")"
+    ]
+  }
+}

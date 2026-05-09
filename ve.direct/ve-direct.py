@@ -61,6 +61,8 @@ def decode_ve_direct_message(data, debug):
         return None
     lst[0] = lst[0].lstrip("b'")
     lst[1] = lst[1].rstrip("\\r\\n'")
+    # Strip embedded control/non-printable characters from serial noise
+    lst[1] = ''.join(c for c in lst[1] if c.isprintable())
     decoded_data = {'op': lst[0]}
     match lst[0]:
         case 'V':            
@@ -99,8 +101,8 @@ def decode_ve_direct_message(data, debug):
     return decoded_data
 
 def read_serial_data(ser, debug):
-    try:
-        while True:
+    while True:
+        try:
             data = ser.readline()
             if data:
                 #print(f"Received data: {data}")
@@ -109,9 +111,12 @@ def read_serial_data(ser, debug):
                     #print(decoded_data['value'])
                     #Update Solar record dictionary in MasterDict
                     MasterDict['SOLAR_CONTROLLER_STATUS/1'][decoded_data['op']] = decoded_data['value']
-                                        
-    except KeyboardInterrupt:
-        print("Thread terminated.")
+        except KeyboardInterrupt:
+            print("Thread terminated.")
+            break
+        except Exception as e:
+            # Log bad serial data but keep thread alive
+            print(f"Warning: serial decode error (skipping): {e}")
 
 def InitializeSolarMQTTRecord(Client):
     #Initialize the Solar record dictionary in MasterDict and update MQTT

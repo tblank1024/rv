@@ -115,6 +115,37 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
 
+  # TireLinc TPMS Monitoring (Bluetooth GATT via USB dongle hci2)
+  tirelinc:
+    build:
+      context: /home/tblank/code/tblank1024/rv/tirelinc
+      dockerfile: Dockerfile
+    container_name: tirelinc
+    image: tirelinc:latest
+    network_mode: host
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - mqtt
+    volumes:
+      - /run/dbus:/run/dbus:rw
+      - /var/run/dbus:/var/run/dbus:rw
+      - /sys/class/bluetooth:/sys/class/bluetooth:ro
+      - /sys/devices:/sys/devices:ro
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    restart: "always"
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+
   # Victron Solar Monitoring (ve.direct)
   ve.direct:
     build:
@@ -152,16 +183,45 @@ services:
     environment:
       - TZ=America/Los_Angeles
       - PYTHONUNBUFFERED=1
-      - WIFI_CONTROL_SCRIPT=/WifitoHostBridge/RP5toRPZero2WControl.py
+      - KASA_DISCOVERY_TIMEOUT=10
+      - KASA_DEFAULT_TIMEOUT=10
+      - DISABLE_KASA=false
+      - KASA_IP=${KASA_IP}
+      - KASA_USERNAME=${KASA_USERNAME}
+      - KASA_PASSWORD=${KASA_PASSWORD}
+      - PYTHONPATH=/usr/share/zoneinfo
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
+      - PST8PDT=America/Los_Angeles
+      - WIFI_BRIDGE_HOST=10.10.0.1
+      - WIFI_BRIDGE_PORT=12345
+      - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     build:
-      context: /home/tblank/code/Joram/RVSecurity
+      context: /home/tblank/code/tblank1024/rv/webserver
       dockerfile: Dockerfile
     container_name: webserver
     image: webserver:latest
     network_mode: host
+    pid: host
     privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+      - SYS_ADMIN
+      - DAC_OVERRIDE
     volumes:
-      - /home/tblank/code/tblank1024/WifitoHostBridge:/WifitoHostBridge:ro
+      - /sys/class/net:/sys/class/net:ro
+      - /sys/bus/usb:/sys/bus/usb:rw
+      - /sys/devices:/sys/devices:ro
+      - /dev/bus/usb:/dev/bus/usb:rw
+      - /run/dbus:/run/dbus:rw
+      - /var/run/dbus:/var/run/dbus:rw
+      - /home/tblank/code/tblank1024/rv/alarm:/home/tblank/code/tblank1024/rv/alarm:ro
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiochip4:/dev/gpiochip4
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /home/tblank/code/tblank1024/rv/docker:/home/tblank/code/tblank1024/rv/docker:ro
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1

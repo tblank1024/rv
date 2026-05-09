@@ -1,0 +1,64 @@
+body {
+  background-color: #d3dff7;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  overflow-x: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* App root wrapper — must fill full viewport on all screen sizes/orientations */
+.body {
+  width: 100vw;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Global gauge styles - positioning should be in page-specific CSS files */
+.gauge_label {
+  width: 100%;
+  text-align: center;
+  font-size: 30px;
+  font-weight: bold;
+}
+
+/* Global gauge label colors */
+.gauge_label {
+  margin-top: 10px;
+  color:  rgb(0,0,0);
+}
+
+/* Global gauge borders and styling */
+div.gauge#fresh {
+  border-radius: 60px;
+  border: 5px solid  rgb(0,0,0);
+  padding: 15px;
+} 
+
+div.gauge#propane {
+  border-radius: 60px;
+  border: 5px solid  rgb(0,0,0);
+  padding: 15px;
+} 
+
+div.gauge#gray {
+  border-radius: 60px;
+  border: 5px solid rgb(0,0,0);
+  padding: 15px;
+} 
+
+div.gauge#black {
+  border-radius: 60px;
+  border: 5px solid  rgb(0,0,0);
+  padding: 15px;
+} 
