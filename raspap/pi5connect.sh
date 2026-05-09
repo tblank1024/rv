@@ -7,8 +7,9 @@
 exec >> /var/log/pi5connect.log 2>&1
 echo "[$(date)] pi5connect.sh triggered with args: $@"
 
-# List of possible USB/uplink interfaces (update as needed)
-UPLINK_IFACES=("enx7cc2c643fc22" "usb0" "usb1" "eth1")
+# List of possible USB/uplink interfaces (order = preference; update as needed)
+# wwan* covers 5G/LTE modems, enx* covers CDC-Ethernet adapters, usb*/eth1 for wired
+UPLINK_IFACES=("wwan0" "wwan1" "enx7cc2c643fc22" "usb0" "usb1" "eth1")
 
 # Bridge interface for LAN
 BRIDGE_IFACE="br0"
@@ -35,10 +36,15 @@ for iface in "${UPLINK_IFACES[@]}"; do
     fi
 done
 
+# State file read by routing-diag.py to validate rules vs active WAN
+STATE_FILE="/run/pi5connect-wan"
+
 if [ -z "$ACTIVE_UPLINK" ]; then
     echo "[$(date)] No active uplink interface found."
     # Clear any existing default routes that might conflict
     sudo ip route del default 2>/dev/null || true
+    # Clear state file so routing-diag knows no WAN is active
+    echo -n "" | sudo tee "$STATE_FILE" > /dev/null
     echo "[$(date)] No internet uplink - bridge will work for local access only"
 else
     echo "[$(date)] Using uplink interface: $ACTIVE_UPLINK"
@@ -62,8 +68,11 @@ else
         sudo iptables -A FORWARD -i "$ACTIVE_UPLINK" -o "$BRIDGE_IFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
         
         echo "[$(date)] NAT and forwarding rules configured for $ACTIVE_UPLINK"
+        # Record active WAN so routing-diag.py can verify rules match state
+        echo -n "$ACTIVE_UPLINK" | sudo tee "$STATE_FILE" > /dev/null
     else
         echo "[$(date)] No gateway found for $ACTIVE_UPLINK"
+        echo -n "" | sudo tee "$STATE_FILE" > /dev/null
     fi
 fi
 

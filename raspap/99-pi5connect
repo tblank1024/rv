@@ -33,7 +33,7 @@ if containsElement "$IFACE" "${KNOWN_UPLINKS[@]}"; then
     is_uplink=true
 else
     # 2. Check if it matches common patterns AND is not excluded
-    if [[ "$IFACE" == enx* || "$IFACE" == eth* || "$IFACE" == usb* ]]; then
+    if [[ "$IFACE" == enx* || "$IFACE" == eth* || "$IFACE" == usb* || "$IFACE" == wwan* || "$IFACE" == ppp* ]]; then
         if ! containsElement "$IFACE" "${EXCLUDE_IFACES[@]}"; then
             is_uplink=true
             echo "[$(date)] NetworkManager dispatcher identified potential uplink $IFACE by pattern." >> "$LOG_FILE"
