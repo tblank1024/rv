@@ -224,6 +224,7 @@ services:
       - /dev/gpiochip4:/dev/gpiochip4
       - /var/run/docker.sock:/var/run/docker.sock
       - /home/tblank/code/tblank1024/rv/docker:/home/tblank/code/tblank1024/rv/docker:ro
+      - /home/tblank/code/tblank1024/rv/webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyUSB1:/dev/ttyUSB1

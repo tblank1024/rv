@@ -436,7 +436,50 @@ class SynologyNASController:
             return False
         finally:
             self._logout()
-    
+
+    def standby(self) -> bool:
+        """
+        Put the NAS into hibernation/standby (drives spin down, low power) using the DSM API.
+
+        Returns:
+            bool: True if the hibernation command was sent successfully
+        """
+        logger.info(f"Attempting to hibernate NAS at {self.ip_address}")
+
+        if not self.is_online():
+            logger.info("NAS is already offline")
+            return True
+
+        if not self._authenticate():
+            logger.error("Failed to authenticate for hibernation")
+            return False
+
+        try:
+            hibernate_url = f"{self.base_url}/webapi/entry.cgi"
+            params = {
+                'api': 'SYNO.Core.System',
+                'version': '1',
+                'method': 'hibernate',
+                '_sid': self.session_id
+            }
+
+            response = requests.get(hibernate_url, params=params, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+            if data.get('success'):
+                logger.info("Hibernation command sent successfully")
+                return True
+            else:
+                logger.error(f"Hibernation failed: {data.get('error', {})}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Hibernation error: {e}")
+            return False
+        finally:
+            self._logout()
+
     def get_status(self) -> Dict[str, Any]:
         """
         Get the current status of the NAS.
@@ -509,6 +552,8 @@ Examples:
                                   help='Power on the NAS using Wake-on-LAN')
         command_group.add_argument('--power-off', action='store_true',
                                   help='Power off the NAS using DSM API')
+        command_group.add_argument('--standby', action='store_true',
+                                  help='Put the NAS into hibernation/standby (low power)')
         command_group.add_argument('--create-config', action='store_true',
                                   help='Create a password file template')
         
@@ -543,7 +588,12 @@ Examples:
                 status = nas.get_status()
                 
                 # Basic status
-                online_status = "ONLINE" if status['online'] else "OFFLINE"
+                if status['online']:
+                    online_status = "ONLINE"
+                elif status['ethernet_active']:
+                    online_status = "STANDBY"
+                else:
+                    online_status = "OFFLINE"
                 print(f"Status:        {online_status}")
                 print(f"IP Address:    {status['ip_address']}")
                 print(f"MAC Address:   {status['mac_address']}")
@@ -605,7 +655,19 @@ Examples:
                 else:
                     print("FAILED: Could not send shutdown command")
                     sys.exit(1)
-        
+
+            elif args.standby:
+                # Put NAS into hibernation/standby
+                print("Sending hibernation command to NAS...")
+                result = nas.standby()
+
+                if result:
+                    print("SUCCESS: Hibernation command sent")
+                    print("The NAS will enter standby (low power) mode")
+                else:
+                    print("FAILED: Could not send hibernation command")
+                    sys.exit(1)
+
         except ValueError as e:
             print(f"Configuration error: {e}")
             print("\nTo create a password template, run:")
