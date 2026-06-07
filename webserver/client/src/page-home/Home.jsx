@@ -8,8 +8,8 @@ import './Home.css';
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract the numeric value from strings like "54 psi", "-72°F", "--". */
-function parseTireNum(str) {
+/** Extract the numeric value from strings like "54 psi", "-72°F", "85", "--". Returns null if absent (stale/unavailable). */
+function parseNum(str) {
   if (!str) return null;
   const m = String(str).match(/-?\d+(\.\d+)?/);
   return m ? parseFloat(m[0]) : null;
@@ -17,8 +17,8 @@ function parseTireNum(str) {
 
 /** Render a single tire box with alert-coloring for negative values. */
 function TireCell({ label, psiStr, tempStr, className }) {
-  const psi  = parseTireNum(psiStr);
-  const temp = parseTireNum(tempStr);
+  const psi  = parseNum(psiStr);
+  const temp = parseNum(tempStr);
   const alert = (psi !== null && psi < 0) || (temp !== null && temp < 0);
   const stale = psi === null; // server returns "-- psi" once the MQTT reading exceeds its TTL
   const dispPsi  = psi  !== null ? `${Math.abs(psi)} psi` : (psiStr  || '--');
@@ -50,8 +50,8 @@ function getFaultSet(d) {
   ];
   const faults = new Set();
   checks.forEach(({ key, psi, temp }) => {
-    const p = parseTireNum(psi);
-    const t = parseTireNum(temp);
+    const p = parseNum(psi);
+    const t = parseNum(temp);
     if ((p !== null && p < 0) || (t !== null && t < 0)) faults.add(key);
   });
   return faults;
@@ -103,7 +103,7 @@ function Home() {
       .catch(error => {
         console.error('Error fetching data:', error);
         serverWentDown.current = true;
-        setData({ var17: '0', var18: '0', var13: '0', var14: '0', battery_percent: 0 });
+        setData({ var17: '--', var18: '--', var13: '--', var14: '--', battery_percent: 0 });
       });
   };
 
@@ -240,10 +240,10 @@ function Home() {
           <div className="home-card home-card--tanks">
             <div className="card-title">Tanks</div>
             <div className="tanks-grid">
-              <Gauge value={data.var17} label="Fresh"   id="fresh"   startColor="#24E9EF" endColor="#24E9EF" radius={35}/>
-              <Gauge value={data.var18} label="Propane" id="propane" startColor="#FF8C00" endColor="#FF8C00" radius={35}/>
-              <Gauge value={data.var13} label="Gray"    id="gray"    startColor="#888888" endColor="#888888" radius={35}/>
-              <Gauge value={data.var14} label="Black"   id="black"   startColor="#333333" endColor="#333333" radius={35}/>
+              <Gauge value={data.var17} label="Fresh"   id="fresh"   startColor="#24E9EF" endColor="#24E9EF" radius={35} stale={parseNum(data.var17) === null}/>
+              <Gauge value={data.var18} label="Propane" id="propane" startColor="#FF8C00" endColor="#FF8C00" radius={35} stale={parseNum(data.var18) === null}/>
+              <Gauge value={data.var13} label="Gray"    id="gray"    startColor="#888888" endColor="#888888" radius={35} stale={parseNum(data.var13) === null}/>
+              <Gauge value={data.var14} label="Black"   id="black"   startColor="#333333" endColor="#333333" radius={35} stale={parseNum(data.var14) === null}/>
             </div>
           </div>
 

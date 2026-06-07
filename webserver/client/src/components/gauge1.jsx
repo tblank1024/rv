@@ -4,11 +4,13 @@ import React from 'react';
 import LiquidFillGauge from 'react-liquid-gauge';
 
 function Gauge(props) {
-    let {value, label, id, startColor, endColor, radius: radiusProp} = props;
+    let {value, label, id, startColor, endColor, radius: radiusProp, stale} = props;
     // Convert value to number and provide default
     const numericValue = value && !isNaN(value) ? Number(value) : 0;
     const radius = radiusProp !== undefined ? radiusProp : 80;
-    const interpolate = interpolateRgb(startColor, endColor);
+    // Stale readings render in a neutral gray rather than the real fill color,
+    // so an unreliable value can't be mistaken for an actual tank level.
+    const interpolate = interpolateRgb(stale ? '#aaaaaa' : startColor, stale ? '#aaaaaa' : endColor);
     const fillColor = interpolate(numericValue/100);
     const gradientStops = [
         {
@@ -31,7 +33,7 @@ function Gauge(props) {
         }
     ];
 
-    return<div id={id} className="gauge"> <LiquidFillGauge
+    return<div id={id} className={`gauge${stale ? ' gauge--stale' : ''}`}> <LiquidFillGauge
         style={{ margin: '0 auto' }}
         width={radius * 2}
         height={radius * 2}
@@ -41,7 +43,7 @@ function Gauge(props) {
         textOffsetX={0}
         textOffsetY={0}
         textRenderer={(props) => {
-            const value = Math.round(props.value);
+            const value = stale ? '--' : Math.round(props.value);
             const radius = Math.min(props.height / 2, props.width / 2);
             const textPixels = (props.textSize * radius / 2);
             const valueStyle = {
@@ -54,7 +56,7 @@ function Gauge(props) {
             return (
                 <tspan>
                     <tspan className="value" style={valueStyle}>{value}</tspan>
-                    <tspan style={percentStyle}>{props.percent}</tspan>
+                    <tspan style={percentStyle}>{stale ? '' : props.percent}</tspan>
                 </tspan>
             );
         }}

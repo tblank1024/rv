@@ -108,6 +108,22 @@ def _tire_temp(name: str) -> str:
         return f"{d['temp_f']}\u00b0F"
     return ''
 
+_TANK_DATA_TTL = 300  # seconds \u2014 RV-C tank status updates infrequently
+_TANK_UNINIT = 3.14   # rvglue placeholder value before any MQTT message has arrived
+
+def _tank_pct(level_key: str, res_key: str) -> str:
+    """Percentage-full string for a tank, or '--' if the reading is missing/stale."""
+    ad, ts, now = rvglue.rvglue.AliasData, rvglue.rvglue.AliasDataTS, time.time()
+    level, res = ad.get(level_key), ad.get(res_key)
+    fresh = (now - ts.get(level_key, 0) < _TANK_DATA_TTL
+             and now - ts.get(res_key, 0) < _TANK_DATA_TTL)
+    if not fresh or level in (None, _TANK_UNINIT) or res in (None, _TANK_UNINIT):
+        return '--'
+    try:
+        return str(round(level / res * 100))
+    except ZeroDivisionError:
+        return '--'
+
 
 
 app = FastAPI()
@@ -1307,45 +1323,10 @@ def data_home()-> DataResponse:  # Removed async
     (AC_HeatPump_Load, DC_Load) = LoadCalcs(Invert_status_num, Charger_AC_power, DC_Charger_power, ShorePower, GenPower, Batt_Power, SolarPower, AlternatorPower, Invert_DC_power)
     (RedMsg, YellowMsg, Time_Str) = HouseKeeping()
 
-    # Tank level calculations with error handling for missing data
-    # Note: rvglue initializes AliasData values to 3.14 as a placeholder;
-    # if MQTT data hasn't arrived yet level==resolution==3.14, giving a false 100%.
-    _UNINIT = 3.14
-    try:
-        level = rvglue.rvglue.AliasData["_var29Tank_Level"]
-        res   = rvglue.rvglue.AliasData["_var30Tank_Resolution"]
-        if level == _UNINIT or res == _UNINIT:
-            raise ValueError("uninitialized")
-        Tank_Fresh = round(level / res * 100)
-    except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Fresh = 97  # Default value when no data available
-
-    try:
-        level = rvglue.rvglue.AliasData["_var32Tank_Level"]
-        res   = rvglue.rvglue.AliasData["_var33Tank_Resolution"]
-        if level == _UNINIT or res == _UNINIT:
-            raise ValueError("uninitialized")
-        Tank_Black = round(level / res * 100)
-    except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Black = 13  # Default value when no data available
-
-    try:
-        level = rvglue.rvglue.AliasData["_var35Tank_Level"]
-        res   = rvglue.rvglue.AliasData["_var36Tank_Resolution"]
-        if level == _UNINIT or res == _UNINIT:
-            raise ValueError("uninitialized")
-        Tank_Gray = round(level / res * 100)
-    except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Gray = 0  # Default value when no data available
-
-    try:
-        level = rvglue.rvglue.AliasData["_var38Tank_Level"]
-        res   = rvglue.rvglue.AliasData["_var39Tank_Resolution"]
-        if level == _UNINIT or res == _UNINIT:
-            raise ValueError("uninitialized")
-        Tank_Propane = round(level / res * 100)
-    except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Propane = 98  # Default value when no data available
+    Tank_Fresh   = _tank_pct("_var29Tank_Level", "_var30Tank_Resolution")
+    Tank_Black   = _tank_pct("_var32Tank_Level", "_var33Tank_Resolution")
+    Tank_Gray    = _tank_pct("_var35Tank_Level", "_var36Tank_Resolution")
+    Tank_Propane = _tank_pct("_var38Tank_Level", "_var39Tank_Resolution")
 
     if debug > 0:
         print('invert power= ', round(Invert_AC_power), round(Invert_DC_power*.8))
@@ -1363,12 +1344,12 @@ def data_home()-> DataResponse:  # Removed async
         var10= _tire_psi('FR'),       # RF
         var11= 'not used',  
         var12= str('%.0f' % max(Invert_AC_power, .8 * (Invert_DC_power)) + " Watts"),      #note: .8 is efficiency estimate of inverter
-        var13= str(Tank_Gray),   # Send as string, client will convert to number
-        var14= str(Tank_Black),  # Send as string, client will convert to number
+        var13= Tank_Gray,    # percentage string, or '--' if stale/unavailable
+        var14= Tank_Black,   # percentage string, or '--' if stale/unavailable
         var15= Batt_Hours_Remaining_str,
         var16= 'Status: ' + Batt_status_str,
-        var17= str(Tank_Fresh),  # Send as string, client will convert to number
-        var18= str(Tank_Propane), # Send as string, client will convert to number
+        var17= Tank_Fresh,   # percentage string, or '--' if stale/unavailable
+        var18= Tank_Propane, # percentage string, or '--' if stale/unavailable
         var19= str('%.0f' % Batt_Power) + " Watts",
         battery_percent= Batt_Charge,
         var20= Time_Str,

@@ -188,6 +188,14 @@
   margin-top: 4px;
 }
 
+.gauge--stale {
+  opacity: 0.6;
+}
+
+.gauge--stale .gauge_label {
+  color: #4da6ff; /* matches .tire--stale: blue indicates this reading is stale (past its data TTL) */
+}
+
 /* ── Tires card ─────────────────────────────────────── */
 .tire-diagram {
   display: flex;
