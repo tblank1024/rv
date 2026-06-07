@@ -236,6 +236,10 @@
   min-width: 46px;
 }
 
+.tire--stale {
+  color: #4da6ff; /* blue indicates this reading is stale (past its data TTL) */
+}
+
 .tire-label {
   font-size: 0.65rem;
   opacity: 0.75;
@@ -244,7 +248,7 @@
 }
 
 .tire-reading {
-  font-size: 0.82rem;
+  font-size: 1.23rem;
   font-weight: bold;
   margin-top: 2px;
 }

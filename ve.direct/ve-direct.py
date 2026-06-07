@@ -1,8 +1,11 @@
 import serial
+import sys
 import time
 import threading
 from  rvglue import MQTTClient
 from rvglue import MasterDict
+
+_last_serial_ts = [0.0]  # updated each time a valid frame is decoded
 
 
 
@@ -108,8 +111,7 @@ def read_serial_data(ser, debug):
                 #print(f"Received data: {data}")
                 decoded_data = decode_ve_direct_message(data, debug)
                 if decoded_data != None:
-                    #print(decoded_data['value'])
-                    #Update Solar record dictionary in MasterDict
+                    _last_serial_ts[0] = time.time()
                     MasterDict['SOLAR_CONTROLLER_STATUS/1'][decoded_data['op']] = decoded_data['value']
         except KeyboardInterrupt:
             print("Thread terminated.")
@@ -146,7 +148,9 @@ def main(serial_port:str, baud_rate:int, mode:str, broker:str, port:int, varpref
             print(f"VE-Direct serial port {serial_port} opened successfully.")
     except Exception as e:
         print(f"Failed to open serial port: {e}")
-        return
+        sys.exit(1)
+    _last_serial_ts[0] = time.time()  # arm the watchdog after port opens
+    _SERIAL_TIMEOUT_SEC = 30
     try:
         # Start a separate thread for reading serial data
         thread = threading.Thread(target=read_serial_data, args=(ser, debug,))
@@ -154,8 +158,10 @@ def main(serial_port:str, baud_rate:int, mode:str, broker:str, port:int, varpref
         print(f"VE-Direct/Solar to MQTT Running")
         # Main loop
         while True:
-            #update MQTT record every 2 seconds
-            time.sleep(2) 
+            time.sleep(2)
+            if time.time() - _last_serial_ts[0] > _SERIAL_TIMEOUT_SEC:
+                print(f"ERROR: no VE.Direct serial data for {_SERIAL_TIMEOUT_SEC}s — exiting for restart")
+                sys.exit(1)
             MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
             RVC_Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
             if debug > 0:

@@ -1,0 +1,9 @@
+# CoolGear 4-Port USB Hub (FTDI FT232R, serial B0033FMU)
+# Creates /dev/coolgear-hub as a stable symlink so Docker mappings survive reboots
+# regardless of /dev/ttyUSB* enumeration order.
+# NOTE: NAME= only renames network interfaces in modern udev — it is silently
+# ignored for tty device nodes, which is why /dev/coolgear-hub never appeared.
+# SYMLINK+= is the correct directive for non-network device nodes.
+# Install: sudo cp 99-coolgear-hub.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", ATTRS{serial}=="B0033FMU", SYMLINK+="coolgear-hub", MODE="0660", GROUP="dialout"

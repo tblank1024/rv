@@ -20,12 +20,14 @@ function TireCell({ label, psiStr, tempStr, className }) {
   const psi  = parseTireNum(psiStr);
   const temp = parseTireNum(tempStr);
   const alert = (psi !== null && psi < 0) || (temp !== null && temp < 0);
+  const stale = psi === null; // server returns "-- psi" once the MQTT reading exceeds its TTL
   const dispPsi  = psi  !== null ? `${Math.abs(psi)} psi` : (psiStr  || '--');
   const dispTemp = temp !== null ? `${Math.abs(temp)}°F`  : (tempStr || '');
 
   const classes = ['tire'];
   if (className) classes.push(className);
   if (alert)     classes.push('tire--alert');
+  if (stale)     classes.push('tire--stale');
 
   return (
     <div className={classes.join(' ')}>

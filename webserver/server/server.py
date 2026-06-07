@@ -28,6 +28,8 @@ alarm_mqtt_available = True
 # Global debug setting
 DEBUG_MODE = os.getenv('SERVER_DEBUG', '').lower() in ('true', '1', 'yes')  # Enable with SERVER_DEBUG=true
 
+_mqtt_subscriber_thread = None  # set at startup; checked by /health
+
 # Import alarm system from the rv/alarm directory (optional)
 try:
     sys.path.append('/home/tblank/code/tblank1024/rv/alarm')
@@ -48,7 +50,7 @@ from typing import Annotated
 from kasa_power_strip import KasaPowerStrip, KasaPowerStripError
 from usb_modem_manager import usb_modem_manager
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, HTTPException
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from starlette.responses import Response
@@ -865,7 +867,7 @@ def get_usb_hub_controller():
         from usbhub_ascii import CoolGearUSBHub
 
         # Try common USB device paths
-        possible_ports = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
+        possible_ports = ['/dev/coolgear-hub', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
 
         for port in possible_ports:
             if os.path.exists(port):
@@ -1317,7 +1319,7 @@ def data_home()-> DataResponse:  # Removed async
         Tank_Fresh = round(level / res * 100)
     except (KeyError, ZeroDivisionError, ValueError):
         Tank_Fresh = 97  # Default value when no data available
-        
+
     try:
         level = rvglue.rvglue.AliasData["_var32Tank_Level"]
         res   = rvglue.rvglue.AliasData["_var33Tank_Resolution"]
@@ -1325,8 +1327,8 @@ def data_home()-> DataResponse:  # Removed async
             raise ValueError("uninitialized")
         Tank_Black = round(level / res * 100)
     except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Black = 96  # Default value when no data available
-        
+        Tank_Black = 13  # Default value when no data available
+
     try:
         level = rvglue.rvglue.AliasData["_var35Tank_Level"]
         res   = rvglue.rvglue.AliasData["_var36Tank_Resolution"]
@@ -1334,8 +1336,8 @@ def data_home()-> DataResponse:  # Removed async
             raise ValueError("uninitialized")
         Tank_Gray = round(level / res * 100)
     except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Gray = 99  # Default value when no data available
-        
+        Tank_Gray = 0  # Default value when no data available
+
     try:
         level = rvglue.rvglue.AliasData["_var38Tank_Level"]
         res   = rvglue.rvglue.AliasData["_var39Tank_Resolution"]
@@ -1343,7 +1345,7 @@ def data_home()-> DataResponse:  # Removed async
             raise ValueError("uninitialized")
         Tank_Propane = round(level / res * 100)
     except (KeyError, ZeroDivisionError, ValueError):
-        Tank_Propane = 98  # Default value when no data available  
+        Tank_Propane = 98  # Default value when no data available
 
     if debug > 0:
         print('invert power= ', round(Invert_AC_power), round(Invert_DC_power*.8))
@@ -1793,6 +1795,12 @@ async def debug_synology_control(action: str):
 async def status() -> dict:
     return {"hello": "world and more"}
 
+@app.get("/health")
+async def health_check() -> dict:
+    if _mqtt_subscriber_thread is None or not _mqtt_subscriber_thread.is_alive():
+        raise HTTPException(status_code=503, detail="MQTT subscriber thread not running")
+    return {"status": "ok"}
+
 # ---------------------------------------------------------------------------
 # System control endpoints
 # ---------------------------------------------------------------------------
@@ -2006,11 +2014,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    #kick off threads here  
-    # MQTTClient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', debug) 
+    #kick off threads here
+    # MQTTClient("pub","localhost", 1883, "dgn_variables.json",'_var', 'RVC', debug)
     debug = 0
     client = MQTTClient("sub","localhost", 1883, '_var', 'RVC', debug)
-    t1 = threading.Thread(target=client.run_mqtt_infinite)
+    _mqtt_subscriber_thread = threading.Thread(target=client.run_mqtt_infinite)
+    t1 = _mqtt_subscriber_thread
     #t1 = threading.Thread(target=MQTTClient.MQTTClient().printhello)
     t1.start()
 
