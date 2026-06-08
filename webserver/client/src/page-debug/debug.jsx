@@ -6,7 +6,17 @@ console.log("Debug component loaded");
 
 function Debug() {
   const [usbPorts, setUsbPorts] = useState({});
+  const [usbConnected, setUsbConnected] = useState(null);
   const [kasaOutlets, setKasaOutlets] = useState({});
+  const [kasaConnected, setKasaConnected] = useState(null);
+  const [watcherEntries, setWatcherEntries] = useState([]);
+  const [watcherErrors, setWatcherErrors] = useState([]);
+  const [watcherFile, setWatcherFile] = useState(null);
+  const [watcherWhitelist, setWatcherWhitelist] = useState({});
+  const [watcherLoading, setWatcherLoading] = useState(false);
+  const [watcherMessage, setWatcherMessage] = useState('');
+  const [watcherAutoRefresh, setWatcherAutoRefresh] = useState(false);
+  const [watcherFilter, setWatcherFilter] = useState('');
   const [synologyStatus, setSynologyStatus] = useState(null);
   const [synologyMessage, setSynologyMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -36,14 +46,17 @@ function Debug() {
       
       if (data.success) {
         setUsbPorts(data.ports);
+        setUsbConnected(true);
         return data;
       } else {
         setMessage(data.message || 'Failed to fetch USB status');
+        setUsbConnected(false);
         return data;
       }
     } catch (error) {
       console.error('Error fetching USB status:', error);
       setMessage('Failed to fetch USB status: ' + error.message);
+      setUsbConnected(false);
       return { success: false, message: 'Failed to fetch USB status: ' + error.message };
     }
   };
@@ -73,18 +86,105 @@ function Debug() {
       if (data.success) {
         console.log('getKasaStatus: Setting outlets:', data.outlets);
         setKasaOutlets(data.outlets);
+        setKasaConnected(!Object.values(data.outlets).some(o => o.mock));
         return data;
       } else {
         console.log('getKasaStatus: Response not successful:', data.message);
         setMessage(data.message || 'Failed to fetch Kasa status');
+        setKasaConnected(false);
         return data;
       }
     } catch (error) {
       console.error('Error fetching Kasa status:', error);
       setMessage('Failed to fetch Kasa status: ' + error.message);
+      setKasaConnected(false);
       return { success: false, message: 'Failed to fetch Kasa status: ' + error.message };
     }
   };
+
+  // Watcher timestamps come either as unix seconds (int) or unix seconds with
+  // fractional sub-second precision (string, e.g. "1780931492.2653513").
+  const formatWatcherTimestamp = (ts) => {
+    const seconds = parseFloat(ts);
+    if (Number.isNaN(seconds)) return ts;
+    return new Date(seconds * 1000).toLocaleString();
+  };
+
+  // Watcher log entries are raw MQTT payloads carrying many bookkeeping fields
+  // (dgn, data, instance, ...) beyond the ones the watcher actually tracks.
+  // The server ships a {topic: [field_names]} whitelist alongside the log
+  // entries (derived from WATCH_SPEC by rv/watcher/watcher.py) so the UI can
+  // surface just the fields the watcher cares about without keeping its own
+  // copy of WATCH_SPEC in sync.
+  const formatWatcherValues = (entry) => {
+    const fields = watcherWhitelist[entry.topic] || [];
+    const hasTankPct = entry.name === 'TANK_STATUS'
+      && 'relative level' in entry && 'resolution' in entry;
+    return fields
+      .filter((key) => {
+        if (hasTankPct && (key === 'relative level' || key === 'resolution')) return false;
+        return key in entry;
+      })
+      .map((key) => `${key}: ${entry[key]}`)
+      .concat(hasTankPct
+        ? [`level: ${Math.round((entry['relative level'] * 100) / entry['resolution'])}%`]
+        : [])
+      .join(', ');
+  };
+
+  // Fetch watcher MQTT log entries (and any SYS_ERRORS reported within them).
+  // `silent` is used by the auto-refresh poll so it can swap in fresh entries
+  // without flashing the "Loading..." button state or status message.
+  const getWatcherLogs = async (silent = false) => {
+    if (!silent) {
+      setWatcherLoading(true);
+      setWatcherMessage('Loading watcher logs...');
+    }
+    try {
+      const response = await fetch(`${getServerUrl()}/api/debug/watcher/logs?lines=200`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.success) {
+        setWatcherEntries(data.entries);
+        setWatcherErrors(data.errors);
+        setWatcherFile(data.file);
+        setWatcherWhitelist(data.whitelist || {});
+        if (!silent) setWatcherMessage(data.message);
+      } else if (!silent) {
+        setWatcherEntries([]);
+        setWatcherErrors([]);
+        setWatcherFile(null);
+        setWatcherWhitelist({});
+        setWatcherMessage(data.message || 'Failed to fetch watcher logs');
+      }
+    } catch (error) {
+      console.error('Error fetching watcher logs:', error);
+      if (!silent) setWatcherMessage('Failed to fetch watcher logs: ' + error.message);
+    } finally {
+      if (!silent) setWatcherLoading(false);
+    }
+  };
+
+  // Auto-refresh: while enabled, silently re-poll the watcher logs every 4s
+  // so the list stays current without the loading-spinner flicker.
+  useEffect(() => {
+    if (!watcherAutoRefresh) return undefined;
+    getWatcherLogs(true);
+    const interval = setInterval(() => getWatcherLogs(true), 4000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watcherAutoRefresh]);
 
   // Control USB port
   const controlUsbPort = async (portNum, action) => {
@@ -252,6 +352,20 @@ function Debug() {
     setMessage('Data refreshed successfully');
   };
 
+  const commBadge = (connected) => {
+    if (connected === null) return null;
+    return (
+      <span style={{
+        marginLeft: '12px', fontSize: '13px', fontWeight: 'normal',
+        padding: '2px 8px', borderRadius: '10px',
+        backgroundColor: connected ? '#e8f5e9' : '#ffebee',
+        color: connected ? '#2e7d32' : '#c62828',
+      }}>
+        {connected ? 'Connected' : 'Not Connected'}
+      </span>
+    );
+  };
+
   if (loading) {
     return (
       <div className="debug-container">
@@ -298,7 +412,7 @@ function Debug() {
       <div className="debug-sections">
         {/* USB Ports Section */}
         <div className="debug-section">
-          <h2>USB Ports (Internet Access)</h2>
+          <h2>Internet Access via USB Port Switch{commBadge(usbConnected)}</h2>
           <div className="control-grid">
             {Object.entries(usbPorts).map(([portNum, portData]) => (
               <div key={portNum} className="control-item">
@@ -337,7 +451,7 @@ function Debug() {
 
         {/* Kasa Power Strip Section */}
         <div className="debug-section">
-          <h2>Kasa Power Strip</h2>
+          <h2>Kasa Power Strip{commBadge(kasaConnected)}</h2>
           <div style={{marginBottom: '10px', fontSize: '12px', color: '#666'}}>
             Debug: kasaOutlets = {JSON.stringify(kasaOutlets, null, 2)}
           </div>
@@ -439,6 +553,120 @@ function Debug() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Watcher MQTT Logs Section */}
+        <div className="debug-section">
+          <h2>Watcher MQTT Logs</h2>
+          <div style={{ marginBottom: '15px' }}>
+            <button
+              className="action-button"
+              onClick={() => { getWatcherLogs(); setWatcherAutoRefresh(true); }}
+              disabled={watcherLoading}
+              style={{
+                backgroundColor: '#4CAF50',
+                color: 'white',
+                padding: '10px 20px',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: watcherLoading ? 'not-allowed' : 'pointer',
+                fontSize: '16px',
+                fontWeight: 'bold'
+              }}
+            >
+              {watcherLoading ? 'Loading...' : 'Show Logs'}
+            </button>
+            <label
+              style={{
+                marginLeft: '15px',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '14px',
+                color: '#444'
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={watcherAutoRefresh}
+                onChange={(e) => setWatcherAutoRefresh(e.target.checked)}
+              />
+              Auto-refresh {watcherAutoRefresh ? '(running — every 4s)' : '(paused)'}
+            </label>
+            {watcherFile && (
+              <span style={{ marginLeft: '15px', color: '#666', fontSize: '14px' }}>
+                Source: {watcherFile}
+              </span>
+            )}
+          </div>
+          {watcherEntries.length > 0 && (
+            <div style={{ marginBottom: '10px' }}>
+              <input
+                type="text"
+                placeholder="Filter logs…"
+                value={watcherFilter}
+                onChange={(e) => setWatcherFilter(e.target.value)}
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  padding: '6px 10px', fontSize: '14px',
+                  border: '1px solid #ccc', borderRadius: '4px',
+                }}
+              />
+            </div>
+          )}
+
+          {watcherMessage && (
+            <div className="message-box" style={{ marginBottom: '15px' }}>
+              {watcherMessage}
+            </div>
+          )}
+
+          {watcherErrors.length > 0 && (
+            <div style={{ marginBottom: '15px' }}>
+              <h3>Triggered Errors ({watcherErrors.length})</h3>
+              <div className="log-viewer log-viewer-errors">
+                {watcherErrors.slice().reverse().map((entry, idx) => (
+                  <div key={idx} className="log-entry log-entry-error">
+                    {formatWatcherTimestamp(entry.timestamp)} &mdash; {entry.error}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {watcherEntries.length > 0 && (() => {
+            const needle = watcherFilter.toLowerCase();
+            const filtered = watcherEntries.filter(entry => {
+              if (!needle) return true;
+              const text = [
+                formatWatcherTimestamp(entry.timestamp),
+                entry.topic || entry.name,
+                entry.name === 'SYS_ERRORS' ? entry.error : formatWatcherValues(entry),
+              ].join(' ').toLowerCase();
+              return text.includes(needle);
+            });
+            return (
+              <div>
+                <h3>
+                  Recent MQTT Messages ({filtered.length}{watcherFilter ? ` of ${watcherEntries.length}` : ''})
+                </h3>
+                <div className="log-viewer">
+                  {filtered.slice().reverse().map((entry, idx) => (
+                    <div
+                      key={idx}
+                      className={`log-entry ${entry.name === 'SYS_ERRORS' ? 'log-entry-error' : ''}`}
+                    >
+                      {formatWatcherTimestamp(entry.timestamp)} &mdash; {entry.topic || entry.name}
+                      {entry.name === 'SYS_ERRORS'
+                        ? `: ${entry.error}`
+                        : ` — ${formatWatcherValues(entry)}`}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </div>
     </div>

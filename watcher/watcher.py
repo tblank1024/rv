@@ -1,5 +1,30 @@
-#mqtt watcher tracks a set of variables and publishes a message when they change to stdout
-#optionally outputs vars to csv file
+#mqtt/RV-C watcher
+#
+#Subscribes to a curated subset of RV-C topics published on the MQTT broker
+#(by the rvc2mqtt CAN-to-MQTT bridge) as defined in WATCH_SPEC, and tracks the
+#current value of each under a short alias name.
+#
+#Each time a new monthly .log file is opened, it also writes a paired
+#<basename>.whitelist.json listing the {topic: [field_names]} derived from
+#WATCH_SPEC -- this lets the webserver debug UI show only the fields the
+#watcher actually tracks from each raw MQTT payload (see _build_watch_whitelist).
+#
+#Depending on the run mode (-m / --Mode) it can:
+#   c - capture watched messages to a rotating monthly .log file (default)
+#   s - show the watched values live in a Tkinter window (no file capture)
+#   b - both: live window display AND .log file capture
+#   o - replay a previously captured .log file and write the watched values
+#       out to a .csv file for offline analysis (see GenOutput)
+#
+#While running (modes c/s/b) it also watches for two kinds of anomalies and
+#reports them as SYS_ERRORS messages (printed, published back to MQTT, and
+#logged):
+#   - "progression" errors: a watched value hasn't updated in over
+#     LARGESTINTERVAL seconds (possible sensor/comms dropout)
+#   - "bounds" errors: a watched value has moved outside the optional
+#     (min, max) range declared for it in WATCH_SPEC (possible sensor fault
+#     or out-of-spec condition)
+#
 #based on mqttclient.py
 
 import os, argparse,  time, random, json
@@ -14,12 +39,24 @@ import psutil
 
 #CONSTANTS
 FILEDIR = './watcherlogs/'
+LARGESTINTERVAL = 60    # default max seconds between updates before a progression fault is raised
+
+# Per-alias overrides for max allowed update interval.
+# Tire sensors (TireLinc TPMS) broadcast every 100-270 s; exclude them from the 60 s check.
+MAX_INTERVAL_OVERRIDES = {
+    'Tire_FL_psi':    300,
+    'Tire_FR_psi':    300,
+    'Tire_RL_out_psi':300,
+    'Tire_RL_in_psi': 300,
+    'Tire_RR_in_psi': 300,
+    'Tire_RR_out_psi':300,
+}
 
 #global vars
 topic_prefix = 'RVC'
 TargetTopics = {}
 MQTTNameToAliasName = {}
-Watched_Vars = {}
+WATCH_SPEC = {}
 AliasData = {}
 client = None
 mode = 'c'
@@ -102,7 +139,8 @@ class mqttclient():
         global IOFilename, IOFileptr
 
         current_month = datetime.datetime.now().strftime("%B")
-        file_name = f"{FILEDIR}{current_month}.log" 
+        file_name = f"{FILEDIR}{current_month}.log"
+        previous_name = IOFileptr.name if IOFileptr is not None else None
         if IOFileptr is not None and IOFileptr.name != file_name:
             IOFileptr.close()
         if IOFilename != FILEDIR:
@@ -126,39 +164,45 @@ class mqttclient():
         else:
             # Create the file if it doesn't exist
             IOFileptr = open(file_name, "w")
-        
+
+        # (Re)write the WATCH_SPEC-derived whitelist alongside a newly opened log
+        # file -- covers monthly rotation, user-supplied filenames, and restarts.
+        if IOFileptr.name != previous_name:
+            _write_whitelist_file(IOFileptr.name)
+
         return IOFileptr
 
-    def __init__(self, initmode, mqttbroker,mqttport, varIDstr, topic_prefix, debug, opmode):
-        global client, Watched_Vars, AliasData, MQTTNameToAliasName, TargetTopics, mode, IOFilename, IOFileptr
+    def __init__(self, initmode, mqttbroker,mqttport, topic_prefix, debug, opmode):
+        global client, AliasData, MQTTNameToAliasName, TargetTopics, mode, IOFilename, IOFileptr
 
         mode = opmode
 
-        
-        
-            
-
-        #Build data structures for the watched variables
+        #Build data structures for the watched variables from WATCH_SPEC
         #   TargetTopics is a dictionary of dictionaries.  The first key is the MQTT topic and the second key is the variable name
         #   MQTTNameToAliasName is a dictionary of MQTT topic/variable names to the alias name
         #   AliasData is a dictionary of alias variable names to the current value
-        for item in Watched_Vars:
-            topic = topic_prefix + '/' + item 
+        #   The order of entries in WATCH_SPEC determines AliasData/CSV column order, and each
+        #   alias name must be unique across the whole spec since AliasData is keyed by alias name.
+        #   Each entry is (topic_suffix, field_name, alias) or, to enable out-of-range detection,
+        #   (topic_suffix, field_name, alias, min, max).
+        for entry in WATCH_SPEC:
+            topic_suffix, field_name, alias = entry[:3]
+            bounds = entry[3:5] if len(entry) == 5 else None
 
-            for entryvar in Watched_Vars[item]:
-                tmp = Watched_Vars[item][entryvar]
-                if  isinstance(tmp, str) and tmp.startswith(varIDstr):
-                    #We want this topic
-                    if topic not in TargetTopics:
-                        TargetTopics[topic] = {}
-                    TargetTopics[topic][entryvar] = tmp
-                    local_topic = topic + '/' + entryvar
-                    AliasData[tmp] = {
-                        "timestamp": 0,
-                        "flag": False,          #has this var been printed as an error already
-                    }
-                    MQTTNameToAliasName[local_topic] = tmp
-                
+            topic = topic_prefix + '/' + topic_suffix
+            if topic not in TargetTopics:
+                TargetTopics[topic] = {}
+            TargetTopics[topic][field_name] = alias
+
+            AliasData[alias] = {
+                "timestamp": 0,
+                "flag": False,          #has a progression error been printed already
+                "bounds": bounds,       #(min, max) or None
+                "bounds_flag": False,   #has an out-of-range error been printed already
+                "max_interval": MAX_INTERVAL_OVERRIDES.get(alias, LARGESTINTERVAL),
+            }
+            MQTTNameToAliasName[topic + '/' + field_name] = alias
+
         if debug > 0:
             #print('>>All Data:')
             #pprint(AllData)
@@ -229,11 +273,12 @@ class mqttclient():
                 print('*** ',item,'= ', msg_dict[item])
             tmp = msg_dict['topic'] + '/' + item
             if tmp in MQTTNameToAliasName:
-                AliasData[MQTTNameToAliasName[tmp]] = {
-                    "timestamp": now,
-                    "value": msg_dict[item],
-                    "flag": False
-                }
+                alias = MQTTNameToAliasName[tmp]
+                #preserve the static bounds/bounds_flag set up at init time -- only
+                #replace the per-message fields (timestamp, value, progression flag)
+                AliasData[alias]["timestamp"] = now
+                AliasData[alias]["value"] = msg_dict[item]
+                AliasData[alias]["flag"] = False
         return False
 
 
@@ -381,14 +426,13 @@ class mqttclient():
         self._UpdateAliasData(msg_dict, now)
 
         #Check if timestamp is progressing for all AliasData entries except for SYS_ERRORS
-        LARGESTINTERVAL = 90            #max update interval in seconds of any variable
         error_cnt = 0
         msg_dict = {}
         msg_dict['name'] = 'SYS_ERRORS'
         msg_dict['timestamp'] = int(time.time())
         for item in AliasData:
             if int(AliasData[item]['timestamp']) != 0  \
-                    and int((AliasData[item]['timestamp'])) + LARGESTINTERVAL < now  \
+                    and int((AliasData[item]['timestamp'])) + AliasData[item]['max_interval'] < now  \
                     and not AliasData[item]['flag'] \
                     and item != 'SYS_ERRORS':
                 AliasData[item]['flag'] = True
@@ -404,7 +448,31 @@ class mqttclient():
                 if debug > 0:
                     dt = datetime.datetime.fromtimestamp(time.time())
                     print('wrote error to file: ', dt, msg.topic, msg_dict)
-            if AliasData[item]['flag']:
+
+            #Check if value is outside its configured bounds (only for entries that declared bounds)
+            bounds = AliasData[item]['bounds']
+            value = AliasData[item].get('value')
+            if bounds is not None and isinstance(value, (int, float)):
+                in_range = bounds[0] <= value <= bounds[1]
+                if not in_range and not AliasData[item]['bounds_flag']:
+                    AliasData[item]['bounds_flag'] = True
+                    print('Value out of bounds for  ', item, '  value = ', value, '  bounds = ', bounds)
+                    pprint(AliasData[item])
+                    #build msg_dict to include error field
+                    msg_dict['error'] = 'Bounds error: ' + item + '  value = ' + str(value) + '  not in ' + str(bounds)
+                    self.pub(msg_dict, qos=0, retain=False)
+                    #write this error msg to the output file on one line
+                    json.dump(msg_dict, IOFileptr)
+                    IOFileptr.write("\n")
+                    IOFileptr.flush()
+                    if debug > 0:
+                        dt = datetime.datetime.fromtimestamp(time.time())
+                        print('wrote bounds error to file: ', dt, msg.topic, msg_dict)
+                elif in_range:
+                    #value back in range -- re-arm so a future excursion is reported again
+                    AliasData[item]['bounds_flag'] = False
+
+            if AliasData[item]['flag'] or AliasData[item]['bounds_flag']:
                 error_cnt += 1
         #Publish error count to MQTT every 5 second 
         if now - LastTime > 5:      
@@ -436,239 +504,123 @@ class mqttclient():
         global client
         client.loop_forever()    
 
-Watched_Vars = {
-    "CHARGER_AC_STATUS_1/1": {"data": "017009187D001EFF",
-                         "dgn": "1FFCA",
-                         "fault ground current": "11",
-                         "fault open ground": "11",
-                         "fault open neutral": "11",
-                         "fault reverse polarity": "11",
-                         "frequency": 60.0,
-                         "input/output": "00",
-                         "input/output definition":                     "xx not real ",
-                         "instance": 1,
-                         "line": "00",
-                         "line definition": 1,
-                         "name": "CHARGER_AC_STATUS_1",
-                         "rms current":                             "x_var02Charger_AC_current",
-                         "rms voltage":                             "x_var03Charger_AC_voltage",
-                         "timestamp":                               "x_var01Timestamp"},
-    "CHARGER_AC_STATUS_3/1": {"complementary leg": 255,
-                         "data": "01FCFFFFFFFF00FF",
-                         "dgn": "1FFC8",
-                         "harmonic distortion": 0.0,
-                         "input/output": "00",
-                         "input/output definition":                      "xx not real data _var04",
-                         "instance": 1,
-                         "line": "00",
-                         "line definition": 1,
-                         "name": "CHARGER_AC_STATUS_3",
-                         "phase status": "1111",
-                         "phase status definition": "no data",
-                         "reactive power":                            "not used -bad value",  
-                         "real power":                              "x_var17AC_real_power",   
-                         "timestamp": "1672774555.024753",
-                         "waveform": "00",
-                         "waveform definition": "sine wave"},
-    "CHARGER_STATUS/1": {"auto recharge enable": "11",
-                    "charge current":                               "x_var04Charger_current",
-                    "charge current percent of maximum": 0.0,
-                    "charge voltage":                               "x_var05Charger_voltage",
-                    "data": "011201007D0006FF",
-                    "default state on power-up": "11",
-                    "dgn": "1FFC7",
-                    "force charge": 15,
-                    "instance": 1,
-                    "name": "CHARGER_STATUS",
-                    "operating state": 6,
-                    "operating state definition":                   "x_var06Charger_state",
-                    "timestamp": "1672774554.984803"},
-    "DC_SOURCE_STATUS_2/1": {"data": "0164FFFFC8FFFFFF",
-                        "device priority": 100,
-                        "device priority definition": "inverter Charger",
-                        "dgn": "1FFFC",
-                        "instance": 1,
-                        "instance definition": "main house battery bank",
-                        "name": "DC_SOURCE_STATUS_2",
-                        "source temperature": "n/a",
-                        "state of charge": 100.0,
-                        "time remaining": 65535,
-                        "timestamp": "1672774554.714678"},
-    "DM_RV": {"bank select": 15,
-           "data": "0542FFFFFFFFFFFF",
-           "dgn": "1FECA",
-           "dsa": 66,
-           "dsa extension": 255,
-           "fmi": 31,
-           "name": "DM_RV",
-           "occurrence count": 127,
-           "operating status": "0101",
-           "red lamp status":                                       "x_var07Red",
-           "spn-isb": 255,
-           "spn-lsb": 7,
-           "spn-msb": 255,
-           "timestamp": "1672774552.1052072",
-           "yellow lamp status":                                    "x_var08Yellow"
-	  },
-    "INVERTER_AC_STATUS_1/1": {"data": "4170090A7D001EFF",
-                          "dgn": "1FFD7",
-                          "fault ground current": "11",
-                          "fault open ground": "11",
-                          "fault open neutral": "11",
-                          "fault reverse polarity": "11",
-                          "frequency": 60.0,
-                          "input/output": "01",
-                          "input/output definition":                    "xxx rubbish ",
-                          "instance": 1,
-                          "line": "00",
-                          "line definition": 1,
-                          "name": "INVERTER_AC_STATUS_1",
-                          "rms current":                            "_var09Invert_AC_current",
-                          "rms voltage":                            "_var10Invert_AC_voltage",
-                          "timestamp":                              "_var_04timestamp"},
-    "INVERTER_AC_STATUS_3/1": {"complementary leg": 255,
-                          "data": "41C02E002D00FFFF",
-                          "dgn": "1FFD5",
-                          "harmonic distortion": 255,
-                          "input/output": "01",
-                          "input/output definition":                                  "xxx rubbish ",
-                          "instance": 1,
-                          "line": "00",
-                          "line definition": 1,
-                          "name": "INVERTER_AC_STATUS_3",
-                          "phase status": "0000",
-                          "phase status definition": "no complementary leg",
-                          "reactive power":                         "x_var11AC_reactive_power",
-                          "real power":                             "x_var12AC_real_power",
-                          "timestamp": "1672774554.824777",
-                          "waveform": "00",
-                          "waveform definition": "sine wave"},
-    "INVERTER_AC_STATUS_4/1": {"bypass mode active": "11",
-                          "data": "4100FFFFFFFFFFFF",
-                          "dgn": "1FF8F",
-                          "fault high frequency": "11",
-                          "fault how frequency": "11",
-                          "fault surge protection": "11",
-                          "input/output": "01",
-                          "input/output definition":                                  " rubbish ",
-                          "instance": 1,
-                          "line": "00",
-                          "line definition": 1,
-                          "name": "INVERTER_AC_STATUS_4",
-                          "qualification Status": 15,
-                          "timestamp": "1672774554.7847886",
-                          "voltage fault": 0,
-                          "voltage fault definition": "voltage ok"},
-    "INVERTER_DC_STATUS/1": {"data": "011201007DFFFFFF",
-                        "dc amperage":                              "x_var13Invert_DC_Amp",
-                        "dc voltage":                               "x_var14Invert_DC_Volt",
-                        "dgn": "1FEE8",
-                        "instance": 1,
-                        "name": "INVERTER_DC_STATUS",
-                        "timestamp": "1672774554.7448194"},
-    "INVERTER_STATUS/1": {"battery temperature sensor present": "00",
-                     "battery temperature sensor present definition": "no sensor in use",
-                     "data": "0102F0FFFFFFFFFF",
-                     "dgn": "1FFD4",
-                     "instance": 1,
-                     "load sense enabled": "00",
-                     "load sense enabled definition": "load sense disabled",
-                     "name": "INVERTER_STATUS",
-                     "status":                                      "x_var16Invert_status_num",
-                     "status definition":                           "x_var15Invert_status_name",
-                     "timestamp":                                   "x_var05Timestamp"},
-    "INVERTER_TEMPERATURE_STATUS/1": {"data": "01E026FFFFFFFFFF",
-                                 "dgn": "1FEBD",
-                                 "fet temperature": 38.0,
-                                 "fet temperature F": 100.4,
-                                 "instance": 1,
-                                 "name": "INVERTER_TEMPERATURE_STATUS",
-                                 "timestamp": "1672774554.9047515",
-                                 "transformer temperature": "n/a"},
-    "UNKNOWN-0EEFF": {"data": "ED5FE40E08813C80",
-                   "dgn": "0EEFF",
-                   "name": "UNKNOWN-0EEFF",
-                   "timestamp": "1672774554.1447444"},
-    "BATTERY_STATUS/1": {                         
-                    "instance":1,
-                    "name":"BATTERY_STATUS",
-                    "DC_voltage":                                   "_var18Batt_voltage",
-                    "DC_current":                                   "_var19Batt_current",
-                    "State_of_charge":                              "_var20Batt_charge",
-                    "Status":                                                    "",
-                    "timestamp":                                    "_var06timestamp"},
-    "ATS_AC_STATUS_1/1": {"data": "4170090A7D001EFF",
-                    "dgn": "1FFAD",
-                    "instance": 1,
-                    "line":                                         "x_var21ATS_Line",
-                    "line definition": 1,
-                    "name": "ATS_AC_STATUS_1",
-                    "rms current":                                  "x_var22ATS_AC_current",
-                    "rms voltage":                                  "x_var23ATS_AC_voltage",
-                    "timestamp": "1672774554.8647683"},
-                     
-    "SOLAR_CONTROLLER_STATUS/1":{ 
-                    "dgn":"1FEB3",                        
-                    "instance":1,
-                    "name":"SOLAR_CONTROLLER_STATUS",
-                    "DC_voltage":                                   "x_var26Solar_voltage",
-                    "DC_current":                                   "x_var27Solar_current"},
-    "TANK_STATUS/0": {"absolute level": 65535,
-                    "data": "001020FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 0,
-                    "instance definition":                          "x_var28Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "_var29Tank_Level",
-                    "resolution":                                   "x_var30Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var07Timestamp"},  
-    "TANK_STATUS/1": {"absolute level": 65535,
-                    "data": "010A38FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 1,
-                    "instance definition":                          "x_var31Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var32Tank_Level",
-                    "resolution":                                   "x_var33Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var08Timestamp"},
-    "TANK_STATUS/2": {"absolute level": 65535,
-                    "data": "020B38FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 2,
-                    "instance definition":                          "x_var34Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var35Tank_Level",
-                    "resolution":                                   "x_var36Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var09Timestamp"},
-    "TANK_STATUS/3": {"absolute level": 65535,
-                    "data": "034D64FFFFFFFFFF",
-                    "dgn": "1FFB7",
-                    "instance": 3,
-                    "instance definition":                          "x_var37Tank_Name",
-                    "name": "TANK_STATUS",
-                    "relative level":                               "x_var38Tank_Level",
-                    "resolution":                                   "x_var39Tank_Resolution",
-                    "tank size": 65535,
-                    "timestamp":                                    "x_var10Timestamp"},
-    "RV_Loads/1": {
-                    "instance": 1,
-                    "name": "RV_Loads",
-                    "AC Load":                                      "_var24RV_Loads_AC",
-                    "DC Load":                                      "_var25RV_Loads_DC",
-                    "timestamp":                                    "x_var11Timestamp"},
-    "RV_Watcher/1": {
-                    "instance": 1,
-                    "name": "RV_Watcher",
-                    "Status":                                       "_var50RV_Watcher_Status",
-                    "timestamp":                                    "_var51Timestamp"},
-    "SYS_ERRORS": {
-                    "name": "SYS_ERRORS",
-                    "error":                                        "_var52RVC_ERROR",
-                    "timestamp":                                    "x_var53Timestamp"},
-}
+#WATCH_SPEC: which MQTT fields to track, the alias each is stored/reported under,
+#and (optionally) the valid value range to monitor for out-of-bounds faults.
+#   Each entry is either:
+#     (topic_suffix, field_name, alias)             -- no bounds check, or
+#     (topic_suffix, field_name, alias, min, max)   -- flagged if value falls outside [min, max]
+#   List order sets the AliasData and CSV column order.
+#   Alias names must be unique across the whole spec (AliasData is keyed by alias name).
+WATCH_SPEC = [
+    ("CHARGER_AC_STATUS_1/1", "timestamp",                 "Charger_AC_timestamp"),
+    ("CHARGER_AC_STATUS_1/1", "rms current",               "Charger_AC_current", 0, 50),
+    ("CHARGER_AC_STATUS_1/1", "rms voltage",               "Charger_AC_voltage", 95,130),
+
+    ("CHARGER_AC_STATUS_3/1", "real power",                "Charger_AC_real_power"),
+
+    ("CHARGER_STATUS/1",      "charge current",            "Charger_current", 0,160),
+    ("CHARGER_STATUS/1",      "charge voltage",            "Charger_voltage", 11,15),
+    ("CHARGER_STATUS/1",      "operating state definition","Charger_state"),
+
+    ("DM_RV",                 "red lamp status",           "DM_red_lamp"),
+    ("DM_RV",                 "yellow lamp status",        "DM_yellow_lamp"),
+
+    ("INVERTER_AC_STATUS_1/1","timestamp",                 "Invert_AC_timestamp"),
+    ("INVERTER_AC_STATUS_1/1","rms current",               "Invert_AC_current", 0, 50),
+    ("INVERTER_AC_STATUS_1/1","rms voltage",               "Invert_AC_voltage", 95,130),
+
+    ("INVERTER_AC_STATUS_3/1","reactive power",            "Invert_AC_reactive_power"),
+    ("INVERTER_AC_STATUS_3/1","real power",                "Invert_AC_real_power"),
+
+    ("INVERTER_DC_STATUS/1",  "dc amperage",               "Invert_DC_amp",0,160),
+    ("INVERTER_DC_STATUS/1",  "dc voltage",                "Invert_DC_volt", 11, 15),
+
+    ("INVERTER_STATUS/1",     "timestamp",                 "Invert_timestamp"),
+    ("INVERTER_STATUS/1",     "status",                    "Invert_status_num"),
+    ("INVERTER_STATUS/1",     "status definition",         "Invert_status_name"),
+
+    ("BATTERY_STATUS/1",      "timestamp",                 "Batt_timestamp"),
+    ("BATTERY_STATUS/1",      "DC_voltage",                "Batt_voltage",  10, 15),
+    ("BATTERY_STATUS/1",      "DC_current",                "Batt_current"),
+    ("BATTERY_STATUS/1",      "State_of_charge",           "Batt_charge",   0, 100),
+
+    ("ATS_AC_STATUS_1/1",     "line",                      "ATS_line"),
+    ("ATS_AC_STATUS_1/1",     "rms current",               "ATS_AC_current"),
+    ("ATS_AC_STATUS_1/1",     "rms voltage",               "ATS_AC_voltage"),
+
+    ("SOLAR_CONTROLLER_STATUS/1","V",                     "Solar_voltage"),
+    ("SOLAR_CONTROLLER_STATUS/1","I",                     "Solar_current"),
+
+    ("TIRE_STATUS/FL",          "pressure_psi",           "Tire_FL_psi"),
+    ("TIRE_STATUS/FR",          "pressure_psi",           "Tire_FR_psi"),
+    ("TIRE_STATUS/RL_out",      "pressure_psi",           "Tire_RL_out_psi"),
+    ("TIRE_STATUS/RL_in",       "pressure_psi",           "Tire_RL_in_psi"),
+    ("TIRE_STATUS/RR_in",       "pressure_psi",           "Tire_RR_in_psi"),
+    ("TIRE_STATUS/RR_out",      "pressure_psi",           "Tire_RR_out_psi"),
+
+    ("TANK_STATUS/0",         "timestamp",                 "Tank0_timestamp"),
+    ("TANK_STATUS/0",         "instance definition",      "Tank0_name"),
+    ("TANK_STATUS/0",         "relative level",            "Tank0_level",   0, 100),
+    ("TANK_STATUS/0",         "resolution",                "Tank0_resolution"),
+
+    ("TANK_STATUS/1",         "timestamp",                 "Tank1_timestamp"),
+    ("TANK_STATUS/1",         "instance definition",      "Tank1_name"),
+    ("TANK_STATUS/1",         "relative level",            "Tank1_level",   0, 100),
+    ("TANK_STATUS/1",         "resolution",                "Tank1_resolution"),
+
+    ("TANK_STATUS/2",         "timestamp",                 "Tank2_timestamp"),
+    ("TANK_STATUS/2",         "instance definition",      "Tank2_name"),
+    ("TANK_STATUS/2",         "relative level",            "Tank2_level",   0, 100),
+    ("TANK_STATUS/2",         "resolution",                "Tank2_resolution"),
+
+    ("TANK_STATUS/3",         "timestamp",                 "Tank3_timestamp"),
+    ("TANK_STATUS/3",         "instance definition",      "Tank3_name"),
+    ("TANK_STATUS/3",         "relative level",            "Tank3_level",   0, 100),
+    ("TANK_STATUS/3",         "resolution",                "Tank3_resolution"),
+
+    ("RV_Loads/1",            "timestamp",                 "RV_Loads_timestamp"),
+    ("RV_Loads/1",            "AC Load",                   "RV_Loads_AC"),
+    ("RV_Loads/1",            "DC Load",                   "RV_Loads_DC"),
+
+    ("RV_Watcher/1",          "timestamp",                 "RV_Watcher_timestamp"),
+    ("RV_Watcher/1",          "Status",                    "RV_Watcher_Status"),
+
+    ("SYS_ERRORS",            "timestamp",                 "SYS_timestamp"),
+    ("SYS_ERRORS",            "error",                     "SYS_error"),
+]
+
+
+def _build_watch_whitelist():
+    """Derive {topic: [field_names]} from WATCH_SPEC for the debug UI.
+
+    "timestamp" entries are skipped since the UI renders each message's
+    timestamp separately rather than listing it among the tracked values.
+    """
+    whitelist = {}
+    for entry in WATCH_SPEC:
+        topic_suffix, field_name = entry[0], entry[1]
+        if field_name == 'timestamp':
+            continue
+        topic = topic_prefix + '/' + topic_suffix
+        fields = whitelist.setdefault(topic, [])
+        if field_name not in fields:
+            fields.append(field_name)
+    return whitelist
+
+
+def _write_whitelist_file(log_file_name):
+    """Write the WATCH_SPEC-derived whitelist next to the given .log file
+    (same basename, .whitelist.json extension) so the debug UI can filter each
+    raw MQTT payload down to just the fields the watcher tracks for that topic,
+    without having to keep its own copy of WATCH_SPEC in sync.
+    """
+    whitelist_name = os.path.splitext(log_file_name)[0] + '.whitelist.json'
+    try:
+        with open(whitelist_name, 'w') as fp:
+            json.dump(_build_watch_whitelist(), fp, indent=2)
+    except Exception as e:
+        print(f"Couldn't write watcher whitelist file {whitelist_name}: {e}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -693,7 +645,7 @@ if __name__ == "__main__":
     print('debug level = ', debug)
 
     IOFilename = FILEDIR + args.IOfile         
-    RVC_Client = mqttclient('sub',broker, port, '_var', mqttTopic, debug, opmode)
+    RVC_Client = mqttclient('sub',broker, port, mqttTopic, debug, opmode)
 
 
     if opmode == 's' or opmode == 'b':  #screen mode or capture mode

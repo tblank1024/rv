@@ -1634,6 +1634,68 @@ def control_kasa_outlet_debug(outlet_id: int, data: Annotated[dict, Body()]) -> 
             "error": str(e)
         }
 
+@app.get("/api/debug/watcher/logs")
+def get_watcher_logs(lines: int = 200) -> dict:
+    """Tail the watcher's most recent .log file and return parsed entries for the debug interface.
+
+    Entries with name == 'SYS_ERRORS' (the watcher's progression/bounds anomaly
+    reports -- see rv/watcher/watcher.py) are also broken out separately so the
+    UI can highlight them without having to scan every entry.
+    """
+    log_dir = "/home/tblank/code/tblank1024/rv/docker/watcherlogs"
+    try:
+        log_files = [f for f in os.listdir(log_dir) if f.endswith(".log")]
+        if not log_files:
+            return {"success": False, "message": "No watcher log files found", "file": None, "entries": [], "errors": []}
+
+        latest_name = max(log_files, key=lambda f: os.path.getmtime(os.path.join(log_dir, f)))
+        latest_path = os.path.join(log_dir, latest_name)
+
+        with open(latest_path, "r") as fp:
+            tail = fp.readlines()[-lines:]
+
+        # The watcher writes a paired <basename>.whitelist.json next to each .log
+        # file (see _write_whitelist_file in rv/watcher/watcher.py) listing exactly
+        # the {topic: [field_names]} it tracks per WATCH_SPEC. Forward it so the UI
+        # can show only those fields from each raw MQTT payload without keeping its
+        # own copy of WATCH_SPEC in sync.
+        whitelist = {}
+        whitelist_path = os.path.join(log_dir, os.path.splitext(latest_name)[0] + ".whitelist.json")
+        try:
+            with open(whitelist_path, "r") as fp:
+                whitelist = json.load(fp)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+
+        entries = []
+        errors = []
+        for raw_line in tail:
+            try:
+                entry = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            entries.append(entry)
+            if entry.get("name") == "SYS_ERRORS":
+                errors.append(entry)
+
+        return {
+            "success": True,
+            "message": f"Loaded {len(entries)} entries from {latest_name}",
+            "file": latest_name,
+            "entries": entries,
+            "errors": errors,
+            "whitelist": whitelist
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Error reading watcher logs: {str(e)}",
+            "file": None,
+            "entries": [],
+            "errors": [],
+            "whitelist": {}
+        }
+
 # Synology scheduled shutdown endpoints (must come before generic handler)
 @app.get("/api/debug/synology/scheduled-time")
 async def get_scheduled_shutdown():

@@ -10,6 +10,7 @@
     "ajv-keywords": "^3.5.2",
     "d3-color": "^3.1.0",
     "d3-interpolate": "^3.0.1",
+    "mqtt": "^5.15.1",
     "react": "^17.0.2",
     "react-battery-gauge": "^1.0.4",
     "react-dom": "^17.0.2",

@@ -1,1 +1,0 @@
-/home/tblank/code/Joram/RVSecurity/server/kasa_power_strip.py

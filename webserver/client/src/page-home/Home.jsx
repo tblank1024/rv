@@ -1,8 +1,35 @@
 import React, { useEffect, useRef, useState } from "react";
+import mqtt from 'mqtt';
 import BatteryGauge from "react-battery-gauge";
 import { fetchFromServer } from '../utils/api';
 import Gauge from '../components/gauge1';
 import './Home.css';
+
+// ---------------------------------------------------------------------------
+// SYS_ERRORS live alerts
+// ---------------------------------------------------------------------------
+// The watcher (rv/watcher/watcher.py) publishes RVC/SYS_ERRORS messages directly
+// to the MQTT broker in real time -- both actual "progression"/"bounds" alerts
+// and a periodic heartbeat of the form {"error": "# Errors = N", ...} every 5s.
+// Subscribing straight to the broker's websocket listener (port 9001, see
+// rv/docker/mqtt/config/mosquitto.conf) lets the home page reflect alerts as
+// they happen without polling a REST endpoint or duplicating watcher logic.
+const SYS_ERRORS_TOPIC = 'RVC/SYS_ERRORS';
+const MAX_RECENT_ALERTS = 5;
+
+const HEARTBEAT_RE = /^#\s*Errors\s*=\s*(\d+)/;
+
+/** True if this SYS_ERRORS payload is the periodic "# Errors = N" heartbeat rather than an actual alert. */
+function isHeartbeat(error) {
+  return typeof error === 'string' && HEARTBEAT_RE.test(error);
+}
+
+/** Format a SYS_ERRORS unix-seconds timestamp (int) as a local time string. */
+function formatAlertTime(ts) {
+  const seconds = parseFloat(ts);
+  if (Number.isNaN(seconds)) return '';
+  return new Date(seconds * 1000).toLocaleTimeString();
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -68,6 +95,8 @@ function Home() {
   const [rebooting, setRebooting] = useState(false);
   const [confirmReboot, setConfirmReboot] = useState(false);
   const [tireFaultSilenced, setTireFaultSilenced] = useState(false);
+  const [sysErrorCount, setSysErrorCount] = useState(0);
+  const [recentAlerts, setRecentAlerts] = useState([]);
   const serverWentDown = useRef(false);
   const tireStatusLockedUntil = useRef(0); // epoch ms — ignore poll results until this time
   const tireFaultSilencedRef = useRef(false); // mirror for use inside setInterval closure
@@ -122,6 +151,36 @@ function Home() {
     fetchTireServiceStatus();
     const svcInterval  = setInterval(fetchTireServiceStatus, 10000);
     return () => { clearInterval(dataInterval); clearInterval(svcInterval); };
+  }, []);
+
+  // Live SYS_ERRORS alerts via the broker's websocket listener (port 9001)
+  useEffect(() => {
+    const client = mqtt.connect(`ws://${window.location.hostname}:9001`);
+
+    client.on('connect', () => client.subscribe(SYS_ERRORS_TOPIC));
+
+    client.on('message', (topic, payload) => {
+      let msg;
+      try {
+        msg = JSON.parse(payload.toString());
+      } catch {
+        return;
+      }
+      if (typeof msg.error !== 'string') return;
+
+      if (isHeartbeat(msg.error)) {
+        setSysErrorCount(parseInt(msg.error.match(HEARTBEAT_RE)[1], 10));
+      } else {
+        setRecentAlerts(prev => {
+          if (prev.length > 0 && prev[0].error === msg.error) return prev; // skip immediate repeats
+          return [{ timestamp: msg.timestamp, error: msg.error }, ...prev].slice(0, MAX_RECENT_ALERTS);
+        });
+      }
+    });
+
+    client.on('error', (err) => console.error('SYS_ERRORS MQTT error:', err));
+
+    return () => client.end(true);
   }, []);
 
   const handleReboot = () => setConfirmReboot(true);
@@ -323,6 +382,20 @@ function Home() {
               <button className="action-btn action-btn--reboot" onClick={handleReboot} disabled={rebooting}>
                 {rebooting ? 'Rebooting' : 'Reboot'}
               </button>
+            </div>
+            <div className={`sys-alerts${sysErrorCount > 0 ? ' sys-alerts--active' : ''}`}>
+              <div className="sys-alerts-title">
+                Alerts{sysErrorCount > 0 ? ` (${sysErrorCount})` : ''}
+              </div>
+              {recentAlerts.length === 0 ? (
+                <div className="sys-alert-item sys-alert-item--none">No active alerts</div>
+              ) : (
+                recentAlerts.map((alert, idx) => (
+                  <div key={idx} className="sys-alert-item">
+                    {formatAlertTime(alert.timestamp)} &mdash; {alert.error}
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
