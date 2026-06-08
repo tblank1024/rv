@@ -12,7 +12,7 @@ packages = [
     "pyserial==3.5",  # Required for USB hub serial communication
     "python-kasa>=0.5.0",  # Required for Kasa power strip control
     "pythonping==1.1.4",  # Required for internet connectivity testing
-    "rvglue @ git+https://github.com/tblank1024/rvglue",
+    "rvglue @ git+https://github.com/tblank1024/rv@d5da3795810f65afccadc33849f00d01a2db4e02#subdirectory=rvglue",
     "docker>=6.0.0",  # Docker SDK for container management via unix socket
     #"aiofiles",
     #"aiohttp==3.8.3",
