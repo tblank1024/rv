@@ -385,7 +385,12 @@ function Home() {
             </div>
             <div className={`sys-alerts${sysErrorCount > 0 ? ' sys-alerts--active' : ''}`}>
               <div className="sys-alerts-title">
-                Alerts{sysErrorCount > 0 ? ` (${sysErrorCount})` : ''}
+                <span>Alerts{sysErrorCount > 0 ? ` (${sysErrorCount})` : ''}</span>
+                {recentAlerts.length > 0 && (
+                  <button className="sys-alerts-clear" onClick={() => { setRecentAlerts([]); setSysErrorCount(0); }}>
+                    Clear
+                  </button>
+                )}
               </div>
               {recentAlerts.length === 0 ? (
                 <div className="sys-alert-item sys-alert-item--none">No active alerts</div>

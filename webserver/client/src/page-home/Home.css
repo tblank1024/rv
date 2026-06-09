@@ -54,12 +54,32 @@
 }
 
 .sys-alerts-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 0.95rem;
   font-weight: bold;
   color: #1a3a6b;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 4px;
+}
+
+.sys-alerts-clear {
+  font-size: 0.75rem;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 7px;
+  border: 1px solid #c0392b;
+  border-radius: 3px;
+  background: transparent;
+  color: #c0392b;
+  cursor: pointer;
+}
+.sys-alerts-clear:hover {
+  background: #c0392b;
+  color: #fff;
 }
 
 .sys-alerts--active .sys-alerts-title {

@@ -281,99 +281,96 @@ def main():
     if DEBUG >= 2:
         log(f"Command: {' '.join(cmd)}")
     
-    gatttool_process = None
-    reader_thread = None
-    
+    _RECONNECT_DELAY = 15  # seconds between reconnect attempts
+
     try:
-        gatttool_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        
-        # Start the reader thread - this handles all the complex BLE stuff
-        reader_thread = threading.Thread(
-            target=gatttool_reader_thread, 
-            args=(gatttool_process,),
-            daemon=True
-        )
-        reader_thread.start()
-        
-        log("Waiting for battery messages...")
-        
-        # Counter for initial status messages
-        published_count = 0
-        
-        # Super simple main loop: just process messages from queue!
         while running:
-            try:
-                # Wait for complete message from reader thread
-                message = message_queue.get(timeout=1)
-                
-                # Parse and publish
-                battery_data = parse_battery_data(message)
-                if DEBUG >= 2:
-                    log(f"Raw message: {repr(message)}")
-                if battery_data:
-                    publish_battery_data(
-                        battery_data['voltage'],
-                        battery_data['current'], 
-                        battery_data['temperature'],
-                        battery_data['charge'],
-                        battery_data['status']
-                    )
-                    
-                    published_count += 1
-                    
-                    # For DEBUG=0: Show first 2 published values, then confirmation message
-                    if DEBUG == 0:
-                        if published_count <= 2:
-                            log(f"Published: V={battery_data['voltage']:.2f}, A={battery_data['current']}, SOC={battery_data['charge']}%")
-                        elif published_count == 3:
-                            log("Continuing to Receive & Publish Data")
-                    else:
-                        # For DEBUG>0: Show all messages as before
-                        log(f"Battery: {battery_data['voltage']:.2f}V, "
-                            f"{battery_data['current']}A, "
-                            f"{battery_data['charge']}% SOC")
-                        
-            except queue.Empty:
-                # No message in last second, check if process still alive
-                if gatttool_process and gatttool_process.poll() is not None:
-                    log("gatttool process died, exiting")
-                    break
-                continue
-                
+            # Re-detect adapter on each attempt in case hci enumeration changed
+            configure_bluetooth()
+
+            gatttool_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            reader_thread = threading.Thread(
+                target=gatttool_reader_thread,
+                args=(gatttool_process,),
+                daemon=True
+            )
+            reader_thread.start()
+
+            log("Waiting for battery messages...")
+
+            published_count = 0
+
+            while running:
+                try:
+                    message = message_queue.get(timeout=1)
+
+                    battery_data = parse_battery_data(message)
+                    if DEBUG >= 2:
+                        log(f"Raw message: {repr(message)}")
+                    if battery_data:
+                        publish_battery_data(
+                            battery_data['voltage'],
+                            battery_data['current'],
+                            battery_data['temperature'],
+                            battery_data['charge'],
+                            battery_data['status']
+                        )
+
+                        published_count += 1
+
+                        if DEBUG == 0:
+                            if published_count <= 2:
+                                log(f"Published: V={battery_data['voltage']:.2f}, A={battery_data['current']}, SOC={battery_data['charge']}%")
+                            elif published_count == 3:
+                                log("Continuing to Receive & Publish Data")
+                        else:
+                            log(f"Battery: {battery_data['voltage']:.2f}V, "
+                                f"{battery_data['current']}A, "
+                                f"{battery_data['charge']}% SOC")
+
+                except queue.Empty:
+                    if gatttool_process and gatttool_process.poll() is not None:
+                        log(f"gatttool process died, reconnecting in {_RECONNECT_DELAY}s...")
+                        break
+                    continue
+
+            # Clean up dead process before reconnecting
+            if gatttool_process:
+                try:
+                    gatttool_process.terminate()
+                    gatttool_process.wait(timeout=5)
+                except Exception:
+                    try:
+                        gatttool_process.kill()
+                    except Exception:
+                        pass
+            if reader_thread and reader_thread.is_alive():
+                reader_thread.join(timeout=2)
+
+            if running:
+                time.sleep(_RECONNECT_DELAY)
+
     except KeyboardInterrupt:
         log("Keyboard interrupt")
     except Exception as e:
         log(f"Main error: {e}")
     finally:
         running = False
-        
-        # Cleanup
-        if gatttool_process:
-            try:
-                gatttool_process.terminate()
-                gatttool_process.wait(timeout=5)
-            except:
-                try:
-                    gatttool_process.kill()
-                except:
-                    pass
-        
-        if reader_thread and reader_thread.is_alive():
-            reader_thread.join(timeout=2)
-        
+
         if mqtt_client:
             try:
                 mqtt_client.loop_stop()
                 mqtt_client.disconnect()
-            except:
+            except Exception:
                 pass
-    
+
     log("Shutdown complete")
 
 if __name__ == "__main__":

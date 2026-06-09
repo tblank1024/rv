@@ -67,6 +67,28 @@ IOFileptr = None
 thread_data = {}
 Sample_Period_Sec = 60
 LastTime = 0
+_flush_timer = None
+
+
+def _start_periodic_flush(interval=60):
+    """Flush the log file on a repeating timer so buffered writes reach disk
+    without the per-message flush() calls that cause unnecessary flash wear."""
+    global _flush_timer
+
+    def _tick():
+        global IOFileptr, _flush_timer
+        if IOFileptr and not IOFileptr.closed:
+            try:
+                IOFileptr.flush()
+            except Exception:
+                pass
+        _flush_timer = threading.Timer(interval, _tick)
+        _flush_timer.daemon = True
+        _flush_timer.start()
+
+    _flush_timer = threading.Timer(interval, _tick)
+    _flush_timer.daemon = True
+    _flush_timer.start()
 
 
 # Create a class for the window thread
@@ -234,8 +256,9 @@ class mqttclient():
             if mode == 'c':
                 #open the .log file for writing
                 try:
-                    IOFileptr = self.__get_output_file_pointer() 
+                    IOFileptr = self.__get_output_file_pointer()
                     print('opening file: ', IOFileptr.name)
+                    _start_periodic_flush(interval=5)
                 except FileNotFoundError as e:
                     print(f"An FileNotFount error occurred: {e}")
                     exit()
@@ -380,14 +403,9 @@ class mqttclient():
     # check for remaining disk space
     # The function takes a single argument, percent_free, which is the minimum percentage of free disk space that should be available.                
     def check_disk_space(self, percent_free):
-        # Get disk usage statistics
         disk_usage = psutil.disk_usage('/')
-
-        # Calculate the percentage of free disk space
         free_percent = disk_usage.free / disk_usage.total * 100
-
-        # return whether the remaining disk capacity is greater than the provided percent free
-        return free_percent > percent_free
+        return free_percent >= percent_free
                     
     # The callback for when a watched message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
@@ -410,7 +428,7 @@ class mqttclient():
           and not (msg_dict['name'] == 'SYS_ERRORS' and msg_dict['error'][0] == '#'):
             TargetTopics[msg.topic]['timestamp'] = time.time()
             #writes this dictionary to the output file on one line if enough disk space is available
-            if self.check_disk_space(20):
+            if self.check_disk_space(10):
                 self.__get_output_file_pointer()
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
@@ -436,15 +454,17 @@ class mqttclient():
                     and not AliasData[item]['flag'] \
                     and item != 'SYS_ERRORS':
                 AliasData[item]['flag'] = True
-                print('Timestamp not progressing for  ', item, '  now = ', now)
+                elapsed = now - int(AliasData[item]['timestamp'])
+                elapsed_str = f"{elapsed//60}m {elapsed%60}s" if elapsed >= 60 else f"{elapsed}s"
+                alias_display = item.replace('_', ' ')
+                print('No data:', alias_display, elapsed_str)
                 pprint(AliasData[item])
                 #build msg_dict to include error field
-                msg_dict['error'] = 'Progression error: ' + item + '  now = ' + str(now)
+                msg_dict['error'] = f'No data: {alias_display} ({elapsed_str} silent)'
                 self.pub(msg_dict, qos=0, retain=False)
                 #write this error msg to the output file on one line
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
-                IOFileptr.flush()
                 if debug > 0:
                     dt = datetime.datetime.fromtimestamp(time.time())
                     print('wrote error to file: ', dt, msg.topic, msg_dict)
@@ -464,7 +484,6 @@ class mqttclient():
                     #write this error msg to the output file on one line
                     json.dump(msg_dict, IOFileptr)
                     IOFileptr.write("\n")
-                    IOFileptr.flush()
                     if debug > 0:
                         dt = datetime.datetime.fromtimestamp(time.time())
                         print('wrote bounds error to file: ', dt, msg.topic, msg_dict)

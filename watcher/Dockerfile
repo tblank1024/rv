@@ -1,11 +1,11 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 RUN python3 -m pip install --upgrade pip
 RUN apt-get update && apt-get install -y gcc
 
 # Install Tkinter
 RUN apt-get install tk -y
 
-RUN mkdir -p /app/watacher
+RUN mkdir -p /app/watcher
 RUN mkdir -p /app/watcher/watcherlogs
 WORKDIR /app/watcher
 

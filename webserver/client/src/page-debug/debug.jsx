@@ -624,7 +624,19 @@ function Debug() {
 
           {watcherErrors.length > 0 && (
             <div style={{ marginBottom: '15px' }}>
-              <h3>Triggered Errors ({watcherErrors.length})</h3>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                Triggered Errors ({watcherErrors.length})
+                <button
+                  onClick={() => setWatcherErrors([])}
+                  style={{
+                    fontSize: '12px', fontWeight: 'normal', padding: '2px 10px',
+                    border: '1px solid #ccc', borderRadius: '4px',
+                    cursor: 'pointer', background: '#f5f5f5',
+                  }}
+                >
+                  Clear
+                </button>
+              </h3>
               <div className="log-viewer log-viewer-errors">
                 {watcherErrors.slice().reverse().map((entry, idx) => (
                   <div key={idx} className="log-entry log-entry-error">

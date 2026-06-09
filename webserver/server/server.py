@@ -85,11 +85,15 @@ def _start_tire_mqtt() -> None:
         c = _paho_mqtt.Client()
         c.on_message = _on_message
         c.on_connect = lambda client, ud, flags, rc: client.subscribe('RVC/TIRE_STATUS/#', 0)
-        try:
-            c.connect('localhost', 1883, 60)
-            c.loop_forever()
-        except Exception as e:
-            print(f'Tire MQTT subscriber failed: {e}')
+        c.reconnect_delay_set(min_delay=5, max_delay=60)
+        while True:
+            try:
+                c.connect('localhost', 1883, 60)
+                c.loop_forever()
+                # loop_forever() only returns on explicit disconnect
+            except Exception as e:
+                print(f'Tire MQTT subscriber error: {e}, retrying in 10s')
+                time.sleep(10)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -174,8 +178,12 @@ def _load_internet_state():
     return "none"
 
 def _save_internet_state(state):
-    """Persist internet connection state to file."""
+    """Persist internet connection state to file (only when state actually changed)."""
     try:
+        if os.path.exists(_INTERNET_STATE_FILE):
+            with open(_INTERNET_STATE_FILE, "r") as f:
+                if f.read().strip() == state:
+                    return  # no change — skip the write
         with open(_INTERNET_STATE_FILE, "w") as f:
             f.write(state)
     except Exception as e:

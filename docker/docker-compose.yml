@@ -61,6 +61,9 @@ services:
     network_mode: host
     image: rvc2mqtt:latest
     restart: always
+    # DEBUG_LEVEL=5 writes every CAN frame to disk — leave at 0 to avoid flash wear
+    environment:
+      - DEBUG_LEVEL=0
     depends_on:
       mqtt:
         condition: service_healthy
@@ -191,6 +194,11 @@ services:
 
   # Web Dashboard Interface
   webserver:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - TZ=America/Los_Angeles
       - PYTHONUNBUFFERED=1
@@ -268,6 +276,8 @@ services:
     restart: always
     image: watcher:latest
     privileged: false
+    environment:
+      - PYTHONUNBUFFERED=1
     depends_on:
       mqtt:
         condition: service_healthy

@@ -1,6 +1,7 @@
 *~
 *.pyc
 *.log
+*.whitelist.json
 #react experiments
 React/
 docker/mqtt/log

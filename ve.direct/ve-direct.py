@@ -7,6 +7,21 @@ from rvglue import MasterDict
 
 _last_serial_ts = [0.0]  # updated each time a valid frame is decoded
 
+# Candidate ports in priority order; /dev/ttyAMA0 is the Pi5 UART the solar controller is wired to.
+_CANDIDATE_PORTS = ['/dev/ttyAMA0', '/dev/ttyAMA10', '/dev/ttyAMA1', '/dev/ttyS0', '/dev/ttyUSB0']
+
+
+def find_serial_port(baud_rate):
+    """Return the first candidate port that opens successfully, or None."""
+    for port in _CANDIDATE_PORTS:
+        try:
+            s = serial.Serial(port, baud_rate, timeout=0.1)
+            s.close()
+            return port
+        except (serial.SerialException, FileNotFoundError, PermissionError):
+            pass
+    return None
+
 
 
 # Victron protocol dictionary sets
@@ -103,18 +118,16 @@ def decode_ve_direct_message(data, debug):
                 decoded_data = None
     return decoded_data
 
-def read_serial_data(ser, debug):
-    while True:
+def read_serial_data(ser, debug, stop_event):
+    while not stop_event.is_set():
         try:
             data = ser.readline()
             if data:
-                #print(f"Received data: {data}")
                 decoded_data = decode_ve_direct_message(data, debug)
                 if decoded_data != None:
                     _last_serial_ts[0] = time.time()
                     MasterDict['SOLAR_CONTROLLER_STATUS/1'][decoded_data['op']] = decoded_data['value']
         except KeyboardInterrupt:
-            print("Thread terminated.")
             break
         except Exception as e:
             # Log bad serial data but keep thread alive
@@ -141,40 +154,47 @@ def main(serial_port:str, baud_rate:int, mode:str, broker:str, port:int, varpref
     #Initialize the Solar record dictionary in MasterDict and pub to MQTT
     InitializeSolarMQTTRecord(RVC_Client)
 
-    # Open the serial port
-    try:
-        ser = serial.Serial(serial_port, baud_rate, timeout=1, inter_byte_timeout=0.1)
-        if debug > 0:
-            print(f"VE-Direct serial port {serial_port} opened successfully.")
-    except Exception as e:
-        print(f"Failed to open serial port: {e}")
-        sys.exit(1)
-    _last_serial_ts[0] = time.time()  # arm the watchdog after port opens
     _SERIAL_TIMEOUT_SEC = 30
+
     try:
-        # Start a separate thread for reading serial data
-        thread = threading.Thread(target=read_serial_data, args=(ser, debug,))
-        thread.start()
-        print(f"VE-Direct/Solar to MQTT Running")
-        # Main loop
-        while True:
-            time.sleep(2)
-            if time.time() - _last_serial_ts[0] > _SERIAL_TIMEOUT_SEC:
-                print(f"ERROR: no VE.Direct serial data for {_SERIAL_TIMEOUT_SEC}s — exiting for restart")
-                sys.exit(1)
-            MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
-            RVC_Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
-            if debug > 0:
-                print(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
-                print('---------------------------------------------------------------------------------------------')
+        while True:  # reconnect loop — restarts on serial timeout without exiting
+            port_to_use = find_serial_port(baud_rate) or serial_port
+            try:
+                ser = serial.Serial(port_to_use, baud_rate, timeout=1, inter_byte_timeout=0.1)
+                print(f"VE-Direct serial port {port_to_use} opened.")
+            except Exception as e:
+                print(f"Failed to open serial port {port_to_use}: {e} — retrying in 10s")
+                time.sleep(10)
+                continue
+
+            _last_serial_ts[0] = time.time()
+            stop_event = threading.Event()
+            thread = threading.Thread(target=read_serial_data, args=(ser, debug, stop_event))
+            thread.start()
+            print("VE-Direct/Solar to MQTT Running")
+
+            try:
+                while True:
+                    time.sleep(2)
+                    if time.time() - _last_serial_ts[0] > _SERIAL_TIMEOUT_SEC:
+                        print(f"No VE.Direct data for {_SERIAL_TIMEOUT_SEC}s — reconnecting serial port")
+                        break  # drop to reconnect
+                    MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
+                    RVC_Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
+                    if debug > 0:
+                        print(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
+                        print('---------------------------------------------------------------------------------------------')
+            finally:
+                stop_event.set()
+                ser.close()
+                thread.join(timeout=5)
+                print("Serial port closed.")
+
+            print("Reconnecting in 5s...")
+            time.sleep(5)
 
     except KeyboardInterrupt:
         print("Program terminated by user.")
-    finally:
-        # Close the serial port and wait for the thread to finish
-        ser.close()
-        thread.join()
-        print("Serial port closed.")
 
 if __name__ == "__main__":
 
