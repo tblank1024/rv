@@ -27,8 +27,8 @@
 #
 #based on mqttclient.py
 
-import os, argparse,  time, random, json
-import re       # regular expressions   
+import os, argparse,  time, random, json, glob
+import re       # regular expressions
 import paho.mqtt.client as mqtt
 from pprint import pprint
 import tkinter as tk
@@ -68,6 +68,57 @@ thread_data = {}
 Sample_Period_Sec = 60
 LastTime = 0
 _flush_timer = None
+_pi_health_timer = None
+PI_HEALTH_INTERVAL = 30  # seconds between RPi health (temp/under-voltage) publishes
+
+
+def _read_cpu_temp_c():
+    """Read the RPi SoC temperature in Celsius via psutil. Returns None on error."""
+    try:
+        return round(psutil.sensors_temperatures()['cpu_thermal'][0].current, 1)
+    except Exception:
+        return None
+
+
+def _read_undervoltage_flag():
+    """Read the RPi PMIC under-voltage alarm (0 = OK, 1 = under-voltage detected)
+    via the 'rpi_volt' hwmon driver. Returns None if not found."""
+    try:
+        for hwmon in glob.glob('/sys/class/hwmon/hwmon*'):
+            with open(os.path.join(hwmon, 'name')) as f:
+                if f.read().strip() == 'rpi_volt':
+                    with open(os.path.join(hwmon, 'in0_lcrit_alarm')) as f2:
+                        return int(f2.read().strip())
+    except Exception:
+        pass
+    return None
+
+
+def _start_pi_health_publisher(interval=PI_HEALTH_INTERVAL):
+    """Periodically publish the Pi's SoC temperature and under-voltage status on
+    RVC/RV_Watcher/1. The watcher subscribes to this same topic (it's in
+    WATCH_SPEC), so the published values loop back through _on_message and get
+    the usual progression/bounds-check treatment like any other watched value."""
+    global _pi_health_timer
+
+    def _tick():
+        global _pi_health_timer
+        payload = {
+            "name": "RV_Watcher",
+            "instance": 1,
+            "timestamp": int(time.time()),
+            "Status": "OK",
+            "cpu_temp_c": _read_cpu_temp_c(),
+            "undervoltage": _read_undervoltage_flag(),
+        }
+        mqttclient.pub(payload, qos=0, retain=False)
+        _pi_health_timer = threading.Timer(interval, _tick)
+        _pi_health_timer.daemon = True
+        _pi_health_timer.start()
+
+    _pi_health_timer = threading.Timer(interval, _tick)
+    _pi_health_timer.daemon = True
+    _pi_health_timer.start()
 
 
 def _start_periodic_flush(interval=60):
@@ -271,7 +322,10 @@ class mqttclient():
                 # except:
                 #     print("Can't open ",IOFile + '.log', ' for append -- exiting')
                 #     exit()
-                
+
+            #periodically publish the Pi's CPU temp / under-voltage status (see WATCH_SPEC RV_Watcher/1)
+            _start_pi_health_publisher()
+
         else:   #mode is output; reads from log file and outputs selected vars to csv file
             #open the .log file for reading
             try:
@@ -603,6 +657,8 @@ WATCH_SPEC = [
 
     ("RV_Watcher/1",          "timestamp",                 "RV_Watcher_timestamp"),
     ("RV_Watcher/1",          "Status",                    "RV_Watcher_Status"),
+    ("RV_Watcher/1",          "cpu_temp_c",                "RPi_cpu_temp_c", 0, 80),
+    ("RV_Watcher/1",          "undervoltage",              "RPi_undervoltage", 0, 0),
 
     ("SYS_ERRORS",            "timestamp",                 "SYS_timestamp"),
     ("SYS_ERRORS",            "error",                     "SYS_error"),
