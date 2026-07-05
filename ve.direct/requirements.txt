@@ -1,2 +1,2 @@
-rvglue @ git+https://github.com/tblank1024/rv@d5da3795810f65afccadc33849f00d01a2db4e02#subdirectory=rvglue
+rvglue @ git+https://github.com/tblank1024/rv@9e1c7e9b3297f85612a376d44626d803508768eb#subdirectory=rvglue
 pyserial
