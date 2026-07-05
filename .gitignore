@@ -12,3 +12,6 @@ venv/
 # Local credentials - never commit
 .env
 docker/.env
+
+# MQTT password hashes - never commit
+docker/mqtt/config/mosquitto.passwd

@@ -192,6 +192,9 @@ class Alarm():
             # Subscribe to alarm command topics
             client.subscribe("rv/alarm/bike/command")
             client.subscribe("rv/alarm/interior/command")
+            client.subscribe("rv/tire/buzzer/command")
+            # Deprecated aliases (see README topic convention) — the webserver
+            # still publishes these; drop when it moves to the command topic.
             client.subscribe("rv/tire/buzzer")
             client.subscribe("rv/tire/buzzer/stop")
             # Own retained status topics: restore armed state after a restart
@@ -251,12 +254,13 @@ class Alarm():
                     self.set_state(AlarmTypes.Interior, States.OFF)
                     print("Interior alarm deactivated via MQTT")
             
-            elif topic == "rv/tire/buzzer/stop":
+            elif topic == "rv/tire/buzzer/stop" or \
+                    (topic == "rv/tire/buzzer/command" and payload.strip() == "stop"):
                 self._tire_beep_until = 0.0
                 print("Tire fault buzzer silenced")
                 return  # no status publish needed
 
-            elif topic == "rv/tire/buzzer":
+            elif topic in ("rv/tire/buzzer", "rv/tire/buzzer/command"):
                 try:
                     data = json.loads(payload)
                     seconds = float(data.get("seconds", 30))

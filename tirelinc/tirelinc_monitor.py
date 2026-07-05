@@ -79,6 +79,13 @@ MAX_TEMP_F        = int(os.environ.get('MAX_TEMP_F',        '150'))
 MAX_TEMP_CHANGE_F = int(os.environ.get('MAX_TEMP_CHANGE_F', '60'))
 
 # ---------------------------------------------------------------------------
+# MQTT topics (see README "MQTT topic convention")
+# ---------------------------------------------------------------------------
+TOPIC_BUZZER_CMD      = 'rv/tire/buzzer/command'   # to alarm: JSON start / "stop"
+TOPIC_SILENCE_CMD     = 'rv/tire/alarm/command'    # from webserver: "silence"
+TOPIC_SILENCE_LEGACY  = 'RVC/TIRE_ALARM/silence'   # deprecated, webserver still publishes
+
+# ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
 mqtt_client = None
@@ -153,14 +160,17 @@ def detect_adapter():
 def on_mqtt_message(client, userdata, msg):
     """Handle incoming MQTT messages (e.g. silence command)."""
     global _silenced_until, _silenced_tires
-    if msg.topic == 'RVC/TIRE_ALARM/silence':
+    payload = msg.payload.decode('utf-8', errors='replace').strip()
+    is_silence = (msg.topic == TOPIC_SILENCE_LEGACY
+                  or (msg.topic == TOPIC_SILENCE_CMD and payload == 'silence'))
+    if is_silence:
         _silenced_until = time.time() + 12 * 3600
         _silenced_tires = _current_faults.copy()
         log(f"Tire fault silenced for 12 hours. Faults at silence: {_silenced_tires}")
         # Stop the alarm buzzer immediately
         if mqtt_client:
             try:
-                mqtt_client.publish('rv/tire/buzzer/stop', '1')
+                mqtt_client.publish(TOPIC_BUZZER_CMD, 'stop')
             except Exception as e:
                 log(f"  Buzzer stop publish error: {e}")
 
@@ -170,7 +180,8 @@ def on_mqtt_connect(client, userdata, flags, rc, *args):
     Subscribing here (not after connect()) renews the subscription on every
     reconnect, so a broker restart can't silently drop the silence command."""
     log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
-    client.subscribe('RVC/TIRE_ALARM/silence')
+    client.subscribe(TOPIC_SILENCE_CMD)
+    client.subscribe(TOPIC_SILENCE_LEGACY)  # deprecated alias, see README
 
 
 def on_mqtt_disconnect(client, userdata, *args):
@@ -257,7 +268,7 @@ def publish_tire(sensor_id_hex, index, name, psi, temp_f):
         if now >= _silenced_until or name not in _silenced_tires:
             try:
                 buzzer_payload = json.dumps({"seconds": 0, "tire": name})
-                mqtt_client.publish("rv/tire/buzzer", buzzer_payload)
+                mqtt_client.publish(TOPIC_BUZZER_CMD, buzzer_payload)
                 log(f"  Tire fault buzzer triggered indefinitely for [{name}]")
             except Exception as e:
                 log(f"  Buzzer publish error: {e}")
@@ -266,7 +277,7 @@ def publish_tire(sensor_id_hex, index, name, psi, temp_f):
     elif was_faulted and mqtt_client:
         # Fault cleared — stop the buzzer
         try:
-            mqtt_client.publish('rv/tire/buzzer/stop', '1')
+            mqtt_client.publish(TOPIC_BUZZER_CMD, 'stop')
             log(f"  Tire fault cleared for [{name}] - buzzer stopped")
         except Exception as e:
             log(f"  Buzzer stop publish error: {e}")

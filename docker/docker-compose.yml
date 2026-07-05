@@ -1,45 +1,32 @@
 # =================================================================
-# SERVICE CONTROL
-# To disable a service: comment out the entire service block
-# To enable a service: uncomment the service block
+# RV Docker stack
+#
+# All paths are relative to this file (rv/docker/), so the stack runs
+# from any checkout. The one external repo (linuxkidd/rvc-monitor-py)
+# can be relocated via RVC_MONITOR_DIR in .env.
+#
+# Optional services use compose profiles instead of comment blocks:
+#   docker compose --profile raspap up -d     # RASPAp access point
+#   docker compose --profile bleak up -d      # legacy bleak battery monitor
+# Credentials live in .env (gitignored); see .env.example.
 # =================================================================
+
+x-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
 
-
-
-
-  # raspap:
-  #   container_name: raspap
-  #   image: ghcr.io/raspap/raspap-docker:latest
-  #   build: 
-  #     context: /home/tblank/code/raspap-docker
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "8081:8081"
-  #   privileged: true
-  #   network_mode: host
-  #   cgroup: host # uncomment when using an ARM device
-  #   environment:
-  #     - RASPAP_SSID=Sophie
-  #     - RASPAP_SSID_PASS=Buckley
-  #     - RASPAP_COUNTRY=GB
-  #     - RASPAP_WEBGUI_USER=admin
-  #     - RASPAP_WEBGUI_PASS=1Loki...
-  #     - RASPAP_WEBGUI_PORT=80
-  #   cap_add:
-  #     - SYS_ADMIN
-  #   volumes:
-  #     - /sys/fs/cgroup:/sys/fs/cgroup:rw
-  #   restart: unless-stopped
-
-
-  # MQTT Broker (Required - always enabled)
+  # MQTT Broker (required - everything depends on it)
   mqtt:
-    container_name: broker
+    container_name: mqtt
     network_mode: host
-    image: eclipse-mosquitto:latest
-    restart: always
+    image: eclipse-mosquitto:2.0
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h localhost -t health/probe -m 1 2>/dev/null || exit 1"]
       interval: 10s
@@ -47,20 +34,21 @@ services:
       retries: 3
       start_period: 10s
     volumes:
-      - /home/tblank/code/tblank1024/rv/docker/mqtt/config:/mosquitto/config
-      - /home/tblank/code/tblank1024/rv/docker/mqtt/data:/mosquitto/data
-      - /home/tblank/code/tblank1024/rv/docker/mqtt/log:/mosquitto/log
-      - /home/tblank/code/tblank1024/rv/docker/watcher/log:/watcher/log
+      - ./mqtt/config:/mosquitto/config
+      - ./mqtt/data:/mosquitto/data
+      - ./mqtt/log:/mosquitto/log
 
   # CAN Bus RV-C Monitoring
   rvc2mqtt:
     build:
-      context: /home/tblank/code/linuxkidd/rvc-monitor-py
+      context: ${RVC_MONITOR_DIR:-../../../linuxkidd/rvc-monitor-py}
       dockerfile: Dockerfile
-    container_name: can
+    container_name: rvc2mqtt
     network_mode: host
     image: rvc2mqtt:latest
-    restart: always
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     # DEBUG_LEVEL=5 writes every CAN frame to disk — leave at 0 to avoid flash wear
     environment:
       - DEBUG_LEVEL=0
@@ -68,50 +56,23 @@ services:
       mqtt:
         condition: service_healthy
 
-  # Bluetooth Battery Monitoring - LEGACY BLEAK APPROACH (COMMENTED OUT)
-  # bat2mqtt_bleak:
-  #   build:
-  #     context: /home/tblank/code/tblank1024/rv/bat2mqtt
-  #     dockerfile: Dockerfile
-  #   container_name: battery_bleak
-  #   image: bat2mqtt:bleak
-  #   network_mode: host
-  #   depends_on:
-  #     - mqtt
-  #   volumes:
-  #     - /run/dbus:/run/dbus:rw
-  #     - /var/run/dbus:/var/run/dbus:rw
-  #   devices:
-  #     - /dev/bus/usb:/dev/bus/usb
-  #   restart: always
-  #   privileged: true
-  #   cap_add:
-  #     - NET_ADMIN
-  #     - SYS_ADMIN
-  #   environment:
-  #     - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
-
-  # Bluetooth Battery Monitoring - gatttool implementation
-  # Uses direct gatttool subprocess calls for reliable BLE connection
-  bat2mqtt:
+  # Bluetooth Battery Monitoring (gatttool implementation)
+  battery:
     build:
-      context: /home/tblank/code/tblank1024/rv/bat2mqtt
+      context: ../bat2mqtt
       dockerfile: Dockerfile
     container_name: battery
-    image: bat2mqtt:gatttool
+    image: battery:latest
     network_mode: host
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     volumes:
       - /run/dbus:/run/dbus:ro
       - /sys/class/bluetooth:/sys/class/bluetooth:ro
       - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    restart: "always"  # Re-enabled - duplication issue solved with simplified implementation
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -126,19 +87,44 @@ services:
       mqtt:
         condition: service_healthy
 
-  # TireLinc TPMS Monitoring (Bluetooth GATT via USB dongle hci2)
+  # Legacy bleak-based battery monitor (enable with --profile bleak)
+  battery_bleak:
+    profiles: ["bleak"]
+    build:
+      context: ../bat2mqtt
+      dockerfile: Dockerfile-bleak
+    container_name: battery_bleak
+    image: battery:bleak
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
+    volumes:
+      - /run/dbus:/run/dbus:rw
+      - /var/run/dbus:/var/run/dbus:rw
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+    depends_on:
+      mqtt:
+        condition: service_healthy
+
+  # TireLinc TPMS Monitoring (Bluetooth GATT via USB dongle)
   tirelinc:
     build:
-      context: /home/tblank/code/tblank1024/rv/tirelinc
+      context: ../tirelinc
       dockerfile: Dockerfile
     container_name: tirelinc
     image: tirelinc:latest
     network_mode: host
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     depends_on:
       mqtt:
         condition: service_healthy
@@ -149,7 +135,6 @@ services:
       - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    restart: "always"
     privileged: true
     cap_add:
       - NET_ADMIN
@@ -159,33 +144,39 @@ services:
       - PYTHONIOENCODING=utf-8
 
   # Victron Solar Monitoring (ve.direct)
-  ve.direct:
+  solar:
     build:
-      context: /home/tblank/code/tblank1024/rv/ve.direct
+      context: ../ve.direct
       dockerfile: Dockerfile
     container_name: solar
+    image: solar:latest
     network_mode: host
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     devices:
       - /dev/ttyAMA0:/dev/ttyAMA0
-    restart: always
-    image: solar:latest
     privileged: false
+    environment:
+      - PYTHONUNBUFFERED=1
     depends_on:
       mqtt:
         condition: service_healthy
 
- # GPIO Alarm System
+  # GPIO Alarm System
   alarm:
     build:
-      context: /home/tblank/code/tblank1024/rv/alarm
+      context: ../alarm
       dockerfile: Dockerfile
     container_name: alarm
     network_mode: host
-    restart: always
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     image: alarm:latest
     privileged: true
     environment:
-      - GPIOZERO_PIN_FACTORY=lgpio
+      - PYTHONUNBUFFERED=1
     volumes:
       - /dev:/dev
     depends_on:
@@ -194,11 +185,27 @@ services:
 
   # Web Dashboard Interface
   webserver:
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    build:
+      context: ../webserver
+      dockerfile: Dockerfile
+      additional_contexts:
+        rv: ..
+    container_name: webserver
+    image: webserver:latest
+    network_mode: host
+    pid: host
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *logging
+    # privileged + pid:host + docker.sock: manages containers, USB hub power,
+    # host shutdown, and the USB modem — document/trim in Phase 4 hardening.
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - NET_BROADCAST
+      - SYS_ADMIN
+      - DAC_OVERRIDE
     environment:
       - TZ=America/Los_Angeles
       - PYTHONUNBUFFERED=1
@@ -208,29 +215,11 @@ services:
       - KASA_IP=${KASA_IP}
       - KASA_USERNAME=${KASA_USERNAME}
       - KASA_PASSWORD=${KASA_PASSWORD}
-      - PYTHONPATH=/usr/share/zoneinfo
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
-      - PST8PDT=America/Los_Angeles
       - WIFI_BRIDGE_HOST=10.10.0.1
       - WIFI_BRIDGE_PORT=12345
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
-    build:
-      context: /home/tblank/code/tblank1024/rv/webserver
-      dockerfile: Dockerfile
-      additional_contexts:
-        rv: /home/tblank/code/tblank1024/rv
-    container_name: webserver
-    image: webserver:latest
-    network_mode: host
-    pid: host
-    privileged: true
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - NET_BROADCAST
-      - SYS_ADMIN
-      - DAC_OVERRIDE
     volumes:
       - /sys/class/net:/sys/class/net:ro
       - /sys/bus/usb:/sys/bus/usb:rw
@@ -238,18 +227,17 @@ services:
       - /dev/bus/usb:/dev/bus/usb:rw
       - /run/dbus:/run/dbus:rw
       - /var/run/dbus:/var/run/dbus:rw
-      - /home/tblank/code/tblank1024/rv/alarm:/home/tblank/code/tblank1024/rv/alarm:ro
+      - ../alarm:/home/tblank/code/tblank1024/rv/alarm:ro
       - /dev/gpiochip0:/dev/gpiochip0
       - /dev/gpiochip4:/dev/gpiochip4
       - /var/run/docker.sock:/var/run/docker.sock
-      - /home/tblank/code/tblank1024/rv/docker:/home/tblank/code/tblank1024/rv/docker:ro
-      - /home/tblank/code/tblank1024/rv/webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
+      - .:/home/tblank/code/tblank1024/rv/docker:ro
+      - ../webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
     devices:
       - /dev/coolgear-hub:/dev/coolgear-hub
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyACM0:/dev/ttyACM0
       - /dev/ttyACM1:/dev/ttyACM1
-    restart: always
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
       interval: 15s
@@ -261,19 +249,17 @@ services:
         condition: service_healthy
       rvc2mqtt:
         condition: service_started
-  #      alarm:
-  #        condition: service_started
-
-
 
   # Data Watcher/Logger
   watcher:
     build:
-      context: /home/tblank/code/tblank1024/rv/watcher
+      context: ../watcher
       dockerfile: Dockerfile
     container_name: watcher
     network_mode: host
-    restart: always
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
     image: watcher:latest
     privileged: false
     environment:
@@ -282,7 +268,28 @@ services:
       mqtt:
         condition: service_healthy
     volumes:
-      - /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs
+      - ./watcherlogs:/app/watcher/watcherlogs
 
-
-
+  # RASPAp access point (enable with --profile raspap; runs natively today)
+  raspap:
+    profiles: ["raspap"]
+    container_name: raspap
+    image: ghcr.io/raspap/raspap-docker:latest
+    ports:
+      - "8081:8081"
+    privileged: true
+    network_mode: host
+    cgroup: host  # required on ARM devices
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      - RASPAP_SSID=${RASPAP_SSID}
+      - RASPAP_SSID_PASS=${RASPAP_SSID_PASS}
+      - RASPAP_COUNTRY=GB
+      - RASPAP_WEBGUI_USER=${RASPAP_WEBGUI_USER}
+      - RASPAP_WEBGUI_PASS=${RASPAP_WEBGUI_PASS}
+      - RASPAP_WEBGUI_PORT=80
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
