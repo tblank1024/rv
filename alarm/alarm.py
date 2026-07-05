@@ -1,5 +1,4 @@
 import sys
-sys.path.append('/home/pi/Code/tblank1024/rv/mqttclient')
 import time
 import logging
 import os
@@ -90,12 +89,14 @@ class Alarm():
     
 
     # Class variables
-    AlarmTime: float        = 0.0
     BikeState: States       = States.OFF   #uses blue button
     BikeTime: float         = 0.0
+    BikeAlarmTime: float    = 0.0        #Time bike alarm was triggered
     InteriorState: States   = States.OFF   #uses red button
     InteriorTime: float     = 0.0
-    LastButtonTime: float   = 0.0        #Time button weas last pressed 
+    InteriorAlarmTime: float = 0.0       #Time interior alarm was triggered
+    RedButtonTime: float    = 0.0        #Time red button was last pressed
+    BlueButtonTime: float   = 0.0        #Time blue button was last pressed
     LoopTime: float         = 0.0        #Time of current loop execution
     LoopCount: int          = 0          #Simple counter of loop cycles
     RedPWMVal: int          = 0          #PWM value from 0 - 100
@@ -153,21 +154,31 @@ class Alarm():
         # Initialize MQTT client
         self.mqtt_client = None
         self.mqtt_connected = False
+        # One-shot flags: restore armed state from retained status exactly once
+        self._interior_restored = False
+        self._bike_restored = False
+        self._initial_status_published = False
         self.setup_mqtt()
 
     def setup_mqtt(self):
-        """Initialize MQTT client for communication with web interface"""
+        """Initialize MQTT client for communication with web interface.
+
+        Uses connect_async + loop_start so paho's network thread retries the
+        initial connect forever with capped backoff (2s -> 30s) and reconnects
+        automatically after any later broker drop. The alarm is safety-critical:
+        a slow broker start must never permanently disable MQTT alarm control.
+        """
         try:
             self.mqtt_client = mqtt.Client()
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
-            
-            # Connect to MQTT broker
-            self.mqtt_client.connect("localhost", 1883, 60)
+
+            self.mqtt_client.reconnect_delay_set(min_delay=2, max_delay=30)
+            self.mqtt_client.connect_async("localhost", 1883, 60)
             self.mqtt_client.loop_start()
-            print("MQTT client initialized and connecting...")
-            
+            print("MQTT client initialized, connecting (auto-retry enabled)...")
+
         except Exception as e:
             print(f"Error setting up MQTT client: {e}")
             self.mqtt_client = None
@@ -177,16 +188,18 @@ class Alarm():
         if rc == 0:
             self.mqtt_connected = True
             print("Connected to MQTT broker")
-            
+
             # Subscribe to alarm command topics
             client.subscribe("rv/alarm/bike/command")
             client.subscribe("rv/alarm/interior/command")
             client.subscribe("rv/tire/buzzer")
             client.subscribe("rv/tire/buzzer/stop")
+            # Own retained status topics: restore armed state after a restart
+            # (see on_mqtt_message). No initial status publish here — it would
+            # overwrite the retained armed state before it can be read back.
+            client.subscribe("rv/alarm/bike/status")
+            client.subscribe("rv/alarm/interior/status")
             print("Subscribed to alarm command topics")
-            
-            # Publish initial status
-            self.publish_status()
         else:
             print(f"Failed to connect to MQTT broker with code {rc}")
             self.mqtt_connected = False
@@ -202,7 +215,27 @@ class Alarm():
             topic = msg.topic
             payload = msg.payload.decode('utf-8')
             print(f"Received MQTT message: {topic} -> {payload}")
-            
+
+            if topic == "rv/alarm/interior/status":
+                # Retained status published by this service before a restart.
+                # Restore armed state once, so a container restart doesn't
+                # silently disarm the RV. Later (self-published) status
+                # messages are ignored via the one-shot flag.
+                if not self._interior_restored:
+                    self._interior_restored = True
+                    if payload == "on" and self.InteriorState == States.OFF:
+                        print("Restoring interior alarm armed state from retained status")
+                        self.set_state(AlarmTypes.Interior, States.STARTING)
+                return
+
+            elif topic == "rv/alarm/bike/status":
+                if not self._bike_restored:
+                    self._bike_restored = True
+                    if payload == "on" and self.BikeState == States.OFF:
+                        print("Restoring bike alarm armed state from retained status")
+                        self.set_state(AlarmTypes.Bike, States.STARTING)
+                return
+
             if topic == "rv/alarm/bike/command":
                 if payload == "on":
                     self.set_state(AlarmTypes.Bike, States.STARTING)
@@ -291,14 +324,17 @@ class Alarm():
     
      
     def set_state(self, state_var: AlarmTypes, state_val: States):
+        # LoopTime is 0 until the main loop starts; fall back to wall clock so
+        # a state restored from retained MQTT gets the full entry/exit delay.
+        now = self.LoopTime if self.LoopTime > 0 else time.time()
         if state_var == AlarmTypes.Interior:
             self.InteriorState = state_val
             if state_val == States.STARTING:
-                self.InteriorTime = self.LoopTime
+                self.InteriorTime = now
         else:
             self.BikeState = state_val
             if state_val == States.STARTING:
-                self.BikeTime = self.LoopTime
+                self.BikeTime = now
         
         # Publish status update via MQTT
         self.publish_status()
@@ -333,9 +369,9 @@ class Alarm():
                 # Starting errror
                 self.set_state(AlarmTypes.Bike, States.STARTERROR)
             else:
-                # Alarm triggered 
+                # Alarm triggered
                 self.set_state(AlarmTypes.Bike, States.TRIGGERED)
-                self.AlarmTime = self.LoopTime
+                self.BikeAlarmTime = self.LoopTime
     
     def _check_interior(self):
         if self.InteriorState == States.STARTING and not self.pir_sensor.is_active: 
@@ -344,7 +380,7 @@ class Alarm():
         elif self.InteriorState == States.ON and not self.pir_sensor.is_active: 
             #Alarm triggered (with pull_up=True, is_active=False means movement detected)
             self.set_state(AlarmTypes.Interior, States.TRIGDELAY)
-            self.AlarmTime = self.LoopTime
+            self.InteriorAlarmTime = self.LoopTime
             if self.debuglevel > 0:
                 logging.info("Interior Alarm triggered")
 
@@ -355,7 +391,7 @@ class Alarm():
         RedButton = self.red_button.is_pressed     #Interior Alarm control
         BlueButton = self.blue_button.is_pressed    #Bike Alarm control
         
-        if(RedButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY)): 
+        if(RedButton and ((NowTime-self.RedButtonTime) > BUTTONDELAY)):
             if self.InteriorState == States.OFF:
                 self.set_state(AlarmTypes.Interior,States.STARTING)
                 if self.debuglevel > 0:
@@ -364,9 +400,9 @@ class Alarm():
                 self.set_state(AlarmTypes.Interior,States.OFF)
                 if self.debuglevel > 0:
                     logging.info("Red Stopping")
-            self.LastButtonTime = NowTime
+            self.RedButtonTime = NowTime
 
-        if BlueButton and ((NowTime-self.LastButtonTime) > BUTTONDELAY): 
+        if BlueButton and ((NowTime-self.BlueButtonTime) > BUTTONDELAY):
             #Toggle
             if self.BikeState == States.OFF:
                 self.set_state(AlarmTypes.Bike, States.STARTING)
@@ -376,7 +412,7 @@ class Alarm():
                 self.set_state(AlarmTypes.Bike, States.OFF)
                 if self.debuglevel > 0:
                     logging.info("Blue Stopping")
-            self.LastButtonTime = NowTime
+            self.BlueButtonTime = NowTime
 
     def _display(self):
         
@@ -483,11 +519,11 @@ class Alarm():
             #self.InteriorState = States.ON
             self.set_state(AlarmTypes.Interior, States.ON)
     
-        elif (Inside ==  States.TRIGDELAY) and ((self.LoopTime - self.AlarmTime) > self.ENTRYEXITDELAY):
+        elif (Inside ==  States.TRIGDELAY) and ((self.LoopTime - self.InteriorAlarmTime) > self.ENTRYEXITDELAY):
             #self.InternalState = States.TRIGGERED
             self.set_state(AlarmTypes.Interior, States.TRIGGERED)
-      
-        elif (Inside ==  States.TRIGGERED) and ((self.LoopTime - self.AlarmTime) > (60 * self.MAXALARMTIME)):
+
+        elif (Inside ==  States.TRIGGERED) and ((self.LoopTime - self.InteriorAlarmTime) > (60 * self.MAXALARMTIME)):
             #self.InternalState = States.SILENCED
             self.set_state(AlarmTypes.Interior, States.SILENCED)   
        
@@ -496,7 +532,7 @@ class Alarm():
             #self.BikeState = States.ON
             self.set_state(AlarmTypes.Bike, States.ON)
       
-        elif (Bike ==  States.TRIGGERED) and ((self.LoopTime - self.AlarmTime) > (60 * self.MAXALARMTIME)):
+        elif (Bike ==  States.TRIGGERED) and ((self.LoopTime - self.BikeAlarmTime) > (60 * self.MAXALARMTIME)):
             #self.BikeState = States.SILENCED
             self.set_state(AlarmTypes.Bike, States.SILENCED)
 
@@ -538,11 +574,16 @@ class Alarm():
                     else:
                         self.LoopCount += 1
                     self.LoopTime = time.time()
-                    self._check_buttons()    
+                    self._check_buttons()
                     self._check_bike_wire()
                     self._check_interior()
                     self._update_timed_transitions()
                     self._display()
+                    # Seed the status topics once, ~3s after start — late enough
+                    # that any retained armed state has been restored first.
+                    if not self._initial_status_published and self.LoopCount > 10:
+                        self._initial_status_published = True
+                        self.publish_status()
                     #if LoopCount % 40 == 0:
                     #    print(AlarmState)
                 time.sleep(self.LOOPDELAY) #sleep

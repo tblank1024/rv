@@ -165,7 +165,26 @@ def on_mqtt_message(client, userdata, msg):
                 log(f"  Buzzer stop publish error: {e}")
 
 
+def on_mqtt_connect(client, userdata, flags, rc, *args):
+    """Callback signatures differ between paho v1/v2 APIs; *args absorbs both.
+    Subscribing here (not after connect()) renews the subscription on every
+    reconnect, so a broker restart can't silently drop the silence command."""
+    log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
+    client.subscribe('RVC/TIRE_ALARM/silence')
+
+
+def on_mqtt_disconnect(client, userdata, *args):
+    log("MQTT disconnected - reconnecting in background")
+
+
 def setup_mqtt():
+    """Initialize MQTT client.
+
+    Uses connect_async + loop_start so paho's network thread retries the
+    initial connect forever with capped backoff (2s -> 30s) and reconnects
+    automatically after any later broker drop. The tire fault buzzer depends
+    on this link, so it must never be silently disabled by a slow broker start.
+    """
     global mqtt_client
     try:
         import paho.mqtt.client as mqtt
@@ -174,16 +193,18 @@ def setup_mqtt():
         except (AttributeError, TypeError):
             mqtt_client = mqtt.Client()
         mqtt_client.on_message = on_mqtt_message
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-        mqtt_client.subscribe('RVC/TIRE_ALARM/silence')
+        mqtt_client.on_connect = on_mqtt_connect
+        mqtt_client.on_disconnect = on_mqtt_disconnect
+        mqtt_client.reconnect_delay_set(min_delay=2, max_delay=30)
+        mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, 60)
         mqtt_client.loop_start()
-        log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
+        log(f"MQTT connecting to {MQTT_HOST}:{MQTT_PORT} (auto-retry enabled)")
         return True
     except ImportError:
         log("WARNING: paho-mqtt not installed - MQTT disabled")
         return False
     except Exception as e:
-        log(f"MQTT connection failed: {e}")
+        log(f"MQTT setup failed: {e}")
         return False
 
 def publish_tire(sensor_id_hex, index, name, psi, temp_f):

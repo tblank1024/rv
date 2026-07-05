@@ -19,8 +19,8 @@ DEV_MAC = 'F8:33:31:56:ED:16'
 NOTIFICATION_HANDLE = '0x0013'
 DATA_HANDLE = '0x0012'
 ADAPTER = 'hci1'
-MQTT_HOST = 'localhost'
-MQTT_PORT = 1883
+MQTT_HOST = os.environ.get('MQTT_HOST', 'localhost')
+MQTT_PORT = int(os.environ.get('MQTT_PORT', '1883'))
 DEBUG = int(os.environ.get('DEBUG_LEVEL', '0'))
 
 # Global state
@@ -40,28 +40,45 @@ def signal_handler(signum, frame):
     running = False
 
 def setup_mqtt():
-    """Initialize MQTT client"""
+    """Initialize MQTT client.
+
+    Uses connect_async + loop_start so paho's network thread retries the
+    initial connect forever with capped backoff (2s -> 30s) and reconnects
+    automatically after any later broker drop. A slow broker start no longer
+    leaves this service silently MQTT-less.
+    """
     global mqtt_client
-    
+
     try:
         import paho.mqtt.client as mqtt
-        
+
         # Create MQTT client with compatibility for different paho-mqtt versions
         try:
-            mqtt_client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+            client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
         except (AttributeError, TypeError):
-            mqtt_client = mqtt.Client()
-            
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-        mqtt_client.loop_start()
-        log("MQTT connected")
+            client = mqtt.Client()
+
+        # Callback signatures differ between paho v1/v2 APIs; *args absorbs both
+        def on_connect(client, userdata, flags, rc, *args):
+            log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
+
+        def on_disconnect(client, userdata, *args):
+            log("MQTT disconnected - reconnecting in background")
+
+        client.on_connect = on_connect
+        client.on_disconnect = on_disconnect
+        client.reconnect_delay_set(min_delay=2, max_delay=30)
+        client.connect_async(MQTT_HOST, MQTT_PORT, 60)
+        client.loop_start()
+        mqtt_client = client
+        log(f"MQTT connecting to {MQTT_HOST}:{MQTT_PORT} (auto-retry enabled)")
         return True
-        
+
     except ImportError:
         log("Warning: paho-mqtt not installed, MQTT disabled")
         return False
     except Exception as e:
-        log(f"MQTT connection failed: {e}")
+        log(f"MQTT setup failed: {e}")
         return False
 
 def publish_battery_data(voltage, current, temperature, charge, status):

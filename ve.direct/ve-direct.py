@@ -129,6 +129,11 @@ def read_serial_data(ser, debug, stop_event):
                     MasterDict['SOLAR_CONTROLLER_STATUS/1'][decoded_data['op']] = decoded_data['value']
         except KeyboardInterrupt:
             break
+        except serial.SerialException as e:
+            # Device gone (unplugged / driver reset) — exit the thread so the
+            # main loop reconnects immediately instead of busy-looping here.
+            print(f"Serial port failure: {e} — reader thread exiting")
+            break
         except Exception as e:
             # Log bad serial data but keep thread alive
             print(f"Warning: serial decode error (skipping): {e}")
@@ -136,7 +141,7 @@ def read_serial_data(ser, debug, stop_event):
 def InitializeSolarMQTTRecord(Client):
     #Initialize the Solar record dictionary in MasterDict and update MQTT
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['VPV'] =    -1
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPW'] =    -1
+    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPV'] =    -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['V'] =      -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['I'] =      -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['IL'] =     -1
@@ -176,10 +181,15 @@ def main(serial_port:str, baud_rate:int, mode:str, broker:str, port:int, varpref
             try:
                 while True:
                     time.sleep(2)
+                    if not thread.is_alive():
+                        print("Serial reader thread exited — reconnecting serial port")
+                        break  # drop to reconnect
                     if time.time() - _last_serial_ts[0] > _SERIAL_TIMEOUT_SEC:
                         print(f"No VE.Direct data for {_SERIAL_TIMEOUT_SEC}s — reconnecting serial port")
                         break  # drop to reconnect
-                    MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = time.time()
+                    # Timestamp reflects when data last arrived, so stale data
+                    # looks stale to downstream consumers.
+                    MasterDict['SOLAR_CONTROLLER_STATUS/1']['timestamp'] = _last_serial_ts[0]
                     RVC_Client.pub(MasterDict['SOLAR_CONTROLLER_STATUS/1'])
                     if debug > 0:
                         print(MasterDict['SOLAR_CONTROLLER_STATUS/1'])

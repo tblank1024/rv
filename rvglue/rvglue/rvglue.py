@@ -53,17 +53,14 @@ class mqttclient():
         client = mqtt.Client()
         client.on_connect = self._on_connect
         client.on_message = self._on_message
+        client.on_disconnect = self._on_disconnect
 
-        try:
-            client.connect(mqttbroker,mqttport, 60)
-        except:
-            print("Can't connect to MQTT Broker/port -- exiting",mqttbroker,":",mqttport)
-            exit()
-
-        
-
-       
-        
+        # Retry the initial connect forever with capped backoff (2s -> 30s);
+        # paho's network thread also reconnects automatically after any later drop.
+        client.reconnect_delay_set(min_delay=2, max_delay=30)
+        client.connect_async(mqttbroker, mqttport, 60)
+        client.loop_start()
+        print('MQTT connecting to', mqttbroker, ':', mqttport, '(auto-retry enabled)')
 
     # The callback for when the client receives a CONNACK response from the server.
     def _on_connect(self, client, userdata, flags, rc):
@@ -82,6 +79,11 @@ class mqttclient():
                     print('Subscribing to: ', name)
                 client.subscribe(name,0)
         print('Running...')
+
+    # The callback for when the client disconnects from the server.
+    def _on_disconnect(self, client, userdata, rc):
+        if rc != 0:
+            print('MQTT disconnected unexpectedly (rc =', rc, ') - reconnecting in background')
 
     # The callback for when a PUBLISH message is received from the MQTT server.
     def _on_message(self, client, userdata, msg):
@@ -127,8 +129,10 @@ class mqttclient():
         client.publish(topic, json.dumps(payload), qos, retain)
                 
     def run_mqtt_infinite(self):
-        global client
-        client.loop_forever()
+        # The network loop already runs in the background thread started by
+        # loop_start() in __init__; just keep the main thread alive.
+        while True:
+            time.sleep(60)
 
 
 
