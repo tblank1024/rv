@@ -1,6 +1,6 @@
+# TireLinc TPMS monitor — BLE via bleak (uses D-Bus/bluetoothd)
 FROM python:3.11-slim-bookworm
 
-# Install system dependencies for Bluetooth (bleak uses D-Bus/bluetoothd)
 RUN apt-get update && apt-get install -y \
     bluez \
     bluez-tools \
@@ -8,16 +8,13 @@ RUN apt-get update && apt-get install -y \
     rfkill \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/tirelinc
 WORKDIR /app/tirelinc
 
-COPY tirelinc_monitor.py .
 COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir -r requirements.txt
 
-RUN python3 -m pip install --upgrade pip
-RUN python3 -m pip install -r requirements.txt
-
-RUN chmod +x tirelinc_monitor.py
+COPY tirelinc_monitor.py .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8

@@ -15,6 +15,26 @@ import logging
 _log = logging.getLogger(__name__)
 _patches_applied = False
 
+# The patches below reach into python-kasa internals (device_factory._connect,
+# transport classes). They are verified against exactly this version.
+EXPECTED_KASA_VERSION = "0.10.2"
+
+
+def _check_kasa_version():
+    try:
+        from importlib.metadata import version
+
+        installed = version("python-kasa")
+    except Exception:
+        return
+    if installed != EXPECTED_KASA_VERSION:
+        _log.warning(
+            "kasa_patches: python-kasa %s installed but patches were written for %s"
+            " — HS300 patches may not apply correctly",
+            installed,
+            EXPECTED_KASA_VERSION,
+        )
+
 
 def apply():
     """Apply all patches. Safe to call multiple times."""
@@ -22,6 +42,7 @@ def apply():
     if _patches_applied:
         return
 
+    _check_kasa_version()
     _patch_device_factory()
     _patches_applied = True
     _log.debug("kasa_patches: all patches applied")

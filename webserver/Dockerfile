@@ -1,5 +1,5 @@
 # Multi-stage build for RV Security monitoring application
-FROM node:16-slim AS reactbuild
+FROM node:20-slim AS reactbuild
 WORKDIR /app/client
 COPY client/package*.json ./
 # Install with legacy peer deps for compatibility with d3 packages
@@ -15,23 +15,30 @@ COPY client/src/constants.js ./client/src/
 RUN mkdir -p server && python3 constantscopy.py client/src/constants.js server/constants.json
 
 FROM python:3.11-slim AS reactbase
-RUN python3 -m pip install --upgrade pip
-RUN apt-get update && apt-get install build-essential -y
-RUN apt-get update && apt-get install -y git
-# Install timezone data to handle Kasa device timezone responses
-RUN apt-get update && apt-get install -y tzdata
-# Install USB management tools for cellular modem handling
-RUN apt-get update && apt-get install -y usbutils modemmanager
-# Install network tools for internet connectivity testing
-RUN apt-get update && apt-get install -y iputils-ping iproute2 curl
+# build-essential/git: pip builds + rvglue git dependency
+# tzdata: Kasa device timezone responses; usbutils/modemmanager: cellular modem
+# iputils-ping/iproute2/curl: connectivity testing and the compose healthcheck
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    tzdata \
+    usbutils \
+    modemmanager \
+    iputils-ping \
+    iproute2 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 # Create PST8PDT timezone link to handle Kasa device timezone format
 RUN ln -sf /usr/share/zoneinfo/America/Los_Angeles /usr/share/zoneinfo/PST8PDT
 
 WORKDIR /app/rvsecurity/server
 COPY server/setup.py .
-RUN python3 -m pip install --use-pep517 .
-# Install GPIO libraries for alarm system integration (after setup.py)
-RUN python3 -m pip install gpiozero lgpio
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir --use-pep517 . \
+    && python3 -m pip install --no-cache-dir gpiozero lgpio
+# kasa_patches.py is written against exactly this version — fail the build,
+# not the RV dashboard at 2am, if the pin ever drifts.
+RUN python3 -c "from importlib.metadata import version; v = version('python-kasa'); assert v == '0.10.2', f'python-kasa {v} != 0.10.2 — kasa_patches.py must be re-verified'"
 
 FROM reactbase
 WORKDIR /app/rvsecurity

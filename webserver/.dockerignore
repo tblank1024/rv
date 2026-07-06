@@ -1,0 +1,10 @@
+# Keeps the 550MB client/node_modules out of the build context — the image
+# runs its own npm install; a host copy leaking in via COPY client/ would
+# override it with host-arch binaries.
+client/node_modules/
+client/build/
+**/__pycache__/
+*.pyc
+venv/
+*.log
+server/synology-password.json

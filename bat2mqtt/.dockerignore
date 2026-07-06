@@ -1,0 +1,8 @@
+# Only what the images copy matters; keep venv/logs/dead implementations
+# out of the build context (Dockerfile + Dockerfile-bleak)
+*
+!bat2mqtt.py
+!bat2mqtt-bleak.py
+!mqttclient.py
+!dgn_variables.json
+!requirements.txt

@@ -1,26 +1,24 @@
-# Updated for Raspberry Pi 5 with libgpiod support
+# Alarm system container — Raspberry Pi 5, GPIO via gpiozero/lgpio
 # Build: docker build -t alarm .
-# RUN  : sudo docker run -it --device /dev/gpiomem --device /dev/gpiochip0 alarm
 
 FROM python:3.11-slim-bookworm
 
-# Upgrade pip and install system dependencies
-RUN python3 -m pip install --upgrade pip
+# gcc is needed to build the lgpio wheel; gpiod tools for debugging
 RUN apt-get update && apt-get install -y \
     gcc \
     libgpiod-dev \
     python3-libgpiod \
     gpiod \
-    && apt-get clean
+    && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app/alarm
 
-# Copy application files
-COPY . .
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir -r requirements.txt
 
-# Install Python dependencies
-RUN python -m pip install -r requirements.txt
+COPY alarm.py .
 
-# Set default command
 CMD ["python3", "alarm.py"]

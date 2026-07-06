@@ -1,0 +1,4 @@
+# Only the app and its requirements belong in the image
+*
+!alarm.py
+!requirements.txt

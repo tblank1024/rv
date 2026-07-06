@@ -1,0 +1,4 @@
+# Keep venv and test tooling out of the build context
+*
+!ve-direct.py
+!requirements.txt
