@@ -142,10 +142,6 @@ def InitializeSolarMQTTRecord(Client):
     #Initialize the Solar record dictionary in MasterDict and update MQTT
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['VPV'] =    -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPV'] =    -1
-    # Legacy key: master_dict still maps '_var27Solar_power' to 'PPW', and the
-    # webserver's pinned rvglue KeyErrors if an expected field is missing.
-    # Remove once master_dict renames PPW -> PPV and webserver repins rvglue.
-    MasterDict['SOLAR_CONTROLLER_STATUS/1']['PPW'] =    -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['V'] =      -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['I'] =      -1
     MasterDict['SOLAR_CONTROLLER_STATUS/1']['IL'] =     -1

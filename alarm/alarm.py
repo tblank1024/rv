@@ -22,15 +22,6 @@ except ImportError:
     except ImportError:
         print("No compatible GPIO library found")
 
-# https://pypi.org/project/rpi-hardware-pwm/
-# GPIO_18 as the pin for PWM0  aka Pin12
-# GPIO_19 as the pin for PWM1  aka Pin35
-# pwm = HardwarePWM(pwm_channel=0, hz=60)
-# pwm.start(100) # full duty cycle
-# pwm.change_duty_cycle(50)
-# pwm.change_frequency(25_000)
-# pwm.stop()
-
 from enum import Enum
 
 class States(Enum):
@@ -49,17 +40,23 @@ class AlarmTypes(Enum):
 
 class Alarm():
 
+    # Output modes used in StateConsts. The blink values are chosen so that
+    # summed Interior+Bike values stay distinguishable: a sum >= BLINK_SLOW
+    # means at least one alarm wants blinking; >= BLINK_FAST means fast.
+    OUT_OFF     = 0
+    OUT_ON      = 1
+    BLINK_SLOW  = 4
+    BLINK_FAST  = 16
+
     StateConsts = {
         # Value list assignments: 1st: Light indicator state; 2nd: Buzzer State; 3rd: Alarm State
-        # Value meaning: 0 = off; 1 = on; 4 = slow blink; 16 = fast blink 
-
-        States.OFF:         [ 0,  0,  0],     
-        States.STARTING:    [ 4,  4,  0],
-        States.STARTERROR:  [16, 16,  0],
-        States.ON:          [ 1,  0,  0],
-        States.TRIGDELAY:   [16, 16,  0],
-        States.TRIGGERED:   [16, 16,  1],
-        States.SILENCED:    [16, 16,  0],
+        States.OFF:         [OUT_OFF,    OUT_OFF,    OUT_OFF],
+        States.STARTING:    [BLINK_SLOW, BLINK_SLOW, OUT_OFF],
+        States.STARTERROR:  [BLINK_FAST, BLINK_FAST, OUT_OFF],
+        States.ON:          [OUT_ON,     OUT_OFF,    OUT_OFF],
+        States.TRIGDELAY:   [BLINK_FAST, BLINK_FAST, OUT_OFF],
+        States.TRIGGERED:   [BLINK_FAST, BLINK_FAST, OUT_ON],
+        States.SILENCED:    [BLINK_FAST, BLINK_FAST, OUT_OFF],
     }
 
     #Class Constants
@@ -99,8 +96,6 @@ class Alarm():
     BlueButtonTime: float   = 0.0        #Time blue button was last pressed
     LoopTime: float         = 0.0        #Time of current loop execution
     LoopCount: int          = 0          #Simple counter of loop cycles
-    RedPWMVal: int          = 0          #PWM value from 0 - 100
-    BluePWMVal: int         = 0          #PWM value from 0 - 100
     debuglevel: int         = 0
     _tire_beep_until: float = 0.0        #epoch time until tire beep pattern is active
 
@@ -196,10 +191,6 @@ class Alarm():
             client.subscribe("rv/alarm/bike/command")
             client.subscribe("rv/alarm/interior/command")
             client.subscribe("rv/tire/buzzer/command")
-            # Deprecated aliases (see README topic convention) — the webserver
-            # still publishes these; drop when it moves to the command topic.
-            client.subscribe("rv/tire/buzzer")
-            client.subscribe("rv/tire/buzzer/stop")
             # Own retained status topics: restore armed state after a restart
             # (see on_mqtt_message). No initial status publish here — it would
             # overwrite the retained armed state before it can be read back.
@@ -257,13 +248,12 @@ class Alarm():
                     self.set_state(AlarmTypes.Interior, States.OFF)
                     print("Interior alarm deactivated via MQTT")
             
-            elif topic == "rv/tire/buzzer/stop" or \
-                    (topic == "rv/tire/buzzer/command" and payload.strip() == "stop"):
+            elif topic == "rv/tire/buzzer/command" and payload.strip() == "stop":
                 self._tire_beep_until = 0.0
                 print("Tire fault buzzer silenced")
                 return  # no status publish needed
 
-            elif topic in ("rv/tire/buzzer", "rv/tire/buzzer/command"):
+            elif topic == "rv/tire/buzzer/command":
                 try:
                     data = json.loads(payload)
                     seconds = float(data.get("seconds", 30))
@@ -422,31 +412,20 @@ class Alarm():
             self.BlueButtonTime = NowTime
 
     def _display(self):
-        
+
         IntState    = self.StateConsts[self.InteriorState]
         BkState     = self.StateConsts[self.BikeState]
-        mytime = time.localtime()
-        NightTime =  mytime.tm_hour < 8 or mytime.tm_hour > 20
 
-        if IntState[0] == 0:
-            self.red_led.off() #Red light off
-        elif IntState[0] == 1:
-            #Red light on
-            if NightTime:
-                self.red_led.on()    #dim on (gpiozero doesn't support PWM on LED by default)
-            else:
-                self.red_led.on()    #strong on
-        if BkState[0] == 0:
-            self.blue_led.off() #Blue light off
-        elif BkState[0] == 1:
-            #Blue light on
-            if NightTime:
-                self.blue_led.on()    #Dim on
-            else:
-                self.blue_led.on()  #strong on
+        if IntState[0] == self.OUT_OFF:
+            self.red_led.off()
+        elif IntState[0] == self.OUT_ON:
+            self.red_led.on()
+        if BkState[0] == self.OUT_OFF:
+            self.blue_led.off()
+        elif BkState[0] == self.OUT_ON:
+            self.blue_led.on()
 
-        
-        # Combined Buzzer and Alarm values
+        # Combined Buzzer and Alarm values (Interior + Bike sums)
         BuzzerVal = IntState[1] + BkState[1]
         AlarmVal = IntState[2] + BkState[2]
 
@@ -466,54 +445,37 @@ class Alarm():
                     self.buzzer.on()
             else:
                 self.buzzer.off()
-            #TINK.setLED(self.TINKERADDR,0)
-        
+
         if AlarmVal == 0:
             self.horn.off()
         elif AlarmVal == 1:
             if self.LOUDENABLE:
                 self.horn.on()
-            #TINK.setDOUT(self.TINKERADDR,6)
 
         if BuzzerVal > 1 or AlarmVal > 1 or IntState[0] > 1 or BkState[0] > 1:
-             # Someone needs to _toggle now
+             # At least one output is in a blink mode
             if self.LoopCount % self.SLOWBLINK == 0:
-                if IntState[0] > 2:            # Red Light
-                    self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    self.red_led.on()  # simplified for gpiozero
-                if BkState[0] > 2:                # Blue Light
-                    self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    self.blue_led.on()  # simplified for gpiozero
-                if BuzzerVal > 2:
+                if IntState[0] >= self.BLINK_SLOW:
+                    self.red_led.on()
+                if BkState[0] >= self.BLINK_SLOW:
+                    self.blue_led.on()
+                if BuzzerVal >= self.BLINK_SLOW:
                     if self.LOUDENABLE:
                         self._toggle(self.buzzer)
-                    #TINK._toggle((LED(self.TINKERADDR,0)
-                if AlarmVal > 2:
+                if AlarmVal >= self.BLINK_SLOW:
                     if self.LOUDENABLE:
                         self._toggle(self.horn)
-                    #TINK._toggle((DOUT(self.TINKERADDR,6)
             elif (self.LoopCount % self.FASTBLINK) == 0:
-                if IntState[0] > 8:            # Red Light
-                    self.RedPWMVal = (self.RedPWMVal+50) % 100
-                    self.red_led.on()  # simplified for gpiozero
-                if BkState[0] > 8:                # Blue Light
-                    self.BluePWMVal = (self.BluePWMVal + 50) % 100
-                    self.blue_led.on()  # simplified for gpiozero
-                if BuzzerVal > 8:
+                if IntState[0] >= self.BLINK_FAST:
+                    self.red_led.on()
+                if BkState[0] >= self.BLINK_FAST:
+                    self.blue_led.on()
+                if BuzzerVal >= self.BLINK_FAST:
                     if self.LOUDENABLE:
                         self._toggle(self.buzzer)
-                    #TINK._toggle((LED(self.TINKERADDR,0)
-                if AlarmVal > 8:
+                if AlarmVal >= self.BLINK_FAST:
                     if self.LOUDENABLE:
                         self._toggle(self.horn)
-                    #TINK._toggle((DOUT(self.TINKERADDR,6)
-        # Debug output commented out to prevent constant printing
-        # if self.debuglevel == 1:
-        #     if self.LoopCount % 3 == 0:
-        #         print (IntState, "\t", BkState, "\t", AlarmVal, "\t\t", BuzzerVal, "\t\t", self.bike_in1.is_active, "\t", self.bike_in2.is_active)
-        #     if self.LoopCount % 50 == 1:
-        #         print("IntState\tBkState \tAlarmVal\tBuzzerVal\tBike1\tBike2")
-                
 
        
     def _update_timed_transitions(self):
@@ -523,24 +485,19 @@ class Alarm():
         
         Inside = self.InteriorState
         if Inside in [States.STARTING, States.STARTERROR] and (self.LoopTime - self.InteriorTime) > self.ENTRYEXITDELAY:
-            #self.InteriorState = States.ON
             self.set_state(AlarmTypes.Interior, States.ON)
-    
+
         elif (Inside ==  States.TRIGDELAY) and ((self.LoopTime - self.InteriorAlarmTime) > self.ENTRYEXITDELAY):
-            #self.InternalState = States.TRIGGERED
             self.set_state(AlarmTypes.Interior, States.TRIGGERED)
 
         elif (Inside ==  States.TRIGGERED) and ((self.LoopTime - self.InteriorAlarmTime) > (60 * self.MAXALARMTIME)):
-            #self.InternalState = States.SILENCED
-            self.set_state(AlarmTypes.Interior, States.SILENCED)   
-       
+            self.set_state(AlarmTypes.Interior, States.SILENCED)
+
         Bike = self.BikeState
         if (Bike in [States.STARTING, States.STARTERROR]) and (self.LoopTime - self.BikeTime) > self.ENTRYEXITDELAY:
-            #self.BikeState = States.ON
             self.set_state(AlarmTypes.Bike, States.ON)
-      
+
         elif (Bike ==  States.TRIGGERED) and ((self.LoopTime - self.BikeAlarmTime) > (60 * self.MAXALARMTIME)):
-            #self.BikeState = States.SILENCED
             self.set_state(AlarmTypes.Bike, States.SILENCED)
 
     def _InternalTest(self):

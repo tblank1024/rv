@@ -173,7 +173,7 @@ MasterDict = {
                     "instance":1,
                     "name":"SOLAR_CONTROLLER_STATUS",
                     "VPV":                                   "_var26Solar_voltage",
-                    "PPW":                                   "_var27Solar_power",
+                    "PPV":                                   "_var27Solar_power",
                     "V":                                     "_var40Solar_VBatt",
                     "I":                                     "_var41Solar_IBatt",
                     "IL":                                    "_var42Solar_ILoad",

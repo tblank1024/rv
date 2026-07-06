@@ -80,33 +80,52 @@ def _mqtt_client_with_auth(*args, **kwargs):
 # ---------------------------------------------------------------------------
 _tire_data: dict = {}
 
-def _start_tire_mqtt() -> None:
-    """Subscribe to RVC/TIRE_STATUS/# in a daemon thread and cache latest values."""
+# Long-lived MQTT bus: one client serves the tire cache, the alarm status
+# cache (fed by the alarm container's retained status topics), and all
+# publishes — replacing the old client-per-request pattern with its sleeps.
+_mqtt_bus = None
+_alarm_status: dict = {}   # 'bike'/'interior' -> bool
+
+def _start_mqtt_bus() -> None:
+    """Connect the shared MQTT client in a daemon thread and cache
+    tire telemetry and retained alarm status as messages arrive."""
     def _on_message(client, userdata, msg):
         try:
-            payload = json.loads(msg.payload.decode('utf-8'))
-            name = payload.get('name')
-            if name:
-                _tire_data[name] = {
-                    'psi':    payload.get('pressure_psi'),
-                    'temp_f': payload.get('temp_f'),
-                    'ts':     time.time(),
-                }
+            if msg.topic.startswith('RVC/TIRE_STATUS/'):
+                payload = json.loads(msg.payload.decode('utf-8'))
+                name = payload.get('name')
+                if name:
+                    _tire_data[name] = {
+                        'psi':    payload.get('pressure_psi'),
+                        'temp_f': payload.get('temp_f'),
+                        'ts':     time.time(),
+                    }
+            elif msg.topic == 'rv/alarm/bike/status':
+                _alarm_status['bike'] = msg.payload.decode('utf-8') == 'on'
+            elif msg.topic == 'rv/alarm/interior/status':
+                _alarm_status['interior'] = msg.payload.decode('utf-8') == 'on'
         except Exception:
             pass
 
+    def _on_connect(client, ud, flags, rc):
+        client.subscribe('RVC/TIRE_STATUS/#', 0)
+        client.subscribe('rv/alarm/bike/status', 0)
+        client.subscribe('rv/alarm/interior/status', 0)
+
     def _run():
+        global _mqtt_bus
         c = _mqtt_client_with_auth()
         c.on_message = _on_message
-        c.on_connect = lambda client, ud, flags, rc: client.subscribe('RVC/TIRE_STATUS/#', 0)
+        c.on_connect = _on_connect
         c.reconnect_delay_set(min_delay=5, max_delay=60)
+        _mqtt_bus = c
         while True:
             try:
                 c.connect('localhost', 1883, 60)
                 c.loop_forever()
                 # loop_forever() only returns on explicit disconnect
             except Exception as e:
-                print(f'Tire MQTT subscriber error: {e}, retrying in 10s')
+                print(f'MQTT bus error: {e}, retrying in 10s')
                 time.sleep(10)
 
     t = threading.Thread(target=_run, daemon=True)
@@ -367,103 +386,40 @@ def cleanup_alarm_system():
     alarm_thread_stop_event = None
 
 def set_alarm_via_mqtt(alarm_type, state):
-    """Set alarm state via MQTT communication with alarm container"""
+    """Set alarm state by publishing on the shared MQTT bus"""
     try:
         import paho.mqtt.client as mqtt
-        
-        # Create MQTT client for sending alarm commands
-        mqtt_client = _mqtt_client_with_auth()
 
-        # Set connection timeout
-        mqtt_client.connect("localhost", 1883, 60)
-        
-        # Wait a moment for connection to establish
-        import time
-        time.sleep(0.1)
-        
-        # Send alarm command via MQTT
+        if _mqtt_bus is None:
+            print("MQTT bus not started; cannot send alarm command")
+            return False
+
         topic = f"rv/alarm/{alarm_type}/command"
         payload = "on" if state else "off"
-        
-        result = mqtt_client.publish(topic, payload)
-        
-        # Wait for message to be sent
-        time.sleep(0.1)
-        mqtt_client.disconnect()
-        
+        result = _mqtt_bus.publish(topic, payload)
+
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
             print(f"MQTT alarm command sent: {alarm_type} -> {payload}")
             return True
         else:
             print(f"Failed to send MQTT alarm command: {result.rc}")
             return False
-            
+
     except Exception as e:
         print(f"Error sending MQTT alarm command: {e}")
         return False
 
 def get_alarm_status_via_mqtt():
-    """Get current alarm status via MQTT from alarm container"""
-    global bike_alarm_state, interior_alarm_state
-    
-    try:
-        import paho.mqtt.client as mqtt
-        import time
-        
-        # Store the received status
-        status_received = {}
-        status_complete = False
-        
-        def on_connect(client, userdata, flags, rc):
-            if rc == 0:
-                # Subscribe to status topics
-                client.subscribe("rv/alarm/bike/status")
-                client.subscribe("rv/alarm/interior/status")
-            
-        def on_message(client, userdata, msg):
-            nonlocal status_received, status_complete
-            topic = msg.topic
-            payload = msg.payload.decode('utf-8')
-            
-            if topic == "rv/alarm/bike/status":
-                status_received["bike"] = payload == "on"
-            elif topic == "rv/alarm/interior/status":
-                status_received["interior"] = payload == "on"
-            
-            # Check if we have both statuses
-            if "bike" in status_received and "interior" in status_received:
-                status_complete = True
-        
-        mqtt_client = _mqtt_client_with_auth()
-        mqtt_client.on_connect = on_connect
-        mqtt_client.on_message = on_message
+    """Current alarm status from the retained-status cache on the MQTT bus.
 
-        mqtt_client.connect("localhost", 1883, 60)
-        mqtt_client.loop_start()
-        
-        # Wait for status messages (with timeout)
-        timeout = 2.0  # 2 second timeout
-        start_time = time.time()
-        while not status_complete and (time.time() - start_time) < timeout:
-            time.sleep(0.1)
-        
-        mqtt_client.loop_stop()
-        mqtt_client.disconnect()
-        
-        if status_complete:
-            if DEBUG_MODE:
-                print(f"MQTT alarm status received: {status_received}")
-            return status_received
-        else:
-            if DEBUG_MODE:
-                print("Timeout waiting for MQTT alarm status")
-            # Fall back to web interface state
-            return {"bike": bike_alarm_state, "interior": interior_alarm_state}
-            
-    except Exception as e:
-        print(f"Error getting MQTT alarm status: {e}")
-        # Fall back to web interface state
-        return {"bike": bike_alarm_state, "interior": interior_alarm_state}
+    The alarm container publishes rv/alarm/*/status retained, so the cache
+    fills within moments of startup; until then fall back to web state.
+    """
+    if "bike" in _alarm_status and "interior" in _alarm_status:
+        if DEBUG_MODE:
+            print(f"MQTT alarm status from cache: {_alarm_status}")
+        return {"bike": _alarm_status["bike"], "interior": _alarm_status["interior"]}
+    return {"bike": bike_alarm_state, "interior": interior_alarm_state}
 
 def set_alarm(alarm_type, state):
     """Set alarm state - works with direct GPIO, MQTT, or web-only mode"""
@@ -2047,13 +2003,12 @@ def tire_service_control(data: Annotated[dict, Body()]) -> dict:
 def tire_silence_alarm() -> dict:
     """Publish MQTT messages to silence the tire alarm for 12 hours."""
     try:
-        c = _mqtt_client_with_auth()
-        c.connect('localhost', 1883, 60)
+        if _mqtt_bus is None:
+            return {"success": False, "message": "MQTT bus not started"}
         # Notify tirelinc to suppress re-triggering for 12 hours
-        c.publish('RVC/TIRE_ALARM/silence', '1')
+        _mqtt_bus.publish('rv/tire/alarm/command', 'silence')
         # Directly stop the alarm buzzer (belt-and-suspenders if tirelinc is down)
-        c.publish('rv/tire/buzzer/stop', '1')
-        c.disconnect()
+        _mqtt_bus.publish('rv/tire/buzzer/command', 'stop')
         return {"success": True, "message": "Silence command sent"}
     except Exception as e:
         return {"success": False, "message": str(e)}
@@ -2088,7 +2043,7 @@ if __name__ == "__main__":
     t1.start()
 
     # Start tire TPMS MQTT subscriber
-    _start_tire_mqtt()
+    _start_mqtt_bus()
     print("Tire TPMS MQTT subscriber started")
 
     # Initialize internet connection state from USB hub

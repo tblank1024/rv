@@ -42,6 +42,7 @@ MQTT_HOST       = os.environ.get('MQTT_HOST',       'localhost')
 MQTT_PORT       = int(os.environ.get('MQTT_PORT',   '1883'))
 DEBUG           = int(os.environ.get('DEBUG_LEVEL', '0'))
 RECONNECT_DELAY = int(os.environ.get('RECONNECT_DELAY', '45'))  # seconds between reconnect attempts
+STALE_MINUTES   = int(os.environ.get('TIRE_STALE_MINUTES', '15'))  # warn when no tire data this long
 
 # Adapter selection: pin by MAC (default), or explicit hci name override
 ADAPTER         = os.environ.get('ADAPTER', '').strip()
@@ -83,7 +84,7 @@ MAX_TEMP_CHANGE_F = int(os.environ.get('MAX_TEMP_CHANGE_F', '60'))
 # ---------------------------------------------------------------------------
 TOPIC_BUZZER_CMD      = 'rv/tire/buzzer/command'   # to alarm: JSON start / "stop"
 TOPIC_SILENCE_CMD     = 'rv/tire/alarm/command'    # from webserver: "silence"
-TOPIC_SILENCE_LEGACY  = 'RVC/TIRE_ALARM/silence'   # deprecated, webserver still publishes
+TOPIC_SYS_ERRORS      = 'RVC/SYS_ERRORS'           # staleness warnings (dashboard alerts)
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -161,9 +162,7 @@ def on_mqtt_message(client, userdata, msg):
     """Handle incoming MQTT messages (e.g. silence command)."""
     global _silenced_until, _silenced_tires
     payload = msg.payload.decode('utf-8', errors='replace').strip()
-    is_silence = (msg.topic == TOPIC_SILENCE_LEGACY
-                  or (msg.topic == TOPIC_SILENCE_CMD and payload == 'silence'))
-    if is_silence:
+    if msg.topic == TOPIC_SILENCE_CMD and payload == 'silence':
         _silenced_until = time.time() + 12 * 3600
         _silenced_tires = _current_faults.copy()
         log(f"Tire fault silenced for 12 hours. Faults at silence: {_silenced_tires}")
@@ -181,7 +180,6 @@ def on_mqtt_connect(client, userdata, flags, rc, *args):
     reconnect, so a broker restart can't silently drop the silence command."""
     log(f"MQTT connected to {MQTT_HOST}:{MQTT_PORT}")
     client.subscribe(TOPIC_SILENCE_CMD)
-    client.subscribe(TOPIC_SILENCE_LEGACY)  # deprecated alias, see README
 
 
 def on_mqtt_disconnect(client, userdata, *args):
@@ -407,6 +405,8 @@ async def connect_and_monitor(adapter: str):
 
             # Subscribe to tire data characteristic — retry once on InProgress
             def notification_handler(sender, data: bytearray):
+                global _last_data_ts
+                _last_data_ts = time.time()
                 decode_packet(bytes(data))
 
             for _attempt in range(2):
@@ -444,6 +444,37 @@ async def connect_and_monitor(adapter: str):
         log(f"Connection error: {e}")
 
 # ---------------------------------------------------------------------------
+# Staleness watchdog: the repeater can stay connected but stop notifying,
+# which otherwise looks identical to "all tires fine".
+# ---------------------------------------------------------------------------
+_last_data_ts = time.time()
+
+async def staleness_watchdog():
+    stale_secs = STALE_MINUTES * 60
+    warned_at = 0.0
+    while True:
+        await asyncio.sleep(60)
+        silent_for = time.time() - _last_data_ts
+        if silent_for > stale_secs:
+            # Re-warn at most once per stale interval, not every minute
+            if time.time() - warned_at > stale_secs:
+                warned_at = time.time()
+                minutes = int(silent_for // 60)
+                msg = f"TPMS: no tire data for {minutes} min"
+                log(f"WARNING: {msg}")
+                if mqtt_client:
+                    try:
+                        mqtt_client.publish(TOPIC_SYS_ERRORS, json.dumps({
+                            'name': 'SYS_ERRORS',
+                            'error': msg,
+                            'timestamp': int(time.time()),
+                        }))
+                    except Exception as e:
+                        log(f"  Staleness publish error: {e}")
+        else:
+            warned_at = 0.0
+
+# ---------------------------------------------------------------------------
 # Main loop with reconnect
 # ---------------------------------------------------------------------------
 async def main():
@@ -469,6 +500,7 @@ async def main():
     log("")
 
     setup_mqtt()
+    asyncio.create_task(staleness_watchdog())
 
     attempt = 0
     while True:

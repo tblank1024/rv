@@ -28,14 +28,8 @@ Two namespaces, split by purpose:
 | `rv/alarm/status` | status | JSON detail (retained) | alarm → webserver |
 | `rv/tire/buzzer/command` | command | JSON `{"seconds": N, "tire": "<name>"}` to start (`seconds: 0` = indefinite); literal `stop` to stop | tirelinc → alarm |
 | `rv/tire/alarm/command` | command | `silence` (12-hour fault silence) | webserver → tirelinc |
+| `RVC/SYS_ERRORS` | telemetry | JSON `{"error": str, "timestamp": int}` | watcher, tirelinc (staleness) → dashboard |
 
-### Deprecated aliases (still accepted during migration)
-
-| Old topic | Replaced by | Still used by |
-|---|---|---|
-| `rv/tire/buzzer` (JSON start) | `rv/tire/buzzer/command` | — (alarm still subscribes) |
-| `rv/tire/buzzer/stop` | `rv/tire/buzzer/command` payload `stop` | webserver publishes |
-| `RVC/TIRE_ALARM/silence` | `rv/tire/alarm/command` payload `silence` | webserver publishes |
-
-Remove the deprecated subscriptions once the webserver publishes the new
-topics (planned with the webserver refactor).
+The legacy aliases (`rv/tire/buzzer`, `rv/tire/buzzer/stop`,
+`RVC/TIRE_ALARM/silence`) were retired in Phase 5 — all publishers and
+subscribers now use the topics above.

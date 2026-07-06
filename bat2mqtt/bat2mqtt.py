@@ -15,9 +15,9 @@ import signal
 import queue
 
 # Configuration
-DEV_MAC = 'F8:33:31:56:ED:16'
-NOTIFICATION_HANDLE = '0x0013'
-DATA_HANDLE = '0x0012'
+DEV_MAC = os.environ.get('BAT_DEV_MAC', 'F8:33:31:56:ED:16')
+NOTIFICATION_HANDLE = os.environ.get('BAT_NOTIFY_HANDLE', '0x0013')
+DATA_HANDLE = os.environ.get('BAT_DATA_HANDLE', '0x0012')
 ADAPTER = 'hci1'
 MQTT_HOST = os.environ.get('MQTT_HOST', 'localhost')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', '1883'))
@@ -96,6 +96,7 @@ def publish_battery_data(voltage, current, temperature, charge, status):
             "DC_voltage": voltage,
             "DC_current": current,
             "State_of_charge": charge,
+            "Temperature_F": temperature,
             "Status": status,
             "timestamp": int(time.time())
         }
@@ -183,7 +184,7 @@ def parse_battery_data(raw_data):
     fields[7] = current in amps +/-
     fields[8] = percent battery full (0-100)
     fields[9] = status code (6 chars, "000000" is good)
-    Example raw: "1361,100,100,100,100,68,68,0100,000000"
+    Example raw: "1361,100,100,100,100,68,68,0100,100,000000"
     """
     try:
         cleaned = raw_data.strip().replace('\n', '').replace('\r', '')
