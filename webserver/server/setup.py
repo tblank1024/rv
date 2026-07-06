@@ -12,7 +12,7 @@ packages = [
     "pyserial==3.5",  # Required for USB hub serial communication
     "python-kasa==0.10.2",  # Pinned exactly: kasa_patches.py targets this version's internals
     "pythonping==1.1.4",  # Required for internet connectivity testing
-    "rvglue @ git+https://github.com/tblank1024/rv@3659cf08af224048089baf7622719c0935c752da#subdirectory=rvglue",
+    "rvglue @ git+https://github.com/tblank1024/rv@e44d078819cc0e8d8746769a5cde18580204a454#subdirectory=rvglue",
     "docker>=6.0.0",  # Docker SDK for container management via unix socket
     #"aiofiles",
     #"aiohttp==3.8.3",
