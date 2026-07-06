@@ -6,6 +6,31 @@ main scripts, and requirements files. Criteria: clarity, simplicity, robustness/
 
 ---
 
+## STATUS: ALL PHASES COMPLETE (2026-07-05)
+
+Every phase was implemented, deployed to the live RV, and verified end-to-end.
+
+| Phase | Commits | Notes |
+|-------|---------|-------|
+| 0 — broken now | `8611858` | secrets out of git (rotate the leaked RASPAp passwords — user action) |
+| 1 — R1 + health | `9e1c7e9`, `77ad009`, `4d37b36` | connect-with-retry everywhere, broker healthcheck, serial/alarm robustness |
+| 2 — compose cleanup | `8611858` | topic convention in README, relative paths, profiles, mem_limits (cgroup fix applied via cmdline.txt) |
+| 3 — Dockerfiles | `a057223` | + `init: true` (exec-form CMD made Python PID 1), rvc2mqtt pinned via `docker/setup-rvc-monitor.sh` |
+| 4 — security | `3659cf0`, `0789261`, `891af44` | broker auth on 1883 (creds in `docker/.env`); websocket 9001 anonymous but read-only via ACL for the browser dashboard; alarm/battery/tirelinc de-privileged; broker logs to stdout; healthcheck fixed to port 8000 |
+| 5 — refactors | `e44d078`, `e85533f` | PPV rename, legacy tire topics retired, webserver long-lived MQTT bus, tirelinc staleness alarm, battery temperature published, dead files pruned |
+
+Consciously **not** done (with rationale, see commit `e44d078`):
+- **Item 23a** — server.py router split: host-reboot/container-restart/Synology endpoints
+  can't be regression-tested safely on the live RV; do at the bench with UI testing.
+- **Item 21a** — moving BLE/MQTT helpers into rvglue: couples standalone services to
+  repo-pin churn for ~15 shared lines.
+- **Item 22** — bleak migration for bat2mqtt: per plan, gatttool stays until an OS
+  upgrade forces it; `bat2mqtt-bleak.py` kept as the migration seed.
+
+The findings and phase details below are retained as the original review record.
+
+---
+
 ## Part 1 — Findings
 
 ### 1. docker-compose.yml (system level)
