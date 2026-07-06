@@ -268,7 +268,9 @@ services:
       - /dev/ttyACM0:/dev/ttyACM0
       - /dev/ttyACM1:/dev/ttyACM1
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost/health || exit 1"]
+      # Port 8000 is the FastAPI server; port 80 is RASPAp's native GUI,
+      # which answers 302 to everything and made this check pass vacuously
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
