@@ -174,6 +174,9 @@ class Alarm():
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
 
+            mqtt_user = os.environ.get('MQTT_USER')
+            if mqtt_user:
+                self.mqtt_client.username_pw_set(mqtt_user, os.environ.get('MQTT_PASS', ''))
             self.mqtt_client.reconnect_delay_set(min_delay=2, max_delay=30)
             self.mqtt_client.connect_async("localhost", 1883, 60)
             self.mqtt_client.loop_start()

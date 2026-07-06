@@ -1,21 +1,21 @@
+# MQTT/RV-C data watcher/logger
+# tk stays: watcher.py imports tkinter unconditionally (live-view mode)
 FROM python:3.11-slim
-RUN python3 -m pip install --upgrade pip
-RUN apt-get update && apt-get install -y gcc
 
-# Install Tkinter
-RUN apt-get install tk -y
+RUN apt-get update && apt-get install -y \
+    gcc \
+    tk \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/watcher
-RUN mkdir -p /app/watcher/watcherlogs
 WORKDIR /app/watcher
+RUN mkdir -p watcherlogs
+
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir -r requirements.txt
 
 COPY watcher.py .
-COPY requirements.txt .
 
-RUN python3 -m pip install -r requirements.txt
+ENV PYTHONUNBUFFERED=1
 
-
-CMD python3 watcher.py
-
-# To build the container:   docker build -t watcher .
-# To run the container:     docker run --name watcher --net=host -v /home/tblank/code/tblank1024/rv/docker/watcherlogs:/app/watcher/watcherlogs watcher
+CMD ["python3", "watcher.py"]

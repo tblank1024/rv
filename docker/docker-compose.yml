@@ -28,8 +28,11 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     logging: *logging
+    environment:
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_pub -h localhost -t health/probe -m 1 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -u \"$$MQTT_USER\" -P \"$$MQTT_PASS\" -t health/probe -m 1 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -37,7 +40,6 @@ services:
     volumes:
       - ./mqtt/config:/mosquitto/config
       - ./mqtt/data:/mosquitto/data
-      - ./mqtt/log:/mosquitto/log
 
   # CAN Bus RV-C Monitoring
   rvc2mqtt:
@@ -55,6 +57,8 @@ services:
     # DEBUG_LEVEL=5 writes every CAN frame to disk — leave at 0 to avoid flash wear
     environment:
       - DEBUG_LEVEL=0
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
     depends_on:
       mqtt:
         condition: service_healthy
@@ -77,14 +81,18 @@ services:
       - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    privileged: true
+    # De-privileged: gatttool/hciconfig need NET_ADMIN/NET_RAW for HCI
+    # sockets; SYS_ADMIN kept for BlueZ adapter resets
     cap_add:
       - NET_ADMIN
+      - NET_RAW
       - SYS_ADMIN
     environment:
       - DEBUG_LEVEL=0
       - MQTT_HOST=localhost
       - MQTT_PORT=1883
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
     depends_on:
@@ -115,6 +123,8 @@ services:
       - SYS_ADMIN
     environment:
       - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
     depends_on:
       mqtt:
         condition: service_healthy
@@ -141,11 +151,14 @@ services:
       - /sys/devices:/sys/devices:ro
     devices:
       - /dev/bus/usb:/dev/bus/usb
-    privileged: true
+    # De-privileged: bleak talks to host bluetoothd over D-Bus, no raw
+    # device access needed beyond the mounts above
     cap_add:
       - NET_ADMIN
-      - SYS_ADMIN
+      - NET_RAW
     environment:
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
 
@@ -165,6 +178,8 @@ services:
       - /dev/ttyAMA0:/dev/ttyAMA0
     privileged: false
     environment:
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
     depends_on:
       mqtt:
@@ -182,11 +197,14 @@ services:
     mem_limit: 128m
     logging: *logging
     image: alarm:latest
-    privileged: true
+    # De-privileged: gpiozero/lgpio only needs the two GPIO character devices
+    devices:
+      - /dev/gpiochip0:/dev/gpiochip0
+      - /dev/gpiochip4:/dev/gpiochip4
     environment:
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
-    volumes:
-      - /dev:/dev
     depends_on:
       mqtt:
         condition: service_healthy
@@ -217,6 +235,8 @@ services:
       - DAC_OVERRIDE
     environment:
       - TZ=America/Los_Angeles
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
       - KASA_DISCOVERY_TIMEOUT=10
       - KASA_DEFAULT_TIMEOUT=10
@@ -273,6 +293,8 @@ services:
     image: watcher:latest
     privileged: false
     environment:
+      - MQTT_USER=${MQTT_USER}
+      - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
     depends_on:
       mqtt:

@@ -295,6 +295,10 @@ class mqttclient():
             client.on_message = self._on_message
             client.on_disconnect = self._on_disconnect
 
+            mqtt_user = os.environ.get('MQTT_USER')
+            if mqtt_user:
+                client.username_pw_set(mqtt_user, os.environ.get('MQTT_PASS', ''))
+
             # Connect to the MQTT broker
             while True:
                 try:

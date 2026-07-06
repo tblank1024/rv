@@ -60,6 +60,20 @@ from server_calcs import *
 from server_calcs import constants
 import paho.mqtt.client as _paho_mqtt
 
+
+def _mqtt_client_with_auth(*args, **kwargs):
+    """Create a paho client with broker credentials from MQTT_USER/MQTT_PASS.
+
+    Unset env vars mean anonymous, so the server still works against a
+    pre-auth broker.
+    """
+    c = _paho_mqtt.Client(*args, **kwargs)
+    mqtt_user = os.environ.get('MQTT_USER')
+    if mqtt_user:
+        c.username_pw_set(mqtt_user, os.environ.get('MQTT_PASS', ''))
+    return c
+
+
 # ---------------------------------------------------------------------------
 # Tire TPMS data — populated by background MQTT subscriber
 # Keys match TireLinc position names (FL, FR, RL_out, RL_in, RR_out, RR_in)
@@ -82,7 +96,7 @@ def _start_tire_mqtt() -> None:
             pass
 
     def _run():
-        c = _paho_mqtt.Client()
+        c = _mqtt_client_with_auth()
         c.on_message = _on_message
         c.on_connect = lambda client, ud, flags, rc: client.subscribe('RVC/TIRE_STATUS/#', 0)
         c.reconnect_delay_set(min_delay=5, max_delay=60)
@@ -358,8 +372,8 @@ def set_alarm_via_mqtt(alarm_type, state):
         import paho.mqtt.client as mqtt
         
         # Create MQTT client for sending alarm commands
-        mqtt_client = mqtt.Client()
-        
+        mqtt_client = _mqtt_client_with_auth()
+
         # Set connection timeout
         mqtt_client.connect("localhost", 1883, 60)
         
@@ -420,10 +434,10 @@ def get_alarm_status_via_mqtt():
             if "bike" in status_received and "interior" in status_received:
                 status_complete = True
         
-        mqtt_client = mqtt.Client()
+        mqtt_client = _mqtt_client_with_auth()
         mqtt_client.on_connect = on_connect
         mqtt_client.on_message = on_message
-        
+
         mqtt_client.connect("localhost", 1883, 60)
         mqtt_client.loop_start()
         
@@ -2033,8 +2047,7 @@ def tire_service_control(data: Annotated[dict, Body()]) -> dict:
 def tire_silence_alarm() -> dict:
     """Publish MQTT messages to silence the tire alarm for 12 hours."""
     try:
-        import paho.mqtt.client as mqtt
-        c = mqtt.Client()
+        c = _mqtt_client_with_auth()
         c.connect('localhost', 1883, 60)
         # Notify tirelinc to suppress re-triggering for 12 hours
         c.publish('RVC/TIRE_ALARM/silence', '1')

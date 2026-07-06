@@ -206,6 +206,9 @@ def setup_mqtt():
         mqtt_client.on_message = on_mqtt_message
         mqtt_client.on_connect = on_mqtt_connect
         mqtt_client.on_disconnect = on_mqtt_disconnect
+        mqtt_user = os.environ.get('MQTT_USER')
+        if mqtt_user:
+            mqtt_client.username_pw_set(mqtt_user, os.environ.get('MQTT_PASS', ''))
         mqtt_client.reconnect_delay_set(min_delay=2, max_delay=30)
         mqtt_client.connect_async(MQTT_HOST, MQTT_PORT, 60)
         mqtt_client.loop_start()

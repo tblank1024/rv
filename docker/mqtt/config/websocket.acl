@@ -1,0 +1,4 @@
+# ACL for the anonymous websocket listener (9001) — browser dashboard only.
+# Anonymous clients may read telemetry; they can never publish, so WiFi
+# clients cannot inject alarm commands or spoof sensor data.
+topic read RVC/#

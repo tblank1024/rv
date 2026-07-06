@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='rvglue',
-    version='0.1.9',
+    version='0.1.10',
     packages=["rvglue"],
     install_requires=[
         'paho-mqtt==1.6.1'

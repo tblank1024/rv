@@ -7,7 +7,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/tblank1024/rvc-monitor-py.git"
-PINNED_COMMIT="b43019c66a14ffa883f920d71e7811ed7374db2a"
+PINNED_COMMIT="0ad119d801bedd7706e3154cacca596c397e721e"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIR="${RVC_MONITOR_DIR:-$SCRIPT_DIR/../../../linuxkidd/rvc-monitor-py}"

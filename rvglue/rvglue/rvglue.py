@@ -55,6 +55,12 @@ class mqttclient():
         client.on_message = self._on_message
         client.on_disconnect = self._on_disconnect
 
+        # Broker credentials come from the environment so callers need no
+        # signature change; unset means anonymous (pre-auth brokers).
+        mqtt_user = os.environ.get('MQTT_USER')
+        if mqtt_user:
+            client.username_pw_set(mqtt_user, os.environ.get('MQTT_PASS', ''))
+
         # Retry the initial connect forever with capped backoff (2s -> 30s);
         # paho's network thread also reconnects automatically after any later drop.
         client.reconnect_delay_set(min_delay=2, max_delay=30)
