@@ -1836,6 +1836,26 @@ def _nsenter_cmd(host_cmd: list) -> list:
     """Wrap a command in nsenter so it executes in the host's namespaces."""
     return ['nsenter', '-t', '1', '-m', '-u', '-i', '-n', '--'] + host_cmd
 
+def _flush_journal_to_disk() -> None:
+    """Copy the volatile (RAM-backed) journal to persistent disk storage.
+
+    journald runs with Storage=volatile (see ../../sdcard-writes/), so
+    system + container logs normally live only in tmpfs and are lost on
+    reboot. Called before any deliberate restart/reboot from the dashboard
+    so recent history survives for post-mortem debugging. Best-effort —
+    never raises, so a flush failure can't block the actual restart/reboot.
+    """
+    try:
+        subprocess.run(_nsenter_cmd(['journalctl', '--sync']),
+                        capture_output=True, text=True, timeout=5)
+        subprocess.run(_nsenter_cmd(['sh', '-c',
+            'rm -rf /var/log/journal-last-flush && '
+            'mkdir -p /var/log/journal-last-flush && '
+            'cp -a /run/log/journal/. /var/log/journal-last-flush/']),
+            capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        print(f"journal flush before restart/reboot failed (non-fatal): {e}")
+
 @app.post("/api/system/reboot")
 def system_reboot() -> dict:
     """Reboot the host Raspberry Pi.
@@ -1844,8 +1864,13 @@ def system_reboot() -> dict:
     1. libc reboot() syscall — requires pid: host + privileged: true
     2. nsenter into host namespaces to run systemctl reboot
     3. /proc/sysrq-trigger — works from any privileged container
+
+    Flushes the volatile journal to disk first (see
+    _flush_journal_to_disk) since a reboot wipes tmpfs, and the sysrq
+    fallback below bypasses systemd shutdown hooks entirely.
     """
     errors = []
+    _flush_journal_to_disk()
 
     # Method 1: libc reboot() syscall directly
     # Only works when pid: host is set so we are in the initial PID namespace.
@@ -1890,13 +1915,20 @@ def system_reboot() -> dict:
 
 @app.post("/api/system/restart-containers")
 def system_restart_containers() -> dict:
-    """Restart all containers in the compose project via the Docker socket."""
+    """Restart all containers in the compose project via the Docker socket.
+
+    Flushes the volatile journal to disk first (see
+    _flush_journal_to_disk) for consistency with the Reboot button. Not
+    load-bearing here since this only restarts containers, not the host —
+    the host's RAM-backed journal is unaffected either way.
+    """
     try:
         import docker as docker_sdk
 
         def _do_restart():
             import time
             import yaml
+            _flush_journal_to_disk()
             time.sleep(0.5)  # allow response to be returned before self-restart
             client = docker_sdk.DockerClient(base_url='unix://var/run/docker.sock')
             project = os.path.basename(os.path.dirname(_COMPOSE_FILE))

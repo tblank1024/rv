@@ -12,11 +12,12 @@
 # Credentials live in .env (gitignored); see .env.example.
 # =================================================================
 
+# Container logs go to the host's journald (routed to RAM -- see
+# ../sdcard-writes/) instead of json-file, so they no longer write to the
+# SD card on every log line. journald's own volatile-buffer config caps
+# total size and retention (36h), not this driver.
 x-logging: &logging
-  driver: "json-file"
-  options:
-    max-size: "10m"
-    max-file: "3"
+  driver: "journald"
 
 services:
 
