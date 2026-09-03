@@ -17,19 +17,45 @@ long-term audit, so a bounded ring buffer is sufficient.
 | `1fa0997` | Switch container logging driver to journald; add journald volatile config + install.sh + README; flush volatile journal to disk before Restart/Reboot dashboard actions |
 | `cafefda` | Fix `install.sh` executable bit (Windows checkout has `core.filemode=false`) |
 | `36575c1` | Add `setup-passwordless-sudo.sh` — one-time, narrowly-scoped sudo rule so `install.sh` doesn't need an interactive password every run |
+| `e9286d5` | This plan doc |
 
-**Remaining steps on Sophie** (none done yet as of this writing — confirmed via
-SSH: no `/etc/sudoers.d/tblank-journald-volatile`, no
+Repo on Sophie (`/home/tblank/code/tblank1024/rv`) was last confirmed pulled to
+`e9286d5` — check `git log --oneline -1` there in case of drift before acting.
+
+## Handoff — next steps for the Claude session running on Sophie
+
+Nothing below has been run on Sophie yet (confirmed via SSH just before
+this doc was written: no `/etc/sudoers.d/tblank-journald-volatile`, no
 `/etc/systemd/journald.conf.d/volatile-buffer.conf`, `mqtt` container still
-running with `json-file`):
+on `json-file`). Do these in order, from `rv/` in the checkout on Sophie:
 
-1. Run `sdcard-writes/setup-passwordless-sudo.sh` interactively (needs a real
-   TTY for the one-time sudo password — can't be done over a plain
-   non-interactive SSH command).
-2. Run `sdcard-writes/install.sh` (installs the journald drop-in, restarts
-   `systemd-journald`).
-3. `cd docker && docker compose up -d` (recreates containers so the new
-   `journald` log driver takes effect).
+1. **`sdcard-writes/setup-passwordless-sudo.sh`** — writes a sudoers drop-in
+   scoped to exactly the commands step 2 needs. This needs a real TTY for a
+   one-time `sudo` password prompt. If your Bash tool has no TTY passthrough
+   (same limitation hit when this was attempted over plain SSH from the dev
+   laptop), **ask the user to run this one line themselves** in their own
+   terminal on Sophie rather than retrying it through the tool — don't loop
+   on it. Once done, everything past this point is passwordless.
+2. **`sdcard-writes/install.sh`** — installs the journald volatile config,
+   restarts `systemd-journald`.
+3. **`cd docker && docker compose up -d`** — recreates every container so the
+   `journald` log driver (already set in `docker-compose.yml`) takes effect.
+   Expect a few seconds of downtime per service, same as any compose update.
+4. **Verify**, per `sdcard-writes/README.md`:
+   ```bash
+   journalctl --header | grep Storage        # expect: volatile
+   docker inspect mqtt --format '{{.HostConfig.LogConfig.Type}}'  # expect: journald
+   ```
+5. **Smoke-test the flush path**: click Restart or Reboot on the dashboard
+   (or hit `/api/system/restart-containers` / `/api/system/reboot` directly),
+   then confirm `/var/log/journal-last-flush/` was populated:
+   `journalctl --directory=/var/log/journal-last-flush`.
+6. Leave it running a day or two, then do the Tuning check below and adjust
+   `RuntimeMaxUse` in `sdcard-writes/journald-volatile.conf` if needed —
+   commit/push/pull that change the normal way if it's changed.
+
+Update the STATUS table/section above once deployed — this doc should stop
+saying "not yet deployed" as soon as it is.
 
 ---
 
