@@ -10,7 +10,7 @@ long-term audit, so a bounded ring buffer is sufficient.
 
 ---
 
-## STATUS: code committed, not yet deployed to Sophie (2026-09-03)
+## STATUS: deployed and verified on Sophie (2026-09-03)
 
 | Commit | What |
 |--------|------|
@@ -19,43 +19,32 @@ long-term audit, so a bounded ring buffer is sufficient.
 | `36575c1` | Add `setup-passwordless-sudo.sh` — one-time, narrowly-scoped sudo rule so `install.sh` doesn't need an interactive password every run |
 | `e9286d5` | This plan doc |
 
-Repo on Sophie (`/home/tblank/code/tblank1024/rv`) was last confirmed pulled to
-`e9286d5` — check `git log --oneline -1` there in case of drift before acting.
+Deployed by the user directly (ran `install.sh` interactively, typed the
+sudo password normally — `setup-passwordless-sudo.sh` turned out to be
+unnecessary for that path and was skipped) plus `docker compose up -d`.
+Journald confirmed `Storage=volatile` and writing to `/run/log/journal`
+(tmpfs); all 9 containers confirmed on the `journald` log driver.
 
-## Handoff — next steps for the Claude session running on Sophie
+**Gotcha hit during verification**: the flush-on-restart smoke test
+initially did nothing — no error, no `/var/log/journal-last-flush/`.
+Root cause: `docker compose up -d` had recreated `webserver` from the
+cached `webserver:latest` image, which predated commit `1fa0997` and
+had no `_flush_journal_to_disk` in it at all. `docker compose build
+webserver && docker compose up -d webserver` picked up the current
+code; the flush then worked on the first try (dir populated within 5s
+of hitting `/api/system/restart-containers`). **Takeaway: after pulling
+webserver code changes, always `docker compose build webserver` before
+`up -d`** — plain `up -d` silently keeps running stale code.
 
-Nothing below has been run on Sophie yet (confirmed via SSH just before
-this doc was written: no `/etc/sudoers.d/tblank-journald-volatile`, no
-`/etc/systemd/journald.conf.d/volatile-buffer.conf`, `mqtt` container still
-on `json-file`). Do these in order, from `rv/` in the checkout on Sophie:
+Also vacuumed `/var/log/journal` (`sudo journalctl --vacuum-time=1s`),
+freeing 3.9G of pre-migration archived logs that journald was no longer
+adding to but also wasn't cleaning up on its own.
 
-1. **`sdcard-writes/setup-passwordless-sudo.sh`** — writes a sudoers drop-in
-   scoped to exactly the commands step 2 needs. This needs a real TTY for a
-   one-time `sudo` password prompt. If your Bash tool has no TTY passthrough
-   (same limitation hit when this was attempted over plain SSH from the dev
-   laptop), **ask the user to run this one line themselves** in their own
-   terminal on Sophie rather than retrying it through the tool — don't loop
-   on it. Once done, everything past this point is passwordless.
-2. **`sdcard-writes/install.sh`** — installs the journald volatile config,
-   restarts `systemd-journald`.
-3. **`cd docker && docker compose up -d`** — recreates every container so the
-   `journald` log driver (already set in `docker-compose.yml`) takes effect.
-   Expect a few seconds of downtime per service, same as any compose update.
-4. **Verify**, per `sdcard-writes/README.md`:
-   ```bash
-   journalctl --header | grep Storage        # expect: volatile
-   docker inspect mqtt --format '{{.HostConfig.LogConfig.Type}}'  # expect: journald
-   ```
-5. **Smoke-test the flush path**: click Restart or Reboot on the dashboard
-   (or hit `/api/system/restart-containers` / `/api/system/reboot` directly),
-   then confirm `/var/log/journal-last-flush/` was populated:
-   `journalctl --directory=/var/log/journal-last-flush`.
-6. Leave it running a day or two, then do the Tuning check below and adjust
-   `RuntimeMaxUse` in `sdcard-writes/journald-volatile.conf` if needed —
-   commit/push/pull that change the normal way if it's changed.
+## Remaining
 
-Update the STATUS table/section above once deployed — this doc should stop
-saying "not yet deployed" as soon as it is.
+Leave it running a day or two, then do the Tuning check below and adjust
+`RuntimeMaxUse` in `sdcard-writes/journald-volatile.conf` if needed —
+commit/push/pull that change the normal way if it's changed.
 
 ---
 
