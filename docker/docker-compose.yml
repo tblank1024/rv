@@ -59,6 +59,19 @@ services:
       - DEBUG_LEVEL=0
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
+    # autoheal (below) restarts this container when Docker marks it unhealthy
+    labels:
+      - autoheal=true
+    volumes:
+      - ./can-healthcheck.py:/healthcheck/check.py:ro
+    healthcheck:
+      # fails only when the CAN bus has gone silent (process alive, no RVC
+      # traffic) -- see can-healthcheck.py for why other errors exit 0
+      test: ["CMD", "python3", "/healthcheck/check.py"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
     depends_on:
       mqtt:
         condition: service_healthy
@@ -303,6 +316,24 @@ services:
         condition: service_healthy
     volumes:
       - ./watcherlogs:/app/watcher/watcherlogs
+
+  # Autoheal — watches containers labeled autoheal=true and restarts them
+  # when Docker reports them unhealthy (see rvc2mqtt's healthcheck above).
+  # Only touches containers carrying that label, so it won't act on mqtt/
+  # webserver's own healthchecks.
+  autoheal:
+    container_name: autoheal
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    mem_limit: 32m
+    logging: *logging
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=90
+      - AUTOHEAL_DEFAULT_STOP_TIMEOUT=10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # RASPAp access point (enable with --profile raspap; runs natively today)
   raspap:
