@@ -39,6 +39,7 @@ import psutil
 
 #CONSTANTS
 FILEDIR = './watcherlogs/'
+KEEP_MONTHS = 4         # delete rotated .log/.whitelist.json files older than this many months
 LARGESTINTERVAL = 60    # default max seconds between updates before a progression fault is raised
 
 # Per-alias overrides for max allowed update interval.
@@ -206,7 +207,7 @@ class mqttclient():
     # Output parameters: file pointer
     # uses file naming convention of the form: currentMonth.log
     # If the file does not exist, it is created
-    # If the file exists, it is opened in append mode unless 
+    # If the file exists, it is opened in append mode unless
     #   the creation date is greater than 6 months old in which case the file is opened in write mode
     def __get_output_file_pointer(self):
         global IOFilename, IOFileptr
@@ -223,10 +224,10 @@ class mqttclient():
         if os.path.exists(file_name):
             # Get the creation date of the file
             creation_date = datetime.datetime.fromtimestamp(os.path.getctime(file_name))
-            
+
             # Calculate the difference in months between the current date and the creation date
             months_diff = (datetime.datetime.now().year - creation_date.year) * 12 + (datetime.datetime.now().month - creation_date.month)
-            
+
             # Check if the file is older than 6 months
             if months_diff > 6:
                 # Open the file in write mode
@@ -242,6 +243,7 @@ class mqttclient():
         # file -- covers monthly rotation, user-supplied filenames, and restarts.
         if IOFileptr.name != previous_name:
             _write_whitelist_file(IOFileptr.name)
+            _prune_old_logs()
 
         return IOFileptr
 
@@ -699,6 +701,27 @@ def _write_whitelist_file(log_file_name):
             json.dump(_build_watch_whitelist(), fp, indent=2)
     except Exception as e:
         print(f"Couldn't write watcher whitelist file {whitelist_name}: {e}")
+
+
+def _prune_old_logs(keep_months=KEEP_MONTHS):
+    """Delete rotated .log/.whitelist.json files in FILEDIR whose last-modified
+    month is more than keep_months behind the current month. Runs whenever a new
+    monthly log file is opened, so leftover months don't accumulate on the SD
+    card indefinitely (see plan_SDCARD_saver.md).
+    """
+    now = datetime.datetime.now()
+    for path in glob.glob(os.path.join(FILEDIR, '*.log')) + glob.glob(os.path.join(FILEDIR, '*.whitelist.json')):
+        try:
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+        except OSError:
+            continue
+        months_diff = (now.year - mtime.year) * 12 + (now.month - mtime.month)
+        if months_diff >= keep_months:
+            try:
+                os.remove(path)
+                print(f'Pruned old watcher log: {path}')
+            except OSError as e:
+                print(f"Couldn't prune old watcher log {path}: {e}")
 
 
 if __name__ == "__main__":
