@@ -8,6 +8,11 @@ the main risk of moving logs to RAM — is rare, making a volatile buffer an
 acceptable tradeoff. Logs here are only needed for debugging problems, not
 long-term audit, so a bounded ring buffer is sufficient.
 
+A third, separate write source was found afterward: the `watcher` container
+bind-mounts `docker/watcherlogs/` straight to the SD card (its own
+application-level log, outside journald/docker logging entirely) and had no
+cleanup, so monthly log files accumulated forever. See item 5 below.
+
 ---
 
 ## STATUS: deployed and verified on Sophie (2026-09-03)
@@ -18,6 +23,7 @@ long-term audit, so a bounded ring buffer is sufficient.
 | `cafefda` | Fix `install.sh` executable bit (Windows checkout has `core.filemode=false`) |
 | `36575c1` | Add `setup-passwordless-sudo.sh` — one-time, narrowly-scoped sudo rule so `install.sh` doesn't need an interactive password every run |
 | `e9286d5` | This plan doc |
+| `0f48115` | `watcher`: prune monthly `watcherlogs/*.log`/`*.whitelist.json` files older than 4 months (separate unbounded SD write source, found during status check, not part of the journald/docker-logging work above) |
 
 Deployed by the user directly (ran `install.sh` interactively, typed the
 sudo password normally — `setup-passwordless-sudo.sh` turned out to be
@@ -39,6 +45,14 @@ webserver code changes, always `docker compose build webserver` before
 Also vacuumed `/var/log/journal` (`sudo journalctl --vacuum-time=1s`),
 freeing 3.9G of pre-migration archived logs that journald was no longer
 adding to but also wasn't cleaning up on its own.
+
+**2026-09-04**: while checking on the above, found `watcher`'s app-level log
+(`docker/watcherlogs/`) had the same "nobody cleans it up" problem —
+636M across four unrotated monthly files, growing ~225M/month. Added
+`_prune_old_logs()` (commit `0f48115`), rebuilt and redeployed the `watcher`
+container; verified it reopened `September.log` and ran the prune pass
+cleanly (no deletions yet, since June–September are all within the 4-month
+window it keeps).
 
 ## Remaining
 
@@ -96,6 +110,20 @@ exactly the three commands `install.sh` runs (`mkdir` the conf.d dir, `cp`
 the conf file into it, `systemctl restart systemd-journald`) — not blanket
 sudo access. Validates with `visudo -c` before and after installing so a
 malformed rule can't lock out `sudo`.
+
+### 5. `watcher` app-level log rotation
+`watcher/watcher.py` bind-mounts `docker/watcherlogs/` to the host and writes
+one JSON line per watched MQTT message to a monthly `<Month>.log` (plus a
+paired `<Month>.whitelist.json`). This is independent of journald/docker
+logging (items 1-2 above) — it's the application writing its own file
+directly, so those changes didn't touch it. It already buffered writes and
+flushed on a 5s timer rather than per-message (existing code, not new here),
+but nothing ever deleted old months: 636M had piled up across four files
+before this fix.
+
+`_prune_old_logs()` now runs whenever a new monthly file is opened (startup +
+month rollover) and deletes any `.log`/`.whitelist.json` file whose
+last-modified month is `KEEP_MONTHS` (4) or more behind the current month.
 
 ### Not changed
 Mosquitto's persistence (`docker/mqtt/data/`) — that's retained-message/
