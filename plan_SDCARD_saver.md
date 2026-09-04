@@ -42,9 +42,9 @@ adding to but also wasn't cleaning up on its own.
 
 ## Remaining
 
-Leave it running a day or two, then do the Tuning check below and adjust
-`RuntimeMaxUse` in `sdcard-writes/journald-volatile.conf` if needed —
-commit/push/pull that change the normal way if it's changed.
+None. Tuning check done 2026-09-04 (~1 day of runtime): `journalctl
+--disk-usage` reported 136M, well under the 300M `RuntimeMaxUse` cap —
+no change needed.
 
 ---
 
