@@ -211,10 +211,13 @@ services:
     mem_limit: 128m
     logging: *logging
     image: alarm:latest
-    # De-privileged: gpiozero/lgpio only needs the two GPIO character devices
+    # De-privileged: gpiozero/lgpio only needs the GPIO character device.
+    # gpiozero.LGPIOFactory auto-detects the Pi revision and opens chip 4
+    # for Pi 5 boards (not 0) -- container-side path must stay gpiochip4.
+    # Host chip number drifts across reboots/kernel updates (seen as 4, 0,
+    # 15) -- bind to the stable udev symlink, not a raw gpiochipN path.
     devices:
-      - /dev/gpiochip0:/dev/gpiochip0
-      - /dev/gpiochip4:/dev/gpiochip4
+      - /dev/gpiochip-rp1:/dev/gpiochip4
     environment:
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
@@ -271,13 +274,18 @@ services:
       - /run/dbus:/run/dbus:rw
       - /var/run/dbus:/var/run/dbus:rw
       - ../alarm:/home/tblank/code/tblank1024/rv/alarm:ro
-      - /dev/gpiochip0:/dev/gpiochip0
-      - /dev/gpiochip4:/dev/gpiochip4
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/home/tblank/code/tblank1024/rv/docker:ro
       - ../webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
+    # gpiochip: stable udev symlink, not a raw gpiochipN path (host chip
+    # number drifts across reboots/kernel updates -- seen as 4, 0, 15).
+    # devices: (not volumes:) so a missing source fails loudly instead of
+    # Docker silently creating a placeholder directory at the host path.
+    # Container-side path must stay gpiochip4: gpiozero.LGPIOFactory
+    # auto-detects the Pi revision and opens chip 4 for Pi 5 boards.
     devices:
       - /dev/coolgear-hub:/dev/coolgear-hub
+      - /dev/gpiochip-rp1:/dev/gpiochip4
       - /dev/ttyUSB0:/dev/ttyUSB0
       - /dev/ttyACM0:/dev/ttyACM0
       - /dev/ttyACM1:/dev/ttyACM1
