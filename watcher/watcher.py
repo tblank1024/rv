@@ -69,6 +69,11 @@ IOFileptr = None
 thread_data = {}
 Sample_Period_Sec = 60
 LastTime = 0
+WatchStartTime = int(time.time())
+STARTUP_GRACE = 120     # seconds after watcher start before a never-reported signal is flagged
+# Topics with no hardware on this RV (absent from all capture logs). They are
+# not flagged for never reporting, but are still checked once they do report.
+NEVER_HEARD_EXEMPT_TOPICS = {'ATS_AC_STATUS_1/1', 'RV_Loads/1'}
 RECENT_ALERTS = collections.deque(maxlen=30)  # last alert events, sent with each heartbeat
 _flush_timer = None
 _pi_health_timer = None
@@ -519,18 +524,27 @@ class mqttclient():
         msg_dict['name'] = 'SYS_ERRORS'
         msg_dict['timestamp'] = int(time.time())
         for item in AliasData:
-            if int(AliasData[item]['timestamp']) != 0  \
-                    and int((AliasData[item]['timestamp'])) + AliasData[item]['max_interval'] < now  \
-                    and not AliasData[item]['flag'] \
-                    and item != 'SYS_ERRORS':
+            last_seen = int(AliasData[item]['timestamp'])
+            max_interval = AliasData[item]['max_interval']
+            if last_seen:
+                is_silent = last_seen + max_interval < now
+            else:
+                # A device already dead when the watcher starts never sets a timestamp,
+                # so without this it would never be reported.
+                is_silent = AliasData[item]['topic'] not in NEVER_HEARD_EXEMPT_TOPICS \
+                    and WatchStartTime + max(max_interval, STARTUP_GRACE) < now
+            if is_silent and not AliasData[item]['flag'] and item != 'SYS_ERRORS':
                 AliasData[item]['flag'] = True
-                elapsed = now - int(AliasData[item]['timestamp'])
+                elapsed = now - (last_seen or WatchStartTime)
                 elapsed_str = f"{elapsed//60}m {elapsed%60}s" if elapsed >= 60 else f"{elapsed}s"
                 alias_display = item.replace('_', ' ')
                 print('No data:', alias_display, elapsed_str)
                 pprint(AliasData[item])
                 #build msg_dict to include error field
-                msg_dict['error'] = f'No data: {alias_display} ({elapsed_str} silent)'
+                if last_seen:
+                    msg_dict['error'] = f'No data: {alias_display} ({elapsed_str} silent)'
+                else:
+                    msg_dict['error'] = f'No data: {alias_display} (nothing since watcher start, {elapsed_str})'
                 self.pub(msg_dict, qos=0, retain=False)
                 RECENT_ALERTS.append({'timestamp': now, 'error': msg_dict['error']})
                 #write this error msg to the output file on one line
@@ -567,7 +581,7 @@ class mqttclient():
 
             if AliasData[item]['flag']:
                 active.append({'alias': item, 'topic': AliasData[item]['topic'], 'kind': 'silent',
-                               'since': int(AliasData[item]['timestamp'])})
+                               'since': int(AliasData[item]['timestamp']) or WatchStartTime})
             if AliasData[item]['bounds_flag']:
                 active.append({'alias': item, 'topic': AliasData[item]['topic'], 'kind': 'bounds',
                                'since': AliasData[item]['bounds_since'],
