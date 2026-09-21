@@ -328,7 +328,11 @@ class CoolGearUSBHub:
             
             return response
             
-        except serial.SerialException as e:
+        except (serial.SerialException, OSError) as e:
+            # OSError (e.g. Errno 5 I/O error) can surface directly from properties
+            # like self.ser.in_waiting when the underlying device drops off the bus
+            # (e.g. a downstream port glitch) — pyserial doesn't always wrap these
+            # as SerialException, so both must be caught here to trigger recovery.
             print(f"[ERROR] Error during command execution: {e}")
             # Mark port as closed so next call triggers reconnect
             try:

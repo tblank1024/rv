@@ -18,8 +18,32 @@ class USBModemManager:
     """Manages USB cellular modem setup and MTP conflict resolution."""
     
     def __init__(self):
-        self.cellular_vendor_ids = ["12d1", "19d2", "1e0e"]  # Common cellular modem vendor IDs
+        self.cellular_vendor_ids = ["12d1", "19d2", "1e0e", "1bbb"]  # Common cellular modem vendor IDs
         self.mtp_processes = ["gvfs-mtp-volume-monitor", "mtp-probe", "libmtp"]
+
+    def find_modem_usb_path(self) -> Optional[str]:
+        """Locate the cellular modem's sysfs bus-port path (e.g. '3-1.1') by vendor ID.
+
+        Bus-port strings shift across reboots/re-enumeration, so this is resolved
+        dynamically rather than hardcoded.
+        """
+        sysfs_root = "/sys/bus/usb/devices"
+        try:
+            for entry in os.listdir(sysfs_root):
+                vendor_path = os.path.join(sysfs_root, entry, "idVendor")
+                if not os.path.isfile(vendor_path):
+                    continue
+                try:
+                    with open(vendor_path, "r") as f:
+                        vendor_id = f.read().strip().lower()
+                except OSError:
+                    continue
+                if vendor_id in self.cellular_vendor_ids:
+                    logger.info(f"Found cellular modem USB path: {entry} (vendor {vendor_id})")
+                    return entry
+        except Exception as e:
+            logger.warning(f"Error scanning {sysfs_root} for cellular modem: {e}")
+        return None
         
     def kill_mtp_processes(self) -> bool:
         """Kill MTP-related processes that might interfere with modem detection."""
@@ -63,8 +87,14 @@ class USBModemManager:
             
         return killed_any
     
-    def usb_rescan(self, usb_path: str = "1-1") -> bool:
+    def usb_rescan(self, usb_path: Optional[str] = None) -> bool:
         """Perform USB device rescan to force re-enumeration."""
+        if usb_path is None:
+            usb_path = self.find_modem_usb_path()
+            if usb_path is None:
+                logger.warning("Could not locate cellular modem USB path for rescan; skipping")
+                return False
+
         logger.info(f"Performing USB rescan for device path: {usb_path}")
         
         try:
@@ -191,7 +221,7 @@ class USBModemManager:
             logger.warning(f"Error checking ModemManager: {e}")
             return False
     
-    def prepare_cellular_modem(self, usb_path: str = "1-1") -> Tuple[bool, str]:
+    def prepare_cellular_modem(self, usb_path: Optional[str] = None) -> Tuple[bool, str]:
         """
         Complete cellular modem preparation sequence.
         Returns (success, message).
