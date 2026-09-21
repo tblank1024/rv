@@ -287,27 +287,26 @@ def main():
     # Setup MQTT
     setup_mqtt()
     
-    # Start single long-running gatttool process
-    cmd = [
-        'gatttool',
-        '-i', ADAPTER,
-        '-b', DEV_MAC,
-        '--char-write-req',
-        f'--handle={NOTIFICATION_HANDLE}',
-        '--value=0100',
-        '--listen'
-    ]
-    
     log("Starting persistent gatttool process...")
-    if DEBUG >= 2:
-        log(f"Command: {' '.join(cmd)}")
-    
+
     _RECONNECT_DELAY = 15  # seconds between reconnect attempts
 
     try:
         while running:
-            # Re-detect adapter on each attempt in case hci enumeration changed
+            # Re-detect adapter on each attempt in case hci enumeration changed;
+            # the command must be rebuilt so gatttool gets the current hciN.
             configure_bluetooth()
+            cmd = [
+                'gatttool',
+                '-i', ADAPTER,
+                '-b', DEV_MAC,
+                '--char-write-req',
+                f'--handle={NOTIFICATION_HANDLE}',
+                '--value=0100',
+                '--listen'
+            ]
+            if DEBUG >= 2:
+                log(f"Command: {' '.join(cmd)}")
 
             gatttool_process = subprocess.Popen(
                 cmd,

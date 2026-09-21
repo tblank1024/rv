@@ -509,6 +509,11 @@ async def main():
         sensor_map.clear()
         last_published.clear()
         last_raw_values.clear()
+        # hciN can change if the dongle re-enumerates; the MAC lookup finds it again
+        new_adapter = detect_adapter()
+        if new_adapter != adapter:
+            log(f"Adapter changed {adapter} -> {new_adapter}")
+            adapter = new_adapter
         await connect_and_monitor(adapter)
         log(f"Reconnecting in {RECONNECT_DELAY}s...")
         await asyncio.sleep(RECONNECT_DELAY)
