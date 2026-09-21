@@ -28,6 +28,7 @@
 #based on mqttclient.py
 
 import os, argparse,  time, random, json, glob
+import collections
 import re       # regular expressions
 import paho.mqtt.client as mqtt
 from pprint import pprint
@@ -68,6 +69,7 @@ IOFileptr = None
 thread_data = {}
 Sample_Period_Sec = 60
 LastTime = 0
+RECENT_ALERTS = collections.deque(maxlen=30)  # last alert events, sent with each heartbeat
 _flush_timer = None
 _pi_health_timer = None
 PI_HEALTH_INTERVAL = 30  # seconds between RPi health (temp/under-voltage) publishes
@@ -274,11 +276,13 @@ class mqttclient():
             TargetTopics[topic][field_name] = alias
 
             AliasData[alias] = {
+                "topic": topic_suffix,
                 "timestamp": 0,
                 "flag": False,          #has a progression error been printed already
                 "bounds": bounds,       #(min, max) or None
                 "zero_ok": zero_ok,     #exact 0 is valid even if outside bounds
                 "bounds_flag": False,   #has an out-of-range error been printed already
+                "bounds_since": None,   #when the current out-of-range excursion started
                 "max_interval": MAX_INTERVAL_OVERRIDES.get(alias, LARGESTINTERVAL),
             }
             MQTTNameToAliasName[topic + '/' + field_name] = alias
@@ -510,6 +514,7 @@ class mqttclient():
 
         #Check if timestamp is progressing for all AliasData entries except for SYS_ERRORS
         error_cnt = 0
+        active = []
         msg_dict = {}
         msg_dict['name'] = 'SYS_ERRORS'
         msg_dict['timestamp'] = int(time.time())
@@ -527,6 +532,7 @@ class mqttclient():
                 #build msg_dict to include error field
                 msg_dict['error'] = f'No data: {alias_display} ({elapsed_str} silent)'
                 self.pub(msg_dict, qos=0, retain=False)
+                RECENT_ALERTS.append({'timestamp': now, 'error': msg_dict['error']})
                 #write this error msg to the output file on one line
                 json.dump(msg_dict, IOFileptr)
                 IOFileptr.write("\n")
@@ -541,11 +547,13 @@ class mqttclient():
                 in_range = (bounds[0] <= value <= bounds[1]) or (value == 0 and AliasData[item]['zero_ok'])
                 if not in_range and not AliasData[item]['bounds_flag']:
                     AliasData[item]['bounds_flag'] = True
+                    AliasData[item]['bounds_since'] = now
                     print('Value out of bounds for  ', item, '  value = ', value, '  bounds = ', bounds)
                     pprint(AliasData[item])
                     #build msg_dict to include error field
                     msg_dict['error'] = 'Bounds error: ' + item + '  value = ' + str(value) + '  not in ' + str(bounds)
                     self.pub(msg_dict, qos=0, retain=False)
+                    RECENT_ALERTS.append({'timestamp': now, 'error': msg_dict['error']})
                     #write this error msg to the output file on one line
                     json.dump(msg_dict, IOFileptr)
                     IOFileptr.write("\n")
@@ -555,12 +563,24 @@ class mqttclient():
                 elif in_range:
                     #value back in range -- re-arm so a future excursion is reported again
                     AliasData[item]['bounds_flag'] = False
+                    AliasData[item]['bounds_since'] = None
 
+            if AliasData[item]['flag']:
+                active.append({'alias': item, 'topic': AliasData[item]['topic'], 'kind': 'silent',
+                               'since': int(AliasData[item]['timestamp'])})
+            if AliasData[item]['bounds_flag']:
+                active.append({'alias': item, 'topic': AliasData[item]['topic'], 'kind': 'bounds',
+                               'since': AliasData[item]['bounds_since'],
+                               'value': value, 'bounds': list(bounds)})
             if AliasData[item]['flag'] or AliasData[item]['bounds_flag']:
                 error_cnt += 1
         #Publish error count to MQTT every 5 second 
         if now - LastTime > 5:      
             msg_dict['error'] = '# Errors = ' + str(error_cnt)
+            # Full detail rides on the heartbeat so a page opened after an alert
+            # fired can still show what is active and what happened recently.
+            msg_dict['active'] = active
+            msg_dict['recent'] = list(RECENT_ALERTS)
             if debug > 0:
                 print('pub time ', end='')
                 pprint(msg_dict)

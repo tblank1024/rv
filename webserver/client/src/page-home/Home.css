@@ -65,21 +65,22 @@
   margin-bottom: 4px;
 }
 
-.sys-alerts-clear {
+.sys-alerts--clickable {
+  cursor: pointer;
+  border-radius: 4px;
+}
+.sys-alerts--clickable:hover,
+.sys-alerts--clickable:focus-visible {
+  background: #eef3fc;
+  outline: none;
+}
+
+.sys-alerts-hint {
   font-size: 0.75rem;
   font-weight: normal;
   text-transform: none;
   letter-spacing: 0;
-  padding: 1px 7px;
-  border: 1px solid #c0392b;
-  border-radius: 3px;
-  background: transparent;
-  color: #c0392b;
-  cursor: pointer;
-}
-.sys-alerts-clear:hover {
-  background: #c0392b;
-  color: #fff;
+  color: #5a7bb5;
 }
 
 .sys-alerts--active .sys-alerts-title {
@@ -98,6 +99,46 @@
   font-family: inherit;
   color: #888;
 }
+
+.sys-alert-item--acked {
+  color: #888;
+}
+
+/* ── Alerts dialog ──────────────────────────────────── */
+.alerts-dialog-acked { font-weight: normal; color: #888; font-size: 0.9em; }
+.alerts-dialog-none { color: #888; }
+.alerts-dialog-error { color: #c0392b; margin-top: 10px; }
+
+.alerts-group { border: 1px solid #f0c9c4; border-radius: 4px; margin-bottom: 8px; }
+.alerts-group--acked { border-color: #ddd; }
+
+.alerts-group-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: #fdf1ef;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.alerts-group--acked .alerts-group-head { background: #f5f5f5; }
+.alerts-group-caret { width: 1em; color: #555; }
+.alerts-group-name { font-weight: bold; color: #c0392b; }
+.alerts-group--acked .alerts-group-name { color: #666; }
+.alerts-group-summary { color: #555; }
+
+.alerts-group-items { margin: 0; padding: 6px 12px 8px 32px; }
+.alerts-group-items li { margin: 2px 0; }
+.alerts-item--acked { color: #888; }
+
+.alerts-history-title { margin-top: 18px !important; }
+.alerts-history { margin: 0; padding-left: 0; list-style: none; font-family: monospace; font-size: 0.9rem; }
+.alerts-history li { padding: 2px 0; word-break: break-word; }
+.alerts-history-time { color: #666; margin-right: 6px; }
 
 /* ── Card grid ──────────────────────────────────────── */
 .home-grid {

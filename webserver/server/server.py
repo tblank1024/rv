@@ -994,6 +994,24 @@ def get_kasa_power(outlet_id: int) -> dict:  # Removed async
         clear_kasa_cache()  # Clear cache on error
         return {"success": False, "power": 0, "message": f"Kasa error: {str(e)}"}
 
+# Keys ("alias|kind|since") of watcher alerts the user has acknowledged. Kept
+# server-side so every browser agrees; "since" makes a recurrence a new key.
+acknowledged_alert_keys: set = set()
+
+@app.get("/api/alerts/ack")
+def get_acknowledged_alerts() -> dict:
+    return {"keys": sorted(acknowledged_alert_keys)}
+
+@app.post("/api/alerts/ack")
+def acknowledge_alerts(data: Annotated[dict, Body()]) -> dict:
+    """Replace the acknowledged set with the keys of the currently active alerts."""
+    global acknowledged_alert_keys
+    keys = data.get("keys", [])
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        return {"success": False, "message": "keys must be a list of strings"}
+    acknowledged_alert_keys = set(keys)
+    return {"success": True, "keys": sorted(acknowledged_alert_keys)}
+
 @app.get("/api/internet/status")
 def get_internet_status() -> dict:  # Removed async
     """Get current internet connection status."""
