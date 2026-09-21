@@ -56,6 +56,7 @@ import { fetchFromServer } from '../utils/api';
 
 const Internet = () => {
   const [selectedOption, setSelectedOption] = useState('none');
+  const [hubReachable, setHubReachable] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(null);
   const [statusMessage, setStatusMessage] = useState('');
@@ -98,6 +99,7 @@ const Internet = () => {
     const fetchCurrentStatus = async () => {
       try {
         const response = await fetchFromServer('/api/internet/status');
+        setHubReachable(response.hub_reachable !== false);
         if (response.current_connection) {
           setSelectedOption(response.current_connection);
           console.log('Loaded current internet connection:', response.current_connection);
@@ -513,6 +515,16 @@ const Internet = () => {
             </div>
           </Card.Content>
         </Card>
+
+        {!hubReachable && (
+          <Message
+            color="yellow"
+            icon="plug"
+            header="USB switch not responding"
+            content="The selection shown is the last known one. The Internet Status test checks the actual link and is not affected."
+            style={{ marginBottom: '15px' }}
+          />
+        )}
 
         {/* Starlink Power Warning */}
         {selectedOption === 'starlink' && (

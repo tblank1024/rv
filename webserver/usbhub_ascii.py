@@ -15,7 +15,7 @@ def _reset_usb_device_for_tty(tty_path):
     Returns:
         True if reset was attempted, False if sysfs path not found.
     """
-    tty_name = os.path.basename(tty_path)  # e.g. 'ttyUSB1'
+    tty_name = os.path.basename(os.path.realpath(tty_path))  # symlink -> 'ttyUSB1'
     sysfs_tty = f'/sys/class/tty/{tty_name}/device'
 
     try:
@@ -281,7 +281,7 @@ class CoolGearUSBHub:
         print(f"[ERROR] Reconnect to {self.port} failed")
         return False
 
-    def _execute_command(self, raw_command):
+    def _execute_command(self, raw_command, _retry=True):
         if not self.ser or not self.ser.is_open:
             print("[WARNING] Serial port closed, attempting reconnect...")
             if not self._reconnect():
@@ -305,28 +305,25 @@ class CoolGearUSBHub:
             # Windows trace shows it waits for WAIT_ON_MASK events - we'll simulate with delays
             time.sleep(0.03)  # Initial wait
             
-            # Check for response multiple times like Windows does
-            response = ""
+            # Replies end in CRLF and can arrive split across polls, so keep
+            # reading until the newline (or the deadline, for commands with no reply).
             raw_response = b''
-            for attempt in range(5):  # Windows shows multiple WAIT_ON_MASK calls
-                time.sleep(0.016)  # ~16ms like Windows trace intervals
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline and not raw_response.endswith(b'\n'):
+                time.sleep(0.016)
                 bytes_waiting = self.ser.in_waiting
                 if bytes_waiting > 0:
-                    print(f"Debug: Attempt {attempt+1}: {bytes_waiting} bytes available")
-                    raw_response = self.ser.read(bytes_waiting)
-                    if raw_response:
-                        print(f"Debug: Raw response: {raw_response.hex().upper()}")
-                        
-                        # Check if it's all null bytes (indicates timing/protocol issue)
-                        if raw_response == b'\x00' * len(raw_response):
-                            print(f"Debug: All {len(raw_response)} bytes are null - protocol mismatch!")
-                            # The hub is responding but with wrong data format
-                            return "NULL_RESPONSE"  # Return indicator that we got a null response
-                        
-                        response = raw_response.decode('ascii', errors='ignore').strip()
-                        break
-            
-            return response
+                    raw_response += self.ser.read(bytes_waiting)
+
+            if not raw_response:
+                return ""
+            print(f"Debug: Raw response: {raw_response.hex().upper()}")
+
+            if raw_response == b'\x00' * len(raw_response):
+                print(f"Debug: All {len(raw_response)} bytes are null - protocol mismatch!")
+                return "NULL_RESPONSE"
+
+            return raw_response.decode('ascii', errors='ignore').strip()
             
         except (serial.SerialException, OSError) as e:
             # OSError (e.g. Errno 5 I/O error) can surface directly from properties
@@ -334,12 +331,15 @@ class CoolGearUSBHub:
             # (e.g. a downstream port glitch) — pyserial doesn't always wrap these
             # as SerialException, so both must be caught here to trigger recovery.
             print(f"[ERROR] Error during command execution: {e}")
-            # Mark port as closed so next call triggers reconnect
             try:
                 if self.ser:
                     self.ser.close()
             except Exception:
                 pass
+            # The handle is dead (typically the FTDI chip dropped and came back
+            # under a new ttyUSBn); reopen once so this call still gets an answer.
+            if _retry and self._reconnect():
+                return self._execute_command(raw_command, _retry=False)
             return ""
 
     def _send_command(self, status_string):
@@ -556,10 +556,15 @@ class CoolGearUSBHub:
         Returns: port number (1-4) if single port is active, 0 if all off, -1 if error/multiple ports
         """
         try:
-            # Send status query command
+            # One blank or short reply isn't treated as a failure.
             status_cmd = f"GP{self.TERMINATOR}"
-            response = self._execute_command(status_cmd)
-            
+            response = ""
+            for _ in range(3):
+                response = self._execute_command(status_cmd)
+                if len(response) >= 8:
+                    break
+                time.sleep(0.2)
+
             if not response:
                 print("[WARNING] No response from hub status query")
                 return -1

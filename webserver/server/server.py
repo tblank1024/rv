@@ -223,6 +223,8 @@ def _save_internet_state(state):
         print(f"WARNING: Could not save internet connection state: {e}")
 
 current_internet_connection = _load_internet_state()  # Tracks current connection: "none", "cellular", "wifi", "starlink", "wired"
+usb_hub_failures = 0  # Consecutive failed hub status queries; the serial link drops replies intermittently
+USB_HUB_FAILURES_BEFORE_UNREACHABLE = 3
 
 # Synology scheduled shutdown management
 scheduled_shutdown_timestamp = None
@@ -696,18 +698,20 @@ def detect_current_internet_connection():
     Updates the global current_internet_connection variable.
     Returns the detected connection type.
     """
-    global current_internet_connection
-    
+    global current_internet_connection, usb_hub_failures
+
     try:
         hub = get_usb_hub_controller()
         if not hub:
             print("WARNING: Could not connect to USB hub for state detection")
+            usb_hub_failures += 1
             # Don't overwrite current_internet_connection - keep last known value
             return current_internet_connection
-        
+
         # Get the currently active port
         active_port = hub.get_current_active_port()
-        
+        usb_hub_failures = usb_hub_failures + 1 if active_port == -1 else 0
+
         if active_port == -1:
             print(f"WARNING: Could not determine hub state, keeping last known: {current_internet_connection}")
             # Do NOT overwrite current_internet_connection - keep the last known value
@@ -727,6 +731,7 @@ def detect_current_internet_connection():
     
     except Exception as e:
         print(f"ERROR: Failed to detect internet connection state: {e}")
+        usb_hub_failures += 1
         # Don't overwrite current_internet_connection on error - keep last known value
     
     return current_internet_connection
@@ -832,6 +837,8 @@ def clear_kasa_cache():
     _kasa_cache_time = 0
     print("INFO: Kasa connection cache cleared")
 
+USB_HUB_STABLE_PATH = '/host-dev/coolgear-hub'
+
 def get_usb_hub_controller():
     """Get USB Hub Controller instance. Returns None if not available.
     Caches the instance and reuses it; reconnects automatically if the serial port drops."""
@@ -841,12 +848,13 @@ def get_usb_hub_controller():
     if _usb_hub_cache is not None:
         if _usb_hub_cache.ser and _usb_hub_cache.ser.is_open:
             return _usb_hub_cache
-        else:
+        # A raw ttyUSBn path goes stale when the FTDI chip re-enumerates, so
+        # only the stable symlink is worth reopening; otherwise rescan.
+        if _usb_hub_cache.port == USB_HUB_STABLE_PATH:
             print("INFO: Cached USB hub serial port closed, reconnecting...")
             if _usb_hub_cache._reconnect():
                 return _usb_hub_cache
-            else:
-                _usb_hub_cache = None  # Give up on cached instance; try fresh below
+        _usb_hub_cache = None
 
     try:
         import sys
@@ -860,8 +868,9 @@ def get_usb_hub_controller():
 
         from usbhub_ascii import CoolGearUSBHub
 
-        # Try common USB device paths
-        possible_ports = ['/dev/coolgear-hub', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
+        # Stable live symlink first; raw paths are a fallback for running
+        # outside Docker or before the udev rule is installed.
+        possible_ports = [USB_HUB_STABLE_PATH, '/dev/coolgear-hub', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
 
         for port in possible_ports:
             if os.path.exists(port):
@@ -997,6 +1006,7 @@ def get_internet_status() -> dict:  # Removed async
         return {
             "current_connection": detected_connection,
             "status": "connected" if detected_connection != "none" else "disconnected",
+            "hub_reachable": usb_hub_failures < USB_HUB_FAILURES_BEFORE_UNREACHABLE,
             "message": f"Current internet connection: {detected_connection}"
         }
     except Exception as e:

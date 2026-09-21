@@ -361,7 +361,7 @@ function Debug() {
         backgroundColor: connected ? '#e8f5e9' : '#ffebee',
         color: connected ? '#2e7d32' : '#c62828',
       }}>
-        {connected ? 'Connected' : 'Not Connected'}
+        {connected ? 'Comms OK' : 'No Comms'}
       </span>
     );
   };

@@ -267,6 +267,11 @@ services:
       - WIFI_BRIDGE_PORT=12345
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     volumes:
+      # Live view of host /dev (a bind of devtmpfs tracks hotplug); the
+      # container's own /dev is a snapshot taken at start, so a re-enumerated
+      # CoolGear hub (ttyUSB0 -> ttyUSB1) is only visible here. Mounted
+      # beside /dev, not over it, so the gpiochip4 mapping below survives.
+      - /dev:/host-dev:rw
       - /sys/class/net:/sys/class/net:ro
       - /sys/bus/usb:/sys/bus/usb:rw
       - /sys/devices:/sys/devices:ro
@@ -279,16 +284,13 @@ services:
       - ../webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
     # gpiochip: stable udev symlink, not a raw gpiochipN path (host chip
     # number drifts across reboots/kernel updates -- seen as 4, 0, 15).
-    # devices: (not volumes:) so a missing source fails loudly instead of
-    # Docker silently creating a placeholder directory at the host path.
     # Container-side path must stay gpiochip4: gpiozero.LGPIOFactory
     # auto-detects the Pi revision and opens chip 4 for Pi 5 boards.
+    # Because this service is privileged, Docker silently skips a devices:
+    # entry whose host path is missing, and symlink sources (coolgear-hub)
+    # never appear -- serial ports are reached via /host-dev instead.
     devices:
-      - /dev/coolgear-hub:/dev/coolgear-hub
       - /dev/gpiochip-rp1:/dev/gpiochip4
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyACM0:/dev/ttyACM0
-      - /dev/ttyACM1:/dev/ttyACM1
     healthcheck:
       # Port 8000 is the FastAPI server; port 80 is RASPAp's native GUI,
       # which answers 302 to everything and made this check pass vacuously
