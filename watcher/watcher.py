@@ -262,7 +262,11 @@ class mqttclient():
         #   (topic_suffix, field_name, alias, min, max).
         for entry in WATCH_SPEC:
             topic_suffix, field_name, alias = entry[:3]
-            bounds = entry[3:5] if len(entry) == 5 else None
+            bounds = entry[3:5] if len(entry) >= 5 else None
+            #6th element (optional): treat an exact 0 reading as valid even though it falls
+            #outside (min, max) -- e.g. an AC line that reads 0V when simply disconnected
+            #(off-grid), which is a normal state and not a brownout/overvoltage fault.
+            zero_ok = entry[5] if len(entry) == 6 else False
 
             topic = topic_prefix + '/' + topic_suffix
             if topic not in TargetTopics:
@@ -273,6 +277,7 @@ class mqttclient():
                 "timestamp": 0,
                 "flag": False,          #has a progression error been printed already
                 "bounds": bounds,       #(min, max) or None
+                "zero_ok": zero_ok,     #exact 0 is valid even if outside bounds
                 "bounds_flag": False,   #has an out-of-range error been printed already
                 "max_interval": MAX_INTERVAL_OVERRIDES.get(alias, LARGESTINTERVAL),
             }
@@ -533,7 +538,7 @@ class mqttclient():
             bounds = AliasData[item]['bounds']
             value = AliasData[item].get('value')
             if bounds is not None and isinstance(value, (int, float)):
-                in_range = bounds[0] <= value <= bounds[1]
+                in_range = (bounds[0] <= value <= bounds[1]) or (value == 0 and AliasData[item]['zero_ok'])
                 if not in_range and not AliasData[item]['bounds_flag']:
                     AliasData[item]['bounds_flag'] = True
                     print('Value out of bounds for  ', item, '  value = ', value, '  bounds = ', bounds)
@@ -586,14 +591,17 @@ class mqttclient():
 #WATCH_SPEC: which MQTT fields to track, the alias each is stored/reported under,
 #and (optionally) the valid value range to monitor for out-of-bounds faults.
 #   Each entry is either:
-#     (topic_suffix, field_name, alias)             -- no bounds check, or
-#     (topic_suffix, field_name, alias, min, max)   -- flagged if value falls outside [min, max]
+#     (topic_suffix, field_name, alias)                       -- no bounds check, or
+#     (topic_suffix, field_name, alias, min, max)              -- flagged if value falls outside [min, max], or
+#     (topic_suffix, field_name, alias, min, max, zero_ok)     -- same, but an exact 0 reading
+#         is always treated as valid (e.g. an AC line reads 0V when simply disconnected,
+#         which is a normal state, not a brownout/overvoltage fault)
 #   List order sets the AliasData and CSV column order.
 #   Alias names must be unique across the whole spec (AliasData is keyed by alias name).
 WATCH_SPEC = [
     ("CHARGER_AC_STATUS_1/1", "timestamp",                 "Charger_AC_timestamp"),
     ("CHARGER_AC_STATUS_1/1", "rms current",               "Charger_AC_current", 0, 50),
-    ("CHARGER_AC_STATUS_1/1", "rms voltage",               "Charger_AC_voltage", 95,130),
+    ("CHARGER_AC_STATUS_1/1", "rms voltage",               "Charger_AC_voltage", 95,130, True),
 
     ("CHARGER_AC_STATUS_3/1", "real power",                "Charger_AC_real_power"),
 
@@ -606,7 +614,7 @@ WATCH_SPEC = [
 
     ("INVERTER_AC_STATUS_1/1","timestamp",                 "Invert_AC_timestamp"),
     ("INVERTER_AC_STATUS_1/1","rms current",               "Invert_AC_current", 0, 50),
-    ("INVERTER_AC_STATUS_1/1","rms voltage",               "Invert_AC_voltage", 95,130),
+    ("INVERTER_AC_STATUS_1/1","rms voltage",               "Invert_AC_voltage", 95,130, True),
 
     ("INVERTER_AC_STATUS_3/1","reactive power",            "Invert_AC_reactive_power"),
     ("INVERTER_AC_STATUS_3/1","real power",                "Invert_AC_real_power"),
