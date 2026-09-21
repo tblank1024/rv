@@ -122,8 +122,12 @@ function AlertsPanel() {
       body: JSON.stringify({ keys: activeList.map(alertKey) }),
     })
       .then(r => {
-        if (r.success) setAckKeys(new Set(r.keys));
-        else setAckError(r.message || 'Acknowledge failed');
+        if (r.success) {
+          setAckKeys(new Set(r.keys));
+          setOpen(false);
+        } else {
+          setAckError(r.message || 'Acknowledge failed');
+        }
       })
       .catch(err => setAckError(`Acknowledge failed: ${err.message}`));
   };
@@ -134,7 +138,7 @@ function AlertsPanel() {
     return next;
   });
 
-  const openDialog = () => { loadAcks(); setOpen(true); };
+  const openDialog = () => { setAckError(''); loadAcks(); setOpen(true); };
 
   let title = 'Alerts';
   if (alarmCount > 0) title = `Alerts (${alarmCount})`;
