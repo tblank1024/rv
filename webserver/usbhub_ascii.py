@@ -9,12 +9,16 @@ def _reset_usb_device_for_tty(tty_path):
     Reset the USB device backing a tty serial port via sysfs unbind/bind.
     Uses /sys/bus/usb/drivers/usb/unbind+bind (mounted rw in Docker).
     This clears EPROTO (-71) errors caused by the FTDI chip entering a bad state.
+    A single unbind/bind doesn't always bring the tty back, so this retries
+    up to RESET_MAX_ATTEMPTS times with RESET_RETRY_DELAY seconds in between.
 
     Args:
         tty_path: e.g. '/dev/ttyUSB1'
     Returns:
         True if reset was attempted, False if sysfs path not found.
     """
+    RESET_MAX_ATTEMPTS = 3
+    RESET_RETRY_DELAY = 5.0
     tty_name = os.path.basename(os.path.realpath(tty_path))  # symlink -> 'ttyUSB1'
     sysfs_tty = f'/sys/class/tty/{tty_name}/device'
 
@@ -50,23 +54,30 @@ def _reset_usb_device_for_tty(tty_path):
             print(f"[USB RESET] {unbind_path} not available")
             return False
 
-        print(f"[USB RESET] Resetting USB device '{usb_device_id}' via driver unbind/bind ...")
+        for attempt in range(1, RESET_MAX_ATTEMPTS + 1):
+            print(f"[USB RESET] Resetting USB device '{usb_device_id}' via driver unbind/bind "
+                  f"(attempt {attempt}/{RESET_MAX_ATTEMPTS}) ...")
 
-        with open(unbind_path, 'w') as f:
-            f.write(usb_device_id)
-        time.sleep(1.0)
+            with open(unbind_path, 'w') as f:
+                f.write(usb_device_id)
+            time.sleep(1.0)
 
-        with open(bind_path, 'w') as f:
-            f.write(usb_device_id)
+            with open(bind_path, 'w') as f:
+                f.write(usb_device_id)
 
-        # Wait up to 5 s for the tty device node to reappear
-        for _ in range(20):
-            time.sleep(0.25)
-            if os.path.exists(tty_path):
-                print(f"[USB RESET] {tty_name} re-enumerated successfully")
-                return True
+            # Wait up to 5 s for the tty device node to reappear
+            for _ in range(20):
+                time.sleep(0.25)
+                if os.path.exists(tty_path):
+                    print(f"[USB RESET] {tty_name} re-enumerated successfully on attempt {attempt}")
+                    return True
 
-        print(f"[USB RESET] WARNING: {tty_name} did not reappear within 5s after reset")
+            print(f"[USB RESET] WARNING: {tty_name} did not reappear within 5s "
+                  f"(attempt {attempt}/{RESET_MAX_ATTEMPTS})")
+            if attempt < RESET_MAX_ATTEMPTS:
+                time.sleep(RESET_RETRY_DELAY)
+
+        print(f"[USB RESET] {tty_name} did not reappear after {RESET_MAX_ATTEMPTS} reset attempts")
         return True  # Reset was issued; caller can decide what to do
 
     except PermissionError:
