@@ -692,59 +692,83 @@ def get_connection_settle_delay(connection_type):
     """Get the settling delay for a specific connection type."""
     return CONNECTION_SETTLE_DELAYS.get(connection_type, USB_HUB_PORT_DELAY_CONNECTION_SETTLE)
 
+def read_kasa_feature_outlets():
+    """Read the amp (outlet 1) and Starlink (outlet 6) Kasa states in one query.
+    Returns (amp_on, starlink_on), or None if the power strip can't be read."""
+    try:
+        kasa_strip = get_kasa_power_strip()
+        if not kasa_strip:
+            return None
+        outlets = kasa_strip.get_all_outlet_status()
+        if len(outlets) < 6:
+            return None
+        return outlets[0]['is_on'], outlets[5]['is_on']
+    except Exception as e:
+        print(f"WARNING: Could not read Kasa outlet state: {e}")
+        clear_kasa_cache()
+        return None
+
 def detect_current_internet_connection():
     """
-    Detect the current internet connection state by querying the USB hub.
+    Detect the current internet connection state from the USB hub (which port
+    is powered) and the Kasa power strip (amp / Starlink outlets).
     Updates the global current_internet_connection variable.
     Returns the detected connection type.
     """
     global current_internet_connection, usb_hub_failures
 
+    active_port = -1
     try:
         hub = get_usb_hub_controller()
-        if not hub:
-            print("WARNING: Could not connect to USB hub for state detection")
-            usb_hub_failures += 1
-            # Don't overwrite current_internet_connection - keep last known value
-            return current_internet_connection
-
-        # Get the currently active port
-        active_port = hub.get_current_active_port()
-        usb_hub_failures = usb_hub_failures + 1 if active_port == -1 else 0
-
-        if active_port == -1:
-            print(f"WARNING: Could not determine hub state, keeping last known: {current_internet_connection}")
-            # Do NOT overwrite current_internet_connection - keep the last known value
-        elif active_port == 0:
-            print("INFO: No internet connection active (all ports off)")
-            current_internet_connection = "none"
-            _save_internet_state(current_internet_connection)
-        elif 1 <= active_port <= 4:
-            # Map port to connection type
-            connection_type = PORT_TO_CONNECTION_TYPE.get(active_port, "none")
-            current_internet_connection = connection_type
-            _save_internet_state(current_internet_connection)
-            print(f"INFO: Detected active internet connection: {connection_type} (port {active_port})")
+        if hub:
+            active_port = hub.get_current_active_port()
         else:
-            print(f"WARNING: Invalid active port detected: {active_port}")
-            current_internet_connection = "none"
-    
+            print("WARNING: Could not connect to USB hub for state detection")
+        usb_hub_failures = usb_hub_failures + 1 if active_port == -1 else 0
     except Exception as e:
-        print(f"ERROR: Failed to detect internet connection state: {e}")
+        print(f"ERROR: Failed to query USB hub state: {e}")
         usb_hub_failures += 1
-        # Don't overwrite current_internet_connection on error - keep last known value
-    
+
+    kasa = read_kasa_feature_outlets()
+    amp_on, starlink_on = kasa if kasa else (None, None)
+
+    detected = None
+    if active_port == 0:
+        detected = "none"
+    elif active_port == 1:
+        # Same USB port either way; the amp outlet distinguishes the two.
+        # If the strip is unreadable, keep a persisted cellular-amp.
+        if amp_on is None:
+            amp_on = current_internet_connection == "cellular-amp"
+        detected = "cellular-amp" if amp_on else "cellular"
+    elif 2 <= active_port <= 4:
+        detected = PORT_TO_CONNECTION_TYPE[active_port]
+    elif kasa:
+        # Hub unreadable: infer from the outlets that only one option powers.
+        if starlink_on:
+            detected = "starlink"
+        elif amp_on:
+            detected = "cellular-amp"
+        else:
+            print(f"WARNING: Hub unreadable and Kasa outlets off, keeping last known: {current_internet_connection}")
+
+    if detected is None:
+        print(f"WARNING: Could not determine connection state, keeping last known: {current_internet_connection}")
+    else:
+        current_internet_connection = detected
+        _save_internet_state(detected)
+        print(f"INFO: Detected internet connection: {detected} (hub port {active_port}, kasa amp/starlink {amp_on}/{starlink_on})")
+
     return current_internet_connection
 
-def update_current_internet_connection(port, action):
+def update_current_internet_connection(port, action, connection_type=None):
     """Update the current internet connection state based on port control actions."""
     global current_internet_connection
     
     if port == 0 or action.lower() == 'off':
         current_internet_connection = "none"
     elif 1 <= port <= 4 and action.lower() == 'on':
-        connection_type = PORT_TO_CONNECTION_TYPE.get(port, "none")
-        current_internet_connection = connection_type
+        current_internet_connection = connection_type or PORT_TO_CONNECTION_TYPE.get(port, "none")
     
     _save_internet_state(current_internet_connection)
     print(f"INFO: Current internet connection updated to: {current_internet_connection}")
@@ -1155,7 +1179,7 @@ def internet_power_control(data: Annotated[InternetPowerData, Body()]) -> Intern
                 action_msg = f"powered off ({connection_type})"
             
             if result:
-                update_current_internet_connection(data.port, data.action)  # Update state
+                update_current_internet_connection(data.port, data.action, connection_type)  # Update state
                 
                 success_msg = f"USB port {data.port} {action_msg} successfully"
                 if kasa_success and data.kasaPort:

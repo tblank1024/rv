@@ -55,7 +55,7 @@ import './Internet.css';
 import { fetchFromServer } from '../utils/api';
 
 const Internet = () => {
-  const [selectedOption, setSelectedOption] = useState('none');
+  const [selectedOption, setSelectedOption] = useState(null);  // null until the real state is read from the server
   const [hubReachable, setHubReachable] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(null);
@@ -96,21 +96,40 @@ const Internet = () => {
 
   // Fetch current internet connection status on component mount
   useEffect(() => {
-    const fetchCurrentStatus = async () => {
+    // The hub and power strip may not answer right after a reboot or docker
+    // restart, so retry a few times until the hub reports a real state.
+    let cancelled = false;
+    let timer;
+    const fetchCurrentStatus = async (attempt = 0) => {
+      let reachable = false;
       try {
         const response = await fetchFromServer('/api/internet/status');
-        setHubReachable(response.hub_reachable !== false);
-        if (response.current_connection) {
+        if (cancelled) return;
+        reachable = response.hub_reachable !== false;
+        setHubReachable(reachable);
+        // An unreachable hub returns only the last known value, so keep
+        // retrying and show that value only once retries are exhausted.
+        const known = response.current_connection && response.current_connection !== 'unknown';
+        if (known && (reachable || attempt >= 6)) {
           setSelectedOption(response.current_connection);
           console.log('Loaded current internet connection:', response.current_connection);
         }
       } catch (error) {
         console.error('Failed to fetch current internet status:', error);
-        // Keep default 'none' if fetch fails
+      }
+      if (!cancelled && !reachable && attempt < 6) {
+        timer = setTimeout(() => fetchCurrentStatus(attempt + 1), 5000);
+      } else if (!cancelled) {
+        // Retries exhausted (or fetch failed): stop showing the loading state
+        setSelectedOption(prev => prev ?? 'none');
       }
     };
 
     fetchCurrentStatus();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, []); // Empty dependency array means this runs once on mount
 
   const handleOptionChange = (e, { value }) => {
@@ -467,7 +486,7 @@ const Internet = () => {
                       value={option.value}
                       checked={selectedOption === option.value}
                       onChange={handleOptionChange}
-                      disabled={false}  // Always allow changing selection
+                      disabled={selectedOption === null}  // Wait for the real state
                     />
                   </Form.Field>
                 ))}
@@ -483,6 +502,11 @@ const Internet = () => {
                     <>
                       <Icon name="circle notched" loading />
                       Initializing...
+                    </>
+                  ) : selectedOption === null ? (
+                    <>
+                      <Icon name="circle notched" loading />
+                      Reading current state...
                     </>
                   ) : connectionStatus === 'success' ? (
                     <>
