@@ -30,6 +30,15 @@ RASPAp bridges `eth0` to the onboard Wi-Fi, creating the RV's internal network. 
 3. RP2 (a second Raspberry Pi acting as a Wi-Fi client/bridge)
 4. 5G modem
 
+## Remote Desktop
+
+The desktop (labwc/Wayland) autologins as `tblank`; no monitor is attached (headless output `NOOP-1`). Two ways in:
+
+- **Offline / RV LAN:** VNC via the system `wayvnc.service` (TCP 5900, user `vnc`, PAM+TLS). Use TigerVNC to the Pi's IP, log in with `tblank` credentials, accept the self-signed cert.
+- **Internet:** Raspberry Pi Connect screen sharing (connect.raspberrypi.com), signed in as `tblank`.
+
+Only one can be connected at a time — a second viewer shows a gray screen. xrdp is disabled (RDP as `tblank` black-screens because `tblank` already owns the console session). The `--gpu` strip in `/etc/systemd/system/wayvnc.service.d/override.conf` is harmless but not required.
+
 ## Repository Structure
 
 ```
