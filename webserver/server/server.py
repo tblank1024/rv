@@ -8,6 +8,8 @@ import sys
 import time
 import socket
 import requests
+import urllib.request
+import urllib.error
 import json
 import shutil
 import signal
@@ -636,6 +638,238 @@ def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResponse: 
             output=f"Error executing WiFi configuration: {str(e)}",
             success=False
         )
+
+# ---------------------------------------------------------------------------
+# WiFi bridge (Pi Zero 2W): scan, saved profiles, connect, forget
+# ---------------------------------------------------------------------------
+# The Zero runs rpzero_wifi_api.py (WifitoHostBridge repo) as root and serves
+# JSON on 10.10.0.1:12346. Scanning REQUIRES root there -- unprivileged, nmcli
+# silently ignores --rescan and returns only the already-connected AP -- which
+# is why these endpoints proxy to that service instead of doing the work here.
+#
+# These return plain dicts with success/message plus a collection, matching
+# GET /api/debug/usb/status. They deliberately do NOT carry the exit_code
+# contract of /api/wifi-config: there is no subprocess any more, and codes
+# 100/101 promised "SSID/PW were updated", which the new flow undoes on
+# purpose when a connect fails.
+#
+# No caching on this side. The Zero already caches (status 1s, networks 10s
+# with a 10s floor between real rescans, profiles 60s), and that is where the
+# cost actually is -- radio time and a 1GHz CPU. A second cache here would add
+# a second staleness window and a second invalidation path to get wrong, to
+# save a round trip over a USB link.
+
+WIFI_BRIDGE_API_HOST = os.environ.get('WIFI_BRIDGE_HOST', '10.10.0.1')
+WIFI_BRIDGE_API_PORT = os.environ.get('WIFI_BRIDGE_API_PORT', '12346')
+
+
+class WifiBridgeError(Exception):
+    """Base for failures talking to the Zero's WiFi API."""
+    error_code = "bridge_error"
+
+
+class WifiBridgeUnreachable(WifiBridgeError):
+    error_code = "bridge_unreachable"
+
+
+class WifiBridgeTimeout(WifiBridgeError):
+    error_code = "bridge_timeout"
+
+
+class WifiBridgeBadResponse(WifiBridgeError):
+    error_code = "bridge_bad_response"
+
+
+class WifiBridgeRejected(WifiBridgeError):
+    """The Zero answered with an error status and a JSON error body."""
+    error_code = "bridge_rejected"
+
+    def __init__(self, message, error_code=None, status=0):
+        super().__init__(message)
+        self.status = status
+        if error_code:
+            self.error_code = error_code
+
+
+# ProxyHandler({}) is not optional: the default opener honours http_proxy /
+# HTTP_PROXY from the environment, and this container's env is large and
+# growing. An unrelated proxy variable would silently break every call to a
+# link-local address.
+_wifi_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _wifi_bridge(path, method="GET", payload=None, timeout=10):
+    """
+    Calls the Zero's WiFi API and returns the decoded JSON.
+    Raises a WifiBridgeError subclass for every failure mode.
+    """
+    url = f"http://{WIFI_BRIDGE_API_HOST}:{WIFI_BRIDGE_API_PORT}{path}"
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with _wifi_opener.open(request, timeout=timeout) as response:
+            raw = response.read(65536)
+    except urllib.error.HTTPError as exc:
+        # HTTPError *is* the response object. Read the Zero's JSON error body
+        # before classifying, or its specific message is lost.
+        body = {}
+        try:
+            body = json.loads(exc.read(65536))
+        except Exception:
+            pass
+        raise WifiBridgeRejected(
+            body.get("message") or f"the WiFi bridge returned HTTP {exc.code}",
+            body.get("error"), exc.code) from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, socket.timeout):
+            raise WifiBridgeTimeout(
+                f"no answer from the WiFi bridge within {timeout}s") from exc
+        raise WifiBridgeUnreachable(
+            f"cannot reach the WiFi bridge at {WIFI_BRIDGE_API_HOST}:"
+            f"{WIFI_BRIDGE_API_PORT} ({reason}). Is the Zero powered on and is"
+            f" the internet source set to WiFi?") from exc
+    except socket.timeout as exc:
+        raise WifiBridgeTimeout(
+            f"no answer from the WiFi bridge within {timeout}s") from exc
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise WifiBridgeBadResponse(
+            "the WiFi bridge returned a response that was not JSON") from exc
+
+
+def _wifi_failure(exc, **empties):
+    """Failure payload in the shape this file uses: HTTP 200, success False."""
+    payload = {"success": False, "error": exc.error_code, "message": str(exc)}
+    payload.update(empties)
+    return payload
+
+
+class WifiConnectData(BaseModel):
+    ssid: str
+    psk: str = ""
+
+
+class WifiForgetData(BaseModel):
+    uuid: str = ""
+    ssid: str = ""
+    force: bool = False
+
+
+@app.get("/api/wifi/status")
+def get_wifi_status() -> dict:  # Removed async
+    """Live state of the Zero's wlan0, plus any connect/forget in progress."""
+    try:
+        data = _wifi_bridge("/api/status", timeout=4)
+    except WifiBridgeError as exc:
+        return _wifi_failure(exc, wifi={}, operation={}, service={})
+    return {
+        "success": True,
+        "message": "",
+        "wifi": data.get("wifi", {}),
+        "operation": data.get("operation", {}),
+        "service": data.get("service", {}),
+    }
+
+
+@app.get("/api/wifi/networks")
+def get_wifi_networks(rescan: int = 0) -> dict:  # Removed async
+    """
+    Networks the Zero can see, one entry per SSID, strongest first.
+    rescan=1 asks for a fresh scan; the Zero enforces a floor between real
+    rescans and reports age_seconds so staleness is visible.
+    """
+    try:
+        data = _wifi_bridge(f"/api/networks?rescan={1 if rescan else 0}",
+                            timeout=30 if rescan else 10)
+    except WifiBridgeError as exc:
+        return _wifi_failure(exc, networks=[])
+    return {
+        "success": True,
+        "message": "",
+        "networks": data.get("networks", []),
+        "age_seconds": data.get("age_seconds"),
+        "rescanned": data.get("rescanned", False),
+        "self_ap_ssid": data.get("self_ap_ssid", ""),
+    }
+
+
+@app.get("/api/wifi/profiles")
+def get_wifi_profiles() -> dict:  # Removed async
+    """
+    Saved WiFi profiles on the Zero, newest-used first.
+
+    Profile name is neither the SSID nor unique, so each entry carries both
+    plus its UUID; has_psk says whether a password is stored, and no endpoint
+    ever returns the password itself.
+    """
+    try:
+        data = _wifi_bridge("/api/profiles", timeout=10)
+    except WifiBridgeError as exc:
+        return _wifi_failure(exc, profiles=[])
+    return {
+        "success": True,
+        "message": "",
+        "profiles": data.get("profiles", []),
+        "age_seconds": data.get("age_seconds"),
+    }
+
+
+@app.post("/api/wifi/connect")
+def connect_wifi(data: Annotated[WifiConnectData, Body()]) -> dict:  # Removed async
+    """
+    Joins an SSID. Omit psk to use the saved credential; supply one to set or
+    replace it. Returns as soon as the Zero accepts the job -- follow progress
+    on /api/wifi/status, where operation.state goes running -> succeeded|failed.
+    """
+    payload = {"ssid": data.ssid}
+    if data.psk:
+        payload["psk"] = data.psk
+    try:
+        result = _wifi_bridge("/api/connect", method="POST", payload=payload,
+                              timeout=10)
+    except WifiBridgeError as exc:
+        return _wifi_failure(exc)
+    return {
+        "success": True,
+        "message": f"Connecting to {data.ssid}",
+        "job_id": result.get("job_id", ""),
+        "ssid": result.get("ssid", data.ssid),
+    }
+
+
+@app.post("/api/wifi/forget")
+def forget_wifi(data: Annotated[WifiForgetData, Body()]) -> dict:  # Removed async
+    """
+    Deletes a saved profile. Prefer uuid: an SSID can map to several profiles,
+    and the Zero refuses an ambiguous SSID. force=True is required to delete
+    the profile currently providing the connection.
+    """
+    payload = {"force": data.force}
+    if data.uuid:
+        payload["uuid"] = data.uuid
+    if data.ssid:
+        payload["ssid"] = data.ssid
+    if not data.uuid and not data.ssid:
+        return {"success": False, "error": "invalid_request",
+                "message": "a uuid or ssid is required"}
+    try:
+        result = _wifi_bridge("/api/forget", method="POST", payload=payload,
+                              timeout=10)
+    except WifiBridgeError as exc:
+        return _wifi_failure(exc)
+    deleted = result.get("deleted", {})
+    return {
+        "success": True,
+        "message": f"Forgot {deleted.get('name') or data.uuid or data.ssid}",
+        "deleted": deleted,
+    }
+
 
 # Internet Control Models and Endpoints
 

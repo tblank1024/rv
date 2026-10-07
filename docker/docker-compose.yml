@@ -264,7 +264,10 @@ services:
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
       - WIFI_BRIDGE_HOST=10.10.0.1
+      # 12345: legacy socket listener, used by /api/wifi-config.
+      # 12346: rpzero_wifi_api.py JSON API, used by /api/wifi/*.
       - WIFI_BRIDGE_PORT=12345
+      - WIFI_BRIDGE_API_PORT=12346
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     volumes:
       # Live view of host /dev (a bind of devtmpfs tracks hotplug); the
