@@ -295,7 +295,6 @@ const PlexSvr = () => {
           // Don't set the radio button here - let getScheduledTime determine if it's timed or manual
           setMessage("Ready");
         } else {
-          setSelectedOption('standby');
           // Check if ethernet is active by parsing the message text
           let ethernetActive = false;
           if (result.message) {
@@ -307,8 +306,11 @@ const PlexSvr = () => {
           }
           
           if (ethernetActive) {
+            setSelectedOption('standby');
             setMessage("Ready");
           } else {
+            // Link down on eth0 (NAS direct-connected): fully off, not standby
+            setSelectedOption('off');
             setMessage("Server off — must manually restart server (behind TV)");
             // Turn on entertainment system outlets when ethernet is unavailable (manual restart needed)
             controlKasaEntertainmentSystem('on');
