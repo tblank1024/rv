@@ -28,6 +28,7 @@ const STATUS_POLL_BUSY = 2000;     // while a connect/forget is running
 const STATUS_POLL_BACKOFF = 15000; // after repeated unreachable errors
 const RESCAN_COOLDOWN = 10000;     // mirrors the Zero's own rescan floor
 const MAX_LOG_LINES = 200;
+const STALE_RESULT_SECONDS = 90;  // older outcomes are history, not news
 
 const stamp = () => new Date().toLocaleTimeString();
 
@@ -69,6 +70,7 @@ const WifiPicker = () => {
   const failuresRef = useRef(0);
   const pendingRef = useRef('');
   const lastOpRef = useRef('');
+  const firstPollRef = useRef(true);
   pendingRef.current = pending;
 
   const addLog = useCallback((line) => {
@@ -122,9 +124,22 @@ const WifiPicker = () => {
 
       const op = data.operation || {};
       // Report an operation's outcome once, when it transitions.
+      //
+      // The Zero keeps the last operation indefinitely, so on a fresh mount
+      // the first poll would otherwise announce an old result as if it had
+      // just happened -- a failure from hours ago reappearing on every page
+      // load. Seed the baseline on the first poll instead, and only speak up
+      // about something that finished recently enough to still be news
+      // (covers a connect that completed while this tab was hidden).
       const key = `${op.id}:${op.state}`;
-      if (op.id && key !== lastOpRef.current &&
-          (op.state === 'succeeded' || op.state === 'failed')) {
+      const terminal = op.state === 'succeeded' || op.state === 'failed';
+      const isStale = firstPollRef.current
+        && (op.age_seconds == null || op.age_seconds > STALE_RESULT_SECONDS);
+      if (firstPollRef.current) {
+        firstPollRef.current = false;
+        if (terminal && isStale) lastOpRef.current = key;
+      }
+      if (op.id && key !== lastOpRef.current && terminal) {
         lastOpRef.current = key;
         setPending('');
         if (op.state === 'succeeded') {
