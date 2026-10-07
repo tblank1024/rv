@@ -492,11 +492,6 @@ class WiFiConfigData(BaseModel):
     password: str
     permanent: bool = False
 
-class WiFiConfigData(BaseModel):
-    ssid: str
-    password: str
-    permanent: bool = False
-
 class WiFiConfigResponse(BaseModel):
     exit_code: int
     output: str
@@ -565,7 +560,7 @@ async def sync_alarm_states_manual() -> dict:
         return {"status": "no_physical_alarm", "bike": bike_alarm_state, "interior": interior_alarm_state}
 
 @app.post("/api/wifi-config")
-async def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResponse:
+def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResponse:  # Removed async
     """
     Configure WiFi settings on RP2W device using the RP5toRPZero2WControl.py script
     """
