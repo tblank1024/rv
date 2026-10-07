@@ -296,6 +296,10 @@ function Debug() {
       
       if (result.success) {
         setSynologyMessage(`${action}: ${result.message}`);
+        if (action !== 'status') {
+          // Power actions take a while to settle; refresh the displayed state afterwards
+          setTimeout(() => controlSynology('status'), 15000);
+        }
         if (action === 'status' && result.status) {
           console.log('Setting Synology status:', result.status);
           setSynologyStatus(result.status);
@@ -314,6 +318,38 @@ function Debug() {
     }
   };
 
+  // Full off: graceful DSM shutdown, wait for it to finish, then cut Kasa outlet 4.
+  // The NAS can then only be restarted with its front power button.
+  const synologyFullOff = async () => {
+    if (!window.confirm('Shut down the NAS and cut its power? It will need its front power button to restart.')) return;
+    const post = (action) => fetch(`${getServerUrl()}/api/debug/synology/${action}`, { method: 'POST' }).then(r => r.json());
+    try {
+      setSynologyMessage('Full off: shutting down NAS...');
+      const off = await post('power-off');
+      if (!off.success) {
+        setSynologyMessage(`Full off aborted, shutdown failed: ${off.message}`);
+        return;
+      }
+      // Wait up to ~2 min for the NAS to stop responding (state leaves ONLINE)
+      for (let i = 0; i < 24; i++) {
+        setSynologyMessage(`Full off: waiting for NAS to shut down (${i * 5}s)...`);
+        await new Promise(r => setTimeout(r, 5000));
+        const st = await post('status');
+        if (st.success && st.status && st.status.state !== 'ONLINE') {
+          // Give DSM a little longer to finish powering down before cutting power
+          await new Promise(r => setTimeout(r, 15000));
+          await controlKasaOutlet(4, 'off');
+          setSynologyMessage('Full off complete: NAS shut down and outlet 4 off.');
+          setTimeout(() => controlSynology('status'), 3000);
+          return;
+        }
+      }
+      setSynologyMessage('Full off aborted: NAS still responding after 2 minutes; outlet 4 left on.');
+    } catch (error) {
+      setSynologyMessage(`Full off failed: ${error.message}`);
+    }
+  };
+
     // Initial data load
   useEffect(() => {
     console.log('useEffect: Starting initial data load...');
@@ -323,7 +359,7 @@ function Debug() {
       try {
         // Load both USB and Kasa status in parallel - timeout is handled in each function
         console.log('useEffect: Calling getUsbStatus and getKasaStatus...');
-        await Promise.allSettled([getUsbStatus(), getKasaStatus()]);
+        await Promise.allSettled([getUsbStatus(), getKasaStatus(), controlSynology('status')]);
         console.log('useEffect: Data loading completed');
         setMessage('Data loaded successfully');
       } catch (error) {
@@ -522,6 +558,9 @@ function Debug() {
               {synologyMessage}
             </div>
           )}
+          <div style={{ marginBottom: '15px', fontWeight: 'bold' }}>
+            Current state: {synologyStatus ? ({ ONLINE: 'On', STANDBY: 'Standby (WoL-ready)', OFFLINE: 'Off (no ethernet link)' }[synologyStatus.state] || synologyStatus.state || 'Unknown') : 'Checking...'}
+          </div>
           <div className="control-grid">
             <div className="control-item">
               <h3>NAS Power Control</h3>
@@ -549,6 +588,12 @@ function Debug() {
                   onClick={() => controlSynology('power-off')}
                 >
                   Power Off
+                </button>
+                <button 
+                  className="action-button power-off-button"
+                  onClick={synologyFullOff}
+                >
+                  Full Off (cut power)
                 </button>
               </div>
             </div>

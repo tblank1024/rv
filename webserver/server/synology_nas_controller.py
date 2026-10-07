@@ -439,46 +439,14 @@ class SynologyNASController:
 
     def standby(self) -> bool:
         """
-        Put the NAS into hibernation/standby (drives spin down, low power) using the DSM API.
+        Put the NAS into standby: graceful DSM shutdown with the NIC left
+        powered and Wake-on-LAN ready. (DSM has no 'hibernate' API method;
+        it returns error 103.)
 
         Returns:
-            bool: True if the hibernation command was sent successfully
+            bool: True if the shutdown command was sent successfully
         """
-        logger.info(f"Attempting to hibernate NAS at {self.ip_address}")
-
-        if not self.is_online():
-            logger.info("NAS is already offline")
-            return True
-
-        if not self._authenticate():
-            logger.error("Failed to authenticate for hibernation")
-            return False
-
-        try:
-            hibernate_url = f"{self.base_url}/webapi/entry.cgi"
-            params = {
-                'api': 'SYNO.Core.System',
-                'version': '1',
-                'method': 'hibernate',
-                '_sid': self.session_id
-            }
-
-            response = requests.get(hibernate_url, params=params, timeout=10)
-            response.raise_for_status()
-
-            data = response.json()
-            if data.get('success'):
-                logger.info("Hibernation command sent successfully")
-                return True
-            else:
-                logger.error(f"Hibernation failed: {data.get('error', {})}")
-                return False
-
-        except Exception as e:
-            logger.error(f"Hibernation error: {e}")
-            return False
-        finally:
-            self._logout()
+        return self.power_off()
 
     def get_status(self) -> Dict[str, Any]:
         """
@@ -658,14 +626,14 @@ Examples:
 
             elif args.standby:
                 # Put NAS into hibernation/standby
-                print("Sending hibernation command to NAS...")
+                print("Sending standby (shutdown, WoL-ready) command to NAS...")
                 result = nas.standby()
 
                 if result:
-                    print("SUCCESS: Hibernation command sent")
+                    print("SUCCESS: Standby command sent")
                     print("The NAS will enter standby (low power) mode")
                 else:
-                    print("FAILED: Could not send hibernation command")
+                    print("FAILED: Could not send standby command")
                     sys.exit(1)
 
         except ValueError as e:

@@ -7,6 +7,7 @@ import tempfile
 import sys
 import time
 import socket
+import re
 import requests
 import urllib.request
 import urllib.error
@@ -2064,6 +2065,10 @@ async def debug_synology_control(action: str):
                                 value = False
                             status_info[key] = value
                 
+                state_match = re.search(r'^Status:\s+(\w+)', output, re.MULTILINE)
+                if state_match:
+                    status_info['state'] = state_match.group(1)
+
                 return {
                     "success": True,
                     "message": output,
