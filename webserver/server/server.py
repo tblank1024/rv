@@ -602,7 +602,10 @@ async def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResp
             cmd,
             capture_output=True,
             text=True,
-            timeout=30,  # 30 second timeout
+            # Must stay above the client's RESPONSE_TIMEOUT (90 s), which in turn
+            # covers the listener's ~70 s worst case; the old 30 s limit reported a
+            # timeout while the Zero was still working and had often succeeded.
+            timeout=120,
             env=proc_env
         )
         
@@ -629,7 +632,7 @@ async def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResp
     except subprocess.TimeoutExpired:
         return WiFiConfigResponse(
             exit_code=1,
-            output="WiFi configuration timed out after 30 seconds",
+            output="WiFi configuration timed out after 120 seconds",
             success=False
         )
     except Exception as e:
