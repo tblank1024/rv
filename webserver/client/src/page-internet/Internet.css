@@ -247,3 +247,175 @@
 .status-item span:contains('⚪') {
   color: #6c757d;
 }
+
+/* === WiFi picker ========================================================= */
+/* Rows deliberately do NOT reuse .status-item: that class switches to
+   flex-direction: column below 768px, which would stack SSID / signal /
+   actions and make every row ~80px tall on a phone. The container is capped
+   at 400px, so usable width is ~340px. */
+
+.wifi-picker {
+  display: flex;
+  flex-direction: column;
+}
+
+.wifi-status-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.wifi-status-row {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.wifi-status-row:last-child { border-bottom: none; }
+.wifi-status-row strong { color: #495057; margin-right: 10px; }
+.wifi-status-row span { color: #6c757d; text-align: right; }
+
+.wifi-scan-age {
+  font-size: 0.85em;
+  color: #6c757d;
+  margin-top: 4px !important;
+}
+
+.wifi-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.wifi-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;              /* comfortable tap target */
+  padding: 8px 4px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #dee2e6;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wifi-row:hover:not(:disabled) { background-color: #f1f5fb; }
+.wifi-row:disabled { cursor: not-allowed; }
+
+.wifi-row--active {
+  border-left: 3px solid #2185d0;
+  padding-left: 6px;
+  background-color: #f6fbff;
+}
+.wifi-row--active .wifi-row__name { font-weight: 600; }
+.wifi-row--blocked { opacity: 0.55; }
+.wifi-row--pending { background-color: #fffdf3; }
+.wifi-row--expanded { background-color: #f1f5fb; border-bottom: none; }
+
+/* min-width: 0 is required: flex items default to min-width auto, so a long
+   SSID would push the tags off the card instead of ellipsing. */
+.wifi-row__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1a3a6b;
+}
+
+.wifi-row__why { color: #6c757d; font-size: 0.85em; }
+
+.wifi-row__tags {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+
+.wifi-row__lock { color: #6c757d; margin: 0 !important; }
+
+.wifi-tag {
+  font-size: 0.72em;
+  padding: 1px 6px;
+  border-radius: 9px;
+  white-space: nowrap;
+}
+
+.wifi-tag--saved { background-color: #e8f0fb; color: #2a5a9b; }
+.wifi-tag--connected { background-color: #2185d0; color: #fff; }
+.wifi-tag--open { background-color: #f3e9d2; color: #8a6d3b; }
+
+.wifi-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 4px 10px 10px;
+  border-bottom: 1px solid #dee2e6;
+  background-color: #f1f5fb;
+}
+
+/* Signal strength: four rising bars, filled from the 0-100 percentage. */
+.wifi-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.wifi-bar { width: 3px; border-radius: 1px; }
+.wifi-bar:nth-child(1) { height: 4px; }
+.wifi-bar:nth-child(2) { height: 7px; }
+.wifi-bar:nth-child(3) { height: 10px; }
+.wifi-bar:nth-child(4) { height: 13px; }
+.wifi-bar--on { background-color: #2185d0; }
+.wifi-bar--off { background-color: #cdd5df; }
+
+.wifi-empty {
+  color: #6c757d;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.wifi-log-toggle {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.wifi-log textarea, textarea.wifi-log {
+  font-family: monospace;
+  font-size: 0.8em;
+}
+
+.wifi-pw-hint {
+  font-size: 0.85em;
+  color: #6c757d;
+  min-height: 1.2em;
+}
+
+@media (max-width: 768px) {
+  /* Re-assert row layout: the generic mobile rule for .status-item stacks
+     flex children, which must not happen to these. */
+  .wifi-row, .wifi-status-row, .wifi-row__tags {
+    flex-direction: row;
+    align-items: center;
+  }
+  .wifi-status-row { align-items: center; }
+}
+
+@media (max-width: 480px) {
+  .wifi-row { gap: 8px; }
+  .wifi-row__why { display: none; }
+  .wifi-tag { font-size: 0.68em; padding: 1px 4px; }
+  .wifi-modal.ui.modal {
+    width: calc(100vw - 20px);
+    margin: 0 auto;
+  }
+}

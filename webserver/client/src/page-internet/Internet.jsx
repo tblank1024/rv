@@ -38,9 +38,12 @@
  * - Real-time status updates with success/warning/error states
  * 
  * === WIFI CONFIGURATION ===
- * - Separate section for configuring WiFi credentials
- * - Communicates with Raspberry Pi Zero 2W bridge device
- * - Supports permanent profile storage
+ * - Rendered by WifiPicker.jsx when the WiFi source is selected
+ * - Lists networks in range with signal strength; tap to connect
+ * - Asks for a password only when the Zero has no saved credential
+ * - Per-network Forget, and a live status panel for the bridge
+ * - Uses /api/wifi/* (the Zero's JSON API), not the old /api/wifi-config
+ * - NOTE: the route /wifi belongs to the Plex page, not to any of this
  * 
  * === STATE MANAGEMENT ===
  * - Loads current connection state on page load
@@ -50,9 +53,10 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Form, Button, Message, Card, Header, Icon, Segment, Radio, TextArea, Checkbox } from 'semantic-ui-react';
+import { Form, Message, Card, Header, Icon, Radio } from 'semantic-ui-react';
 import './Internet.css';
 import { fetchFromServer } from '../utils/api';
+import WifiPicker from './WifiPicker';
 
 const Internet = () => {
   const [selectedOption, setSelectedOption] = useState(null);  // null until the real state is read from the server
@@ -62,14 +66,6 @@ const Internet = () => {
   const [statusMessage, setStatusMessage] = useState('');
   const [countdown, setCountdown] = useState(0);
   const [abortController, setAbortController] = useState(null);
-
-  // WiFi configuration states
-  const [ssid, setSsid] = useState('');
-  const [password, setPassword] = useState('');
-  const [permanentStore, setPermanentStore] = useState(false);
-  const [output, setOutput] = useState('');
-  const [wifiLoading, setWifiLoading] = useState(false);
-  const [lastResult, setLastResult] = useState(null);
 
   // Power reading states
   const [kasaPort1Power, setKasaPort1Power] = useState(0);
@@ -276,73 +272,6 @@ const Internet = () => {
   };
 
   // WiFi configuration functions
-  const handleWifiSubmit = async (e) => {
-    e.preventDefault();
-    
-    if (!ssid.trim()) {
-      setOutput('Error: SSID is required');
-      return;
-    }
-    
-    if (!password.trim()) {
-      setOutput('Error: Password is required');
-      return;
-    }
-
-    setWifiLoading(true);
-    setOutput('Sending WiFi configuration to RP2W...\n');
-    
-    try {
-      const requestData = {
-        ssid: ssid.trim(),
-        password: password.trim(),
-        permanent: permanentStore
-      };
-
-      const response = await fetchFromServer('/api/wifi-config', {
-        method: 'POST',
-        body: JSON.stringify(requestData)
-      });
-
-      let resultMessage = '';
-      let resultType = 'info';
-      
-      // Handle different exit codes based on the Python script
-      switch (response.exit_code) {
-        case 0:
-          resultMessage = 'Success: WiFi connected and configuration saved!';
-          resultType = 'success';
-          break;
-        case 1:
-          resultMessage = 'Error: General failure (connection, invalid packet, or server error)';
-          resultType = 'error';
-          break;
-        case 100:
-          resultMessage = 'Warning: SSID/Password updated but activation failed (likely bad password)';
-          resultType = 'warning';
-          break;
-        case 101:
-          resultMessage = 'Warning: SSID/Password updated but WiFi connection failed (bad/unreachable SSID or timeout)';
-          resultType = 'warning';
-          break;
-        default:
-          resultMessage = `Unknown result: Exit code ${response.exit_code}`;
-          resultType = 'info';
-      }
-
-      setLastResult({ type: resultType, message: resultMessage });
-      setOutput(prev => prev + `\nResponse from RP2W:\n${response.output}\n\n${resultMessage}`);
-      
-    } catch (error) {
-      const errorMessage = `Error communicating with server: ${error.message}`;
-      setLastResult({ type: 'error', message: errorMessage });
-      setOutput(prev => prev + `\n${errorMessage}`);
-    } finally {
-      setWifiLoading(false);
-    }
-  };
-
-  // Function to fetch power readings from Kasa power strip
   const fetchKasaPower = useCallback(async () => {
     try {
       // Fetch power from port 1 (cellular amp)
@@ -430,17 +359,6 @@ const Internet = () => {
       return () => clearTimeout(timer);
     }
   }, [selectedOption, connectionStatus, isConnecting, autoTestConnectivity]);
-
-  const clearWifiOutput = () => {
-    setOutput('');
-    setLastResult(null);
-  };
-
-  const clearWifiForm = () => {
-    setSsid('');
-    setPassword('');
-    setPermanentStore(false);
-  };
 
   const getStatusIcon = () => {
     switch (connectionStatus) {
@@ -573,115 +491,10 @@ const Internet = () => {
           />
         )}
 
-        {/* WiFi Configuration Section */}
+        {/* WiFi picker: networks in range, tap to connect. See WifiPicker.jsx */}
         {selectedOption === 'wifi' && (
           <div style={{ marginBottom: '20px' }}>
-            <Card className="wifi-config-card">
-              <Card.Content>
-                <Card.Header>WiFi Configuration</Card.Header>
-                <Card.Description>
-                  Configure WiFi settings for RP2W device
-                </Card.Description>
-              </Card.Content>
-              <Card.Content>
-                <Form onSubmit={handleWifiSubmit}>
-                  <Form.Field required>
-                    <label>SSID (Network Name)</label>
-                    <Form.Input
-                      placeholder="Enter WiFi network name"
-                      value={ssid}
-                      onChange={(e) => setSsid(e.target.value)}
-                      disabled={wifiLoading}
-                      icon="wifi"
-                      iconPosition="left"
-                    />
-                  </Form.Field>
-                  
-                  <Form.Field required>
-                    <label>Password</label>
-                    <Form.Input
-                      type="password"
-                      placeholder="Enter WiFi password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      disabled={wifiLoading}
-                      icon="lock"
-                      iconPosition="left"
-                    />
-                  </Form.Field>
-
-                  <Form.Field>
-                    <Checkbox
-                      label="Permanently store this SSID/Password pair in RP2W"
-                      checked={permanentStore}
-                      onChange={(e, { checked }) => setPermanentStore(checked)}
-                      disabled={wifiLoading}
-                    />
-                  </Form.Field>
-
-                  <div className="wifi-form-buttons">
-                    <Button 
-                      type="submit" 
-                      primary 
-                      loading={wifiLoading}
-                      disabled={wifiLoading || !ssid.trim() || !password.trim()}
-                      icon="send"
-                      labelPosition="left"
-                      content="Send Configuration"
-                    />
-                    <Button 
-                      type="button" 
-                      secondary 
-                      onClick={clearWifiForm}
-                      disabled={wifiLoading}
-                      icon="refresh"
-                      content="Clear Form"
-                    />
-                  </div>
-                </Form>
-              </Card.Content>
-            </Card>
-
-            <Card className="wifi-output-card" style={{ marginTop: '15px' }}>
-              <Card.Content>
-                <Card.Header>
-                  WiFi Output
-                  <Button 
-                    floated="right" 
-                    size="mini" 
-                    onClick={clearWifiOutput}
-                    disabled={wifiLoading}
-                    icon="trash"
-                    content="Clear"
-                  />
-                </Card.Header>
-              </Card.Content>
-              <Card.Content>
-                {lastResult && (
-                  <Message 
-                    color={lastResult.type === 'success' ? 'green' : 
-                           lastResult.type === 'warning' ? 'yellow' : 
-                           lastResult.type === 'error' ? 'red' : 'blue'}
-                    icon={lastResult.type === 'success' ? 'check circle' : 
-                          lastResult.type === 'warning' ? 'warning circle' : 
-                          lastResult.type === 'error' ? 'times circle' : 'info circle'}
-                    header={lastResult.type === 'success' ? 'Success' : 
-                            lastResult.type === 'warning' ? 'Warning' : 
-                            lastResult.type === 'error' ? 'Error' : 'Information'}
-                    content={lastResult.message}
-                  />
-                )}
-                
-                <Segment className="output-segment">
-                  <TextArea
-                    value={output}
-                    placeholder="WiFi configuration output will appear here..."
-                    style={{ width: '100%', minHeight: '200px' }}
-                    readOnly
-                  />
-                </Segment>
-              </Card.Content>
-            </Card>
+            <WifiPicker />
           </div>
         )}
       </div>
