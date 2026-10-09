@@ -182,6 +182,60 @@ Campground WiFi is mostly 2.4 GHz; move Sophie's AP (onboard `wlan0`) to 5 GHz s
 band. If the park AP offers 5 GHz, prefer it for the uplink and put Sophie's AP on a non-overlapping 5 GHz
 channel. See the hostapd fixes C/D in `WiFitoHostBridge/plan-speed.md`.
 
+### 12. Sophie directly exposed to the campground network (must fix BEFORE first join)
+Today the Zero NATs between the park WiFi and Sophie, so other campers can't open connections to her. With the
+adapter, Sophie's `wlan1` is on the park network itself, and her services listen on all interfaces: dashboard
+(8000/3000), MQTT (1883/9001), SSH, VNC (5900), RaspAP web UI (80), dnsmasq (53), plus mDNS. The webserver
+container is `network_mode: host`, so it binds `wlan1` too. Docker-published ports are reached via FORWARD
+(DNAT), so INPUT rules alone don't cover them. This already applies to the direct-Ethernet uplink (option 2)
+today.
+
+Approach: apply to whatever uplink is active (`ACTIVE_IFACE`), not just `wlan1`, idempotently from
+`raspap/pi5connect.sh` (it already runs on every uplink change; `-C` before `-I`):
+```bash
+# host services: only replies to connections Sophie started
+iptables -I INPUT 1 -i "$ACTIVE_IFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -I INPUT 2 -i "$ACTIVE_IFACE" -j DROP
+# Docker-published ports (DNAT -> FORWARD); DOCKER-USER is evaluated before Docker's own rules
+iptables -I DOCKER-USER 1 -i "$ACTIVE_IFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -I DOCKER-USER 2 -i "$ACTIVE_IFACE" -j DROP
+```
+Remove the rules for the old interface when the uplink changes (same loop that removes old MASQUERADE rules).
+DHCP client traffic uses raw sockets and is unaffected; ICMP errors (PMTU) pass as RELATED.
+`pi5connect.sh` only runs once an uplink is selected, so there is a window after `wlan1` associates (or forever,
+if it is UP but never selected). Close it with the same four rules for `wlan1` saved statically at boot
+(`iptables-save > /etc/iptables/rules.v4`, iptables-persistent); rules by interface name are valid even while
+`wlan1` doesn't exist.
+
+Also:
+- **FORWARD:** confirm new connections from the uplink to `br0` are dropped (`iptables -S FORWARD`: policy DROP,
+  or only the RELATED,ESTABLISHED rule `pi5connect.sh` adds). Never run `WiFitoHostBridge/fix_interface_routing.sh`
+  on Sophie (it sets FORWARD ACCEPT and flushes NAT).
+- **IPv6:** a park network with SLAAC gives `wlan1` a global v6 address that bypasses all iptables (v4) rules.
+  Disable it on the uplink profile: `nmcli con modify <profile> ipv6.method disabled`, and add
+  `ipv6.method disabled` to `rpzero_wifi_api.py`'s `connection add` (issue 10). Verify `ip -6 addr show wlan1` shows
+  no global address.
+- **mDNS:** `/etc/avahi/avahi-daemon.conf` → `deny-interfaces=wlan1` (and other uplinks), restart avahi.
+- **SSH:** key-only (`PasswordAuthentication no`) as defense in depth.
+
+Verify before trusting a park network: from a laptop joined **directly to the park WiFi** (not Sophie's), run
+`nmap -Pn -p- <Sophie wlan1 IP>` → all ports filtered. Then from the RV LAN confirm the dashboard, MQTT, SSH,
+and VNC still work via `br0`.
+
+## Tradeoffs vs keeping the Zero
+
+- **Security:** Sophie sits directly on untrusted networks (issue 12). Required fix, not optional.
+- **Fault isolation:** an adapter driver/firmware hang or USB reset now happens on the box that runs everything and
+  can disturb other devices on the hub (BLE dongles). Mitigation: power-cycle the hub port via the CoolGear.
+- **Complexity on Sophie:** two radios, name pinning, NM vs hostapd ownership. A RaspAP/Pi OS update can now break
+  uplink and AP together.
+- **Rework:** the Zero's WiFi API and the picker were just built; moving the API to the RP5 is mostly config but
+  needs re-testing, and a root `nmcli` API now runs on the main box.
+- **Cost:** ~$60–70 adapter + active USB extension + weatherproof enclosure.
+- Not downsides: placement (both are on a USB cable), power, captive portals (same either way), RP5 CPU (far
+  below limits at USB 2.0 / campground rates).
+- Fallback: keep the Zero; switching back = hub port + `WIFI_BRIDGE_HOST`.
+
 ## Rollout
 
 1. Run `WiFitoHostBridge/plan-speed.md` tests with the current Zero setup (baseline).
@@ -189,10 +243,12 @@ channel. See the hostapd fixes C/D in `WiFitoHostBridge/plan-speed.md`.
 3. Bench test on Sophie: plug into a spare port, `lsusb`, `dmesg`, `iw dev`, `nmcli dev wifi list ifname wlanX`.
 4. Apply issues 1, 2, 7, 8 (names, NM ownership, firmware, country). Reboot; verify `wlan0` AP still works and
    names are stable across hub port off/on.
-5. Apply issue 3 (dispatcher) and 4 (captive-portal fallback). Connect manually with `nmcli`; verify default route
+5. Apply issue 12 (uplink firewall, IPv6 off, avahi), then issue 3 (dispatcher) and 4 (captive-portal
+   fallback). Only then connect manually with `nmcli`; verify default route
    and MASQUERADE via `wlan1`, internet from the RV LAN.
 6. Apply issue 10 (WiFi API on the RP5 host) and test the Internet page network picker end to end.
-7. Move the adapter to its outside mount on the Zero's hub port (replacing the Zero); re-run the speed tests and compare
+7. Move the adapter to its outside mount on the Zero's hub port (replacing the Zero); run the issue 12 `nmap` check from
+   the park WiFi, then re-run the speed tests and compare
    with the baseline.
 8. Update `rv/CLAUDE.md` (uplink option 3 description) and `rv/raspap/README.txt`; retire or archive the Zero
    setup once proven.
