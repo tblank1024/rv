@@ -153,18 +153,29 @@ shows US for both phys.
 Disable power save on the uplink: `nmcli con modify <profile> 802-11-wireless.powersave 2` (and in the profiles
 the web UI creates; see 10).
 
-### 10. Web UI "WiFi Configuration" path
-Today: `server.py /api/wifi-config` → `RP5toRPZero2WControl.py` → TCP 10.10.0.1:12345 → `RPZero2WListener.py`
-on the Zero runs `nmcli`. The webserver container uses `network_mode: host`.
+### 10. Web UI WiFi picker path
+Today: Internet page network picker → `server.py /api/wifi/{status,networks,profiles,connect,forget}` → HTTP JSON
+to `rpzero_wifi_api.py` (WiFitoHostBridge repo) on the Zero at `10.10.0.1:12346`, running as root, driving `nmcli`
+on the Zero's `wlan0`. The webserver container uses `network_mode: host`. (The older `/api/wifi-config` →
+`RP5toRPZero2WControl.py` → `RPZero2WListener.py` path on 12345 also still exists.)
 
-Approach (minimal change, reuses the tested listener logic):
-- Run `RPZero2WListener.py` **on the RP5 host** as a systemd service bound to `127.0.0.1:12345`, with
-  `WIFI_INTERFACE=wlan1`. Change the listener's `HOST` and `WIFI_INTERFACE` constants to read env vars.
-- Add `802-11-wireless.powersave 2` and `802-11-wireless.cloned-mac-address permanent` to its `nmcli connection
-  add` command.
-- In `docker-compose.yml`, set `WIFI_BRIDGE_HOST=127.0.0.1` for the webserver (`server.py` already honors it).
-  No client code change needed.
-- Keep the Zero setup intact as a fallback until the Alfa is proven.
+Approach (no new code; `rpzero_wifi_api.py` is already env-configurable):
+- Run `rpzero_wifi_api.py` **on the RP5 host** as root under systemd (adapt `wifi-bridge-api.service`) with:
+  ```
+  WIFI_API_BIND=127.0.0.1
+  WIFI_API_ALLOWED_NET=127.0.0.0/8
+  WIFI_IFNAME=wlan1
+  SELF_AP_SSID=Sophie          # keeps Sophie's own AP out of the picker
+  ```
+  Binding 127.0.0.1 keeps the API off both the campground network and the RV LAN.
+- In `docker-compose.yml`, set `WIFI_BRIDGE_HOST=127.0.0.1` for the webserver (`server.py` reads it for both the
+  API on 12346 and the old path). No client code change.
+- In the API's `nmcli connection add` (`rpzero_wifi_api.py` ~line 735), add `802-11-wireless.powersave 2` and
+  `802-11-wireless.cloned-mac-address permanent` (issues 4 and 9). This benefits the Zero too.
+- Check that the code doesn't assume Zero-only details (e.g., the `p2p-dev-wlan0` comment ~line 426) when run on
+  the RP5, which also has a `p2p-dev-wlan0` for the AP radio.
+- Keep the Zero setup intact as a fallback until the Alfa is proven; switching back is just hub port +
+  `WIFI_BRIDGE_HOST`.
 
 ### 11. Band plan with Sophie's AP
 Campground WiFi is mostly 2.4 GHz; move Sophie's AP (onboard `wlan0`) to 5 GHz so the Roku is off the uplink's
@@ -180,7 +191,7 @@ channel. See the hostapd fixes C/D in `WiFitoHostBridge/plan-speed.md`.
    names are stable across hub port off/on.
 5. Apply issue 3 (dispatcher) and 4 (captive-portal fallback). Connect manually with `nmcli`; verify default route
    and MASQUERADE via `wlan1`, internet from the RV LAN.
-6. Apply issue 10 (listener on host) and test the web UI WiFi Configuration page end to end.
+6. Apply issue 10 (WiFi API on the RP5 host) and test the Internet page network picker end to end.
 7. Move the adapter to its outside mount on the Zero's hub port (replacing the Zero); re-run the speed tests and compare
    with the baseline.
 8. Update `rv/CLAUDE.md` (uplink option 3 description) and `rv/raspap/README.txt`; retire or archive the Zero
