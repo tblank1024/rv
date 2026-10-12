@@ -76,7 +76,6 @@ Notes:
 set -uo pipefail
 
 TRUSTED=(lo br0 docker0 "br-+")          # everything else (eth1, eth2, wlan1, usb0, wwan0, enx*, ...) is untrusted
-[ -f /etc/default/sophie-firewall ] && . /etc/default/sophie-firewall   # optional: ALLOW_SSH_FROM="192.168.2.0/24"
 
 chain() { "$1" -N "$2" 2>/dev/null || "$1" -F "$2"; }
 hook()  { "$1" -C "$2" -j "$3" 2>/dev/null || "$1" -I "$2" 1 -j "$3"; }
@@ -92,9 +91,6 @@ build_in() {   # $1 = iptables | ip6tables
             $T -A SOPHIE-IN -p ipv6-icmp --icmpv6-type $t -j ACCEPT
         done
         $T -A SOPHIE-IN -p udp -s fe80::/10 --dport 546 -j ACCEPT   # DHCPv6 replies
-    fi
-    if [ "$T" = iptables ] && [ -n "${ALLOW_SSH_FROM:-}" ]; then
-        $T -A SOPHIE-IN -p tcp -s "$ALLOW_SSH_FROM" --dport 22 -j ACCEPT
     fi
     $T -A SOPHIE-IN -m limit --limit 6/min -j LOG --log-prefix "SOPHIE-IN drop: "
     $T -A SOPHIE-IN -j DROP
@@ -181,15 +177,17 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
 ## Things that will break unless handled
 
 1. **SSH/VNC to Sophie through an uplink.** README/CLAUDE.md mention reaching Sophie at `192.168.2.196` from home.
-   That address is on the home network via an uplink, so it would be blocked. Options **[USER] to choose**:
-   - (a) at home, put the laptop on Sophie's WiFi (trusted `br0`), or use Raspberry Pi Connect (outbound, unaffected);
-   - (b) `/etc/default/sophie-firewall`: `ALLOW_SSH_FROM="192.168.2.0/24"`. Risk: a park network can use the same
-     subnet. Acceptable only with key-only SSH.
-   - Recommended: (a), and later Tailscale/WireGuard for remote access (dials out, works through CGNAT, no open
-     ports).
+   That address is on the home network via an uplink, so it will be blocked. **Decision (2026-10-12): no
+   exceptions.** There is no inbound allow-list (e.g., SSH from the home subnet), because a park network can use
+   the same subnet. Instead:
+   - At home: Raspberry Pi Connect (dials out; has both a remote shell and screen sharing), or put the laptop on
+     Sophie's WiFi (trusted `br0`; direct SSH and VNC work).
+   - On the road: same. Later, Tailscale/WireGuard for remote access (dials out, works through CGNAT, no open ports).
+   - Update README/CLAUDE.md's `192.168.2.196` SSH instructions accordingly once deployed.
 2. **Home automation talking to Sophie.** If HA (192.168.2.11) or anything at home connects *to* Sophie (MQTT
    bridge, API polling) while parked at home, it will be dropped. Check the `SOPHIE-IN drop:` log lines at home,
-   and decide per case (same options as 1).
+   and decide per case. Prefer making the connection go outward from Sophie (e.g., Sophie
+   publishes to HA's MQTT) over adding an inbound exception.
 3. **The Zero 2W link (`10.10.0.x`) is untrusted.** Sophie → Zero API (12345/12346) is outbound and unaffected.
    Anything the Zero initiates toward Sophie would be dropped; nothing is expected to, but check the log.
 4. **`netfilter-persistent`** loads the old permissive `rules.v4` at boot. It's harmless (our chains decide), but
@@ -204,7 +202,8 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
 1. Snapshot the current state:
    `sudo iptables-save > ~/fw-before.v4; sudo ip6tables-save > ~/fw-before.v6; sudo ss -tulpn > ~/fw-listen.txt`.
 2. Create `firewall/` (script, units, `install.sh`, README) from this plan; commit.
-3. **[USER]** choose the remote-access option in "Things that will break" item 1.
+3. **[USER]** confirm Pi Connect (remote shell + screen sharing) works *before* applying, since it's the remote
+   path once the WAN side is closed.
 4. Install the script only (units not enabled yet), arm an automatic revert, then apply by hand:
    ```bash
    sudo install -m 755 firewall/sophie-firewall.sh /usr/local/sbin/
