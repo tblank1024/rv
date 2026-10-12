@@ -183,6 +183,9 @@ band. If the park AP offers 5 GHz, prefer it for the uplink and put Sophie's AP 
 channel. See the hostapd fixes C/D in `WiFitoHostBridge/plan-speed.md`.
 
 ### 12. Sophie directly exposed to the campground network (must fix BEFORE first join)
+> Superseded by `plan_firewall.md`, which covers all uplinks with interface-based default-deny. Deploy that
+> before the Alfa first joins a park network; the notes below are kept for context.
+
 Today the Zero NATs between the park WiFi and Sophie, so other campers can't open connections to her. With the
 adapter, Sophie's `wlan1` is on the park network itself, and her services listen on all interfaces: dashboard
 (8000/3000), MQTT (1883/9001), SSH, VNC (5900), RaspAP web UI (80), dnsmasq (53), plus mDNS. The webserver

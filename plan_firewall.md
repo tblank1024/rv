@@ -1,0 +1,262 @@
+# plan_firewall.md — Host firewall for Sophie (all uplinks)
+
+STATUS: proposal, nothing deployed (2026-10-12). Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
+
+Intended executor: a Claude Code agent on Sophie, with the user confirming the steps marked **[USER]**.
+
+## Problem
+
+Sophie (RP5) has two sides:
+
+- **Trusted:** `br0` (the RV LAN: onboard WiFi AP + `eth0`), `lo`, and Docker's own bridges.
+- **Untrusted:** whichever uplink is active on the CoolGear USB hub: Starlink, direct Ethernet, the Zero 2W bridge
+  (`10.10.0.x`), the cellular modem, and soon the Alfa USB WiFi adapter (`wlan1`). Names vary (`eth1`, `eth2`,
+  `usb0`, `wwan0`, `enx*`, `wlan1`, ...).
+
+NAT (MASQUERADE from `raspap/pi5connect.sh`) protects the **RV LAN devices**, but not **Sophie herself**: a
+connection to Sophie's uplink address is delivered to her own services. Today nothing filters that:
+
+- `/etc/iptables/rules.v4` from `buildRP5RaspAP/install_raspap_bridge.sh` has `INPUT ACCEPT` and
+  `FORWARD ACCEPT` policies, and every rule in it is an ACCEPT.
+- No `ip6tables` rules anywhere in the repo.
+- Every container is `network_mode: host`, and services bind all interfaces:
+  - webserver/dashboard, `0.0.0.0:8000`: no auth, privileged, can reboot Sophie, control Docker and USB hub power
+  - mosquitto `1883`: auth required
+  - mosquitto `9001` (websocket): anonymous read-only, which leaks all RV telemetry
+  - SSH 22, wayvnc 5900, RaspAP web UI 80, dnsmasq 53, mDNS 5353
+
+Exposure by uplink:
+
+| Uplink | IPv4 inbound to Sophie | IPv6 inbound to Sophie |
+|---|---|---|
+| Starlink | blocked by carrier-grade NAT (accidental protection) | Starlink hands out global IPv6: possibly exposed to the internet |
+| Cellular | usually CGNAT / modem NAT | often global IPv6; carrier filtering not guaranteed |
+| Zero bridge | Zero's NAT shields from the park LAN | probably not forwarded |
+| Direct park Ethernet | **exposed to every device on the park LAN** | exposed if the park offers v6 |
+| Alfa `wlan1` (coming) | **exposed to every device on the park WiFi** | exposed if the park offers v6 |
+
+Also, with `FORWARD ACCEPT`, a host on the same park subnet can route `10.0.0.0/24` via Sophie and reach RV LAN
+devices directly. NAT doesn't stop that.
+
+## Design
+
+**Default-deny by interface, not by uplink name.** Trust a short list of LAN-side interfaces and treat
+*everything else* as untrusted. New uplinks (Alfa, a different modem, a renamed `enx*`) are then protected
+automatically, with no tracking of which uplink is active.
+
+| Chain | Trusted interfaces (`lo`, `br0`, `docker0`, `br-+`) | Untrusted (everything else) |
+|---|---|---|
+| INPUT (to Sophie) | accept | only replies to connections Sophie started (conntrack ESTABLISHED,RELATED) |
+| FORWARD (through Sophie) | `br0` → anywhere accept; Docker bridges: let Docker's rules decide | only replies; new connections dropped |
+| IPv6 | same, plus the ICMPv6 needed for neighbor discovery / RA / DHCPv6 replies | same |
+
+Notes:
+- Interface-based rules avoid subnet confusion (the repo has both `10.0.0.1/24` and `10.3.141.1/24` for `br0`).
+- `br-+` matches Docker user bridges (`br-<id>`), not `br0`.
+- Docker loads `br_netfilter`, so WiFi↔`eth0` traffic inside `br0` also traverses FORWARD (`-i br0 -o br0`). The
+  `-i br0` accept covers it.
+- Docker inserts its own jumps at the top of FORWARD on every (re)start. The documented place for user rules that
+  Docker must not bypass is the `DOCKER-USER` chain, which Docker always evaluates first. So the forward chain is
+  hooked from both FORWARD (works without Docker) and DOCKER-USER (works with it). All containers are host-network
+  today, so published ports are moot, but this keeps it correct if that changes.
+- Rules live in our own chains (`SOPHIE-IN`, `SOPHIE-FWD`). The script only flushes its own chains; it never runs
+  `iptables -F` (which would wipe Docker's and `pi5connect.sh`'s rules).
+- INPUT/FORWARD policies: FORWARD → DROP (Docker sets this anyway). INPUT policy stays ACCEPT. `SOPHIE-IN` is at
+  position 1 and decides every packet, so a botched hook removal fails open instead of locking everyone out.
+- `pi5connect.sh` keeps doing NAT/default route. Its FORWARD/INPUT accept rules become redundant but harmless.
+- Rate-limited LOG before each DROP, to find anything legitimate that breaks. Journald is volatile now, so there are
+  no SD writes. Remove the LOG lines after the first weeks if noisy.
+
+## The script — `firewall/sophie-firewall.sh`
+
+```bash
+#!/bin/bash
+# Sophie host firewall: default-deny inbound/forward on every interface except the RV LAN side.
+# Usage: sophie-firewall.sh apply | docker | revert | status
+set -uo pipefail
+
+TRUSTED=(lo br0 docker0 "br-+")          # everything else (eth1, eth2, wlan1, usb0, wwan0, enx*, ...) is untrusted
+[ -f /etc/default/sophie-firewall ] && . /etc/default/sophie-firewall   # optional: ALLOW_SSH_FROM="192.168.2.0/24"
+
+chain() { "$1" -N "$2" 2>/dev/null || "$1" -F "$2"; }
+hook()  { "$1" -C "$2" -j "$3" 2>/dev/null || "$1" -I "$2" 1 -j "$3"; }
+unhook(){ while "$1" -D "$2" -j "$3" 2>/dev/null; do :; done; }
+
+build_in() {   # $1 = iptables | ip6tables
+    local T=$1
+    chain $T SOPHIE-IN
+    for i in "${TRUSTED[@]}"; do $T -A SOPHIE-IN -i "$i" -j ACCEPT; done
+    $T -A SOPHIE-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    if [ "$T" = ip6tables ]; then
+        for t in 133 134 135 136; do              # RS, RA, NS, NA: needed for IPv6 to work at all
+            $T -A SOPHIE-IN -p ipv6-icmp --icmpv6-type $t -j ACCEPT
+        done
+        $T -A SOPHIE-IN -p udp -s fe80::/10 --dport 546 -j ACCEPT   # DHCPv6 replies
+    fi
+    if [ "$T" = iptables ] && [ -n "${ALLOW_SSH_FROM:-}" ]; then
+        $T -A SOPHIE-IN -p tcp -s "$ALLOW_SSH_FROM" --dport 22 -j ACCEPT
+    fi
+    $T -A SOPHIE-IN -m limit --limit 6/min -j LOG --log-prefix "SOPHIE-IN drop: "
+    $T -A SOPHIE-IN -j DROP
+    hook $T INPUT SOPHIE-IN
+}
+
+build_fwd() {
+    local T=$1
+    chain $T SOPHIE-FWD
+    $T -A SOPHIE-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    $T -A SOPHIE-FWD -i br0 -j ACCEPT                 # RV LAN -> internet, and br0<->br0 bridged traffic
+    $T -A SOPHIE-FWD -i docker0 -j RETURN             # container traffic: Docker's own rules decide
+    $T -A SOPHIE-FWD -i br-+ -j RETURN
+    $T -A SOPHIE-FWD -m limit --limit 6/min -j LOG --log-prefix "SOPHIE-FWD drop: "
+    $T -A SOPHIE-FWD -j DROP                          # new connections arriving from an untrusted interface
+    hook $T FORWARD SOPHIE-FWD
+    $T -P FORWARD DROP
+}
+
+case "${1:-}" in
+  apply)
+    for T in iptables ip6tables; do build_in $T; build_fwd $T; done ;;
+  docker)   # run after dockerd (re)starts: make sure Docker's first-evaluated chain sends us the traffic
+    for T in iptables ip6tables; do
+        $T -L DOCKER-USER -n >/dev/null 2>&1 && $T -L SOPHIE-FWD -n >/dev/null 2>&1 && hook $T DOCKER-USER SOPHIE-FWD
+    done ;;
+  revert)   # back to today's behavior (everything open)
+    for T in iptables ip6tables; do
+        unhook $T INPUT SOPHIE-IN; unhook $T FORWARD SOPHIE-FWD; unhook $T DOCKER-USER SOPHIE-FWD
+        $T -F SOPHIE-IN 2>/dev/null; $T -X SOPHIE-IN 2>/dev/null
+        $T -F SOPHIE-FWD 2>/dev/null; $T -X SOPHIE-FWD 2>/dev/null
+    done
+    iptables -P FORWARD ACCEPT ;;     # previous rules.v4 state; Docker may set DROP again on restart
+  status)
+    for T in iptables ip6tables; do echo "== $T"; $T -S INPUT | head -3; $T -S FORWARD | head -4
+        $T -S DOCKER-USER 2>/dev/null | head -3; $T -L SOPHIE-IN -v -n 2>/dev/null; $T -L SOPHIE-FWD -v -n 2>/dev/null; done ;;
+  *) echo "usage: $0 apply|docker|revert|status" >&2; exit 2 ;;
+esac
+```
+
+Check before deploying: `iptables -V` shows `nf_tables` (Bookworm default) and Docker uses the same backend.
+Don't mix in native `nft` rules.
+
+## systemd units — `firewall/`
+
+`sophie-firewall.service`: early, before any interface comes up (closes the boot window):
+```ini
+[Unit]
+Description=Sophie host firewall (default-deny on uplinks)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sophie-firewall.sh apply
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`sophie-firewall-docker.service`: re-hooks DOCKER-USER whenever Docker (re)starts:
+```ini
+[Unit]
+Description=Sophie firewall hook into DOCKER-USER
+After=docker.service sophie-firewall.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sophie-firewall.sh docker
+
+[Install]
+WantedBy=docker.service
+```
+
+`firewall/install.sh`: copies the script to `/usr/local/sbin/`, the units to `/etc/systemd/system/`, then runs
+`daemon-reload` and `enable` (not `--now`, see rollout). Add the matching entries to the passwordless-sudo drop-in,
+following `sdcard-writes/setup-passwordless-sudo.sh`.
+
+## Things that will break unless handled
+
+1. **SSH/VNC to Sophie through an uplink.** README/CLAUDE.md mention reaching Sophie at `192.168.2.196` from home.
+   That address is on the home network via an uplink, so it would be blocked. Options **[USER] to choose**:
+   - (a) at home, put the laptop on Sophie's WiFi (trusted `br0`), or use Raspberry Pi Connect (outbound, unaffected);
+   - (b) `/etc/default/sophie-firewall`: `ALLOW_SSH_FROM="192.168.2.0/24"`. Risk: a park network can use the same
+     subnet. Acceptable only with key-only SSH.
+   - Recommended: (a), and later Tailscale/WireGuard for remote access (dials out, works through CGNAT, no open
+     ports).
+2. **Home automation talking to Sophie.** If HA (192.168.2.11) or anything at home connects *to* Sophie (MQTT
+   bridge, API polling) while parked at home, it will be dropped. Check the `SOPHIE-IN drop:` log lines at home,
+   and decide per case (same options as 1).
+3. **The Zero 2W link (`10.10.0.x`) is untrusted.** Sophie → Zero API (12345/12346) is outbound and unaffected.
+   Anything the Zero initiates toward Sophie would be dropped; nothing is expected to, but check the log.
+4. **`netfilter-persistent`** loads the old permissive `rules.v4` at boot. It's harmless (our chains decide), but
+   confusing. After verifying `pi5connect.sh` provides MASQUERADE on its own, either disable it
+   (`systemctl disable netfilter-persistent`) or replace `rules.v4` with a NAT-only file. Never run
+   `WiFitoHostBridge/fix_interface_routing.sh` on Sophie: it flushes everything and sets FORWARD ACCEPT.
+5. **IPv6 outbound keeps working** (replies are allowed). If preferred, also disable v6 per uplink profile
+   (`nmcli con modify <profile> ipv6.method disabled`), as `plan_new_WAN_WiFi.md` suggests for `wlan1`.
+
+## Rollout (on Sophie)
+
+1. Snapshot the current state:
+   `sudo iptables-save > ~/fw-before.v4; sudo ip6tables-save > ~/fw-before.v6; sudo ss -tulpn > ~/fw-listen.txt`.
+2. Create `firewall/` (script, units, `install.sh`, README) from this plan; commit.
+3. **[USER]** choose the remote-access option in "Things that will break" item 1.
+4. Install the script only (units not enabled yet), arm an automatic revert, then apply by hand:
+   ```bash
+   sudo install -m 755 firewall/sophie-firewall.sh /usr/local/sbin/
+   sudo systemd-run --unit=fw-autorevert --on-active=10min /usr/local/sbin/sophie-firewall.sh revert
+   sudo /usr/local/sbin/sophie-firewall.sh apply && sudo /usr/local/sbin/sophie-firewall.sh docker
+   ```
+5. Functional checks (all must pass within the 10 minutes):
+   - From the RV LAN: dashboard loads, live MQTT data updates (9001), SSH and VNC to `br0` address work.
+   - Roku / a LAN device reaches the internet.
+   - On Sophie: `docker ps` all healthy, the containers' MQTT connections OK (watcher, battery, tirelinc, ...),
+     `curl -s http://10.10.0.1:12346/api/status` (Zero API) works, Pi Connect still connected, `apt update` works.
+   - `sudo sophie-firewall.sh status` shows packet counters moving on the ACCEPT rules.
+6. If good: `sudo systemctl stop fw-autorevert.timer`, then `firewall/install.sh` (enable the units). Reboot once
+   and repeat step 5; also `sudo systemctl restart docker` and confirm `iptables -S DOCKER-USER` still jumps to
+   `SOPHIE-FWD`.
+7. If bad: wait for the auto-revert or run `revert`, then capture `journalctl -k | grep SOPHIE-` and fix.
+
+## Verification per uplink
+
+Repeat whenever a new uplink type is first used:
+
+| Uplink | How to test from the outside |
+|---|---|
+| Direct park Ethernet / park WiFi (Alfa) / home LAN | From a laptop on that same network (not on Sophie's WiFi): `nmap -Pn -p- <Sophie uplink IPv4>` → all filtered; if Sophie has a global v6 address: `nmap -6 -Pn -p 22,80,1883,5900,8000,9001 <addr>` |
+| Starlink | `ip -6 addr show <uplink>`: if there's a global address, scan it from outside (e.g., phone hotspot with IPv6, or an online IPv6 port scanner) → filtered |
+| Cellular | same as Starlink |
+| Zero bridge | from the Zero: `nc -vz -w 5 <Sophie's 10.10.0.x address> 8000` → times out |
+
+And always: the RV LAN functional checks from rollout step 5.
+
+## Phase 2 hardening (after the firewall is in)
+
+Defense in depth. Each item still protects Sophie if a firewall rule is ever wrong.
+
+1. **SSH key-only:** `PasswordAuthentication no` in `/etc/ssh/sshd_config.d/`. Confirm key login works first.
+2. **Bind LAN-only services to the LAN address** where practical: uvicorn `host="0.0.0.0"` (`server.py:2387`) →
+   `10.0.0.1` (check whether anything on Sophie uses `localhost:8000`; bind both or use a list). Mosquitto
+   `listener 9001 10.0.0.1` (check `docker/mqtt/config/mosquitto.conf`). The 1883 listener needs localhost for the
+   host-network containers.
+3. **mDNS:** `/etc/avahi/avahi-daemon.conf` → `allow-interfaces=br0`.
+4. **Dashboard auth:** at least for destructive endpoints (reboot, restart containers, hub power, WiFi
+   connect/forget), since anyone on Sophie's WiFi can call them today.
+5. **Least privilege for the webserver container:** `privileged`, `pid: host`, Docker socket. Already flagged in
+   `docker-compose.yml` as "Phase 4 hardening".
+6. **Updates:** periodic `apt full-upgrade` and image rebuilds.
+7. **Remote access:** Tailscale/WireGuard instead of any inbound exception.
+8. Aside: the (inactive) `raspap` compose profile sets `RASPAP_COUNTRY=GB`. Set it to `US` if it's ever enabled
+   (regulatory domain, see `plan_new_WAN_WiFi.md` issue 8).
+
+## Afterwards
+
+- Update `buildRP5RaspAP/install_raspap_bridge.sh` so a rebuild doesn't recreate the permissive `rules.v4`.
+- Mark `WiFitoHostBridge/fix_interface_routing.sh` as "do not run on Sophie".
+- Add a "Firewall" line to `rv/CLAUDE.md` (trusted vs untrusted interfaces, where the rules live).
+- Mark this plan deployed (STATUS line).
