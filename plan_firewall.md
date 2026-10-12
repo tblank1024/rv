@@ -1,6 +1,6 @@
 # plan_firewall.md — Host firewall for Sophie (all uplinks)
 
-STATUS: proposal, nothing deployed (2026-10-12). Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
+STATUS: proposal, nothing deployed (2026-10-12). Covers Sophie and the Zero 2W bridge. Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
 
 Intended executor: a Claude Code agent on Sophie, with the user confirming the steps marked **[USER]**.
 
@@ -231,9 +231,104 @@ Repeat whenever a new uplink type is first used:
 | Direct park Ethernet / park WiFi (Alfa) / home LAN | From a laptop on that same network (not on Sophie's WiFi): `nmap -Pn -p- <Sophie uplink IPv4>` → all filtered; if Sophie has a global v6 address: `nmap -6 -Pn -p 22,80,1883,5900,8000,9001 <addr>` |
 | Starlink | `ip -6 addr show <uplink>`: if there's a global address, scan it from outside (e.g., phone hotspot with IPv6, or an online IPv6 port scanner) → filtered |
 | Cellular | same as Starlink |
-| Zero bridge | from the Zero: `nc -vz -w 5 <Sophie's 10.10.0.x address> 8000` → times out |
+| Zero bridge | from the Zero: `nc -vz -w 5 10.10.0.17 8000` (Sophie's link address) → times out. The Zero itself: see "Zero 2W bridge" |
 
 And always: the RV LAN functional checks from rollout step 5.
+
+## Zero 2W bridge (`RP2W`)
+
+The Zero sits on the untrusted network itself (its `wlan0` joins the park/home WiFi), so it needs its own firewall.
+Facts from `WiFitoHostBridge/zero-system/README.md`:
+- `usb0` = USB link to Sophie, static `10.10.0.1/24`, unmanaged by NM.
+- Sophie gets `10.10.0.17` from the Zero's `dhcpd` on `usb0`.
+- `netfilter-persistent` loads `/etc/iptables/rules.v4`/`rules.v6`, which hold the `MASQUERADE` out `wlan0`. The
+  current contents were never captured.
+
+**Baseline scan (2026-10-12)** from the laptop on the same WiFi as the Zero (`RP2W`, 192.168.1.212):
+`nmap -Pn -p-` → `22/tcp open ssh`, the other 65534 ports **closed** (not filtered). So no firewall; only SSH is
+exposed. The WiFi APIs (12345/12346) are correctly bound to `10.10.0.1` only. Sophie is not visible from that
+network (she's behind the Zero's NAT).
+
+### Rules
+
+The Zero has no Docker, so plain `netfilter-persistent` files are enough, and they load at boot before networking.
+Trust `lo` and `usb0`; on `wlan0` allow only replies. Forward only Sophie → internet.
+
+`/etc/iptables/rules.v4` (merge with whatever is there now; keep any existing NAT lines):
+```
+*nat
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+-A POSTROUTING -o wlan0 -j MASQUERADE
+COMMIT
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -i usb0 -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -m limit --limit 6/min -j LOG --log-prefix "ZERO-IN drop: "
+-A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A FORWARD -i usb0 -o wlan0 -j ACCEPT
+-A FORWARD -m limit --limit 6/min -j LOG --log-prefix "ZERO-FWD drop: "
+COMMIT
+```
+
+`/etc/iptables/rules.v6`:
+```
+*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -i lo -j ACCEPT
+-A INPUT -i usb0 -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type 133 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type 134 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type 135 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type 136 -j ACCEPT
+-A INPUT -p udp -s fe80::/10 --dport 546 -j ACCEPT
+COMMIT
+```
+
+Notes:
+- Policies are DROP here, unlike Sophie: there's no Docker re-ordering chains, and `usb0` (the only control path)
+  is explicitly trusted. A typo in `usb0` would lock out control, hence the auto-revert below.
+- `dhcpd` on `usb0` (Sophie's lease) and the WiFi APIs on `10.10.0.1` are covered by the `usb0` accept.
+- The Zero's journal may be on the SD card. The LOG lines are rate-limited (6/min); drop them once things are
+  stable if SD writes matter.
+
+### SSH on the Zero
+- Key-only: `/etc/ssh/sshd_config.d/10-keys-only.conf` → `PasswordAuthentication no`. First confirm that Sophie →
+  Zero key login works (`ssh -o BatchMode=yes pi@10.10.0.1 true`) and that the laptop has a key on the Zero, or
+  always goes through Sophie.
+- The firewall already hides SSH from `wlan0`. Don't add `ListenAddress 10.10.0.1`: sshd would fail to start if
+  `usb0` isn't up yet, and the firewall makes it unnecessary.
+
+### Rollout (agent on Sophie, over `ssh pi@10.10.0.1`)
+The agent's own internet goes through the Zero's FORWARD chain, so arm the revert *on the Zero* first. If the
+session dies, the Zero restores itself.
+1. Capture: `sudo iptables-save > /root/fw-before.v4; sudo ip6tables-save > /root/fw-before.v6;
+   sudo cp /etc/iptables/rules.v4 /etc/iptables/rules.v6 /root/`. Copy both into
+   `WiFitoHostBridge/zero-system/` (the README notes they were never captured).
+2. Write the new files to `/tmp/rules.v4.new`, `/tmp/rules.v6.new`; test-parse them with
+   `sudo iptables-restore --test /tmp/rules.v4.new` and `sudo ip6tables-restore --test /tmp/rules.v6.new`.
+3. Arm and apply (atomic restore, not saved yet):
+   ```bash
+   sudo systemd-run --unit=fw-autorevert --on-active=5min        sh -c 'iptables-restore < /root/fw-before.v4; ip6tables-restore < /root/fw-before.v6'
+   sudo iptables-restore < /tmp/rules.v4.new && sudo ip6tables-restore < /tmp/rules.v6.new
+   ```
+4. Check from Sophie: `ssh pi@10.10.0.1 true`, `curl -s http://10.10.0.1:12346/api/status`, Sophie's internet
+   (`curl -sI https://deb.debian.org`), Claude session still alive.
+5. If good: `sudo systemctl stop fw-autorevert.timer`, then
+   `sudo cp /tmp/rules.v4.new /etc/iptables/rules.v4; sudo cp /tmp/rules.v6.new /etc/iptables/rules.v6`. Reboot the
+   Zero **[USER]** (drops the agent's internet for a minute) and repeat step 4.
+6. **[USER]** From a laptop on the same WiFi as the Zero: `nmap -Pn -p- <Zero wlan0 IP>`. Expect all ports
+   **filtered** (baseline: 22 open, rest closed).
+7. Commit the new `rules.v4`/`rules.v6` into `WiFitoHostBridge/zero-system/` and update its README table.
 
 ## Phase 2 hardening (after the firewall is in)
 
