@@ -35,7 +35,11 @@ STATE_FILE="/run/pi5connect-wan"
 
 # Probe settings
 PROBE_TARGETS=("1.1.1.1" "8.8.8.8")
-PROBE_URLS=("http://connectivity-check.gstatic.com/generate_204" "http://detectportal.firefox.com/success.txt")
+# IP literals on purpose: a hostname probe fails when DNS is broken, which is
+# exactly the case a misconfigured WAN produces. RaspAP adblock also blocks
+# connectivity-check.gstatic.com on this host, so that target never resolved.
+# Any HTTP response (even 400) proves the TCP path works.
+PROBE_URLS=("http://1.1.1.1/" "http://204.79.197.200/")
 PROBE_COUNT=2
 PROBE_WAIT=2
 PROBE_HTTP_TIMEOUT=6
@@ -103,7 +107,7 @@ probe_iface() {
     done
     echo "[$(date)] ICMP probe failed on $iface; trying TCP"
     for url in "${PROBE_URLS[@]}"; do
-        if curl --interface "$iface" -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null; then
+        if curl -4 --interface "$iface" -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null; then
             echo "[$(date)] Probe OK (tcp): $iface reached $url"
             return 0
         fi
@@ -118,7 +122,7 @@ probe_default() {
         ping -c "$PROBE_COUNT" -W "$PROBE_WAIT" "$target" >/dev/null 2>&1 && return 0
     done
     for url in "${PROBE_URLS[@]}"; do
-        curl -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null && return 0
+        curl -4 -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null && return 0
     done
     return 1
 }
