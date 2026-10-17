@@ -900,11 +900,24 @@ CONNECTION_SETTLE_DELAYS = {
 
 # Port to Connection Type Mapping
 # Maps USB hub port numbers to their corresponding connection types
+# Verified against the hardware 2026-10-17 by sweeping each USB switch port and
+# recording what enumerated (see Results_WiFi_testing.md):
+#   port 1 -> hub 1-2.1, cdc_ether, 192.168.0.163/24 gw 192.168.0.1, domain "lan",
+#             ICMP blocked but TCP works  => cellular router. Label correct.
+#   port 2 -> hub 1-2.2, the Pi Zero USB gadget                     => wifi. Correct.
+#   port 3 -> hub 1-2.3, r8152, 206.214.239.194/24, and 192.168.100.1
+#             answers (Starlink dish mgmt)                          => starlink. Correct.
+#   port 4 -> NOTHING ATTACHED. Hub port 4 holds the FT232R that controls the
+#             switch itself and is always powered; there is no adapter there.
+# So 'wired' was never reachable: selecting it powered an empty port, which is
+# why the wired uplink appeared not to work. Wired shares port 3's ethernet
+# adapter with Starlink (one adapter, you move the RJ45), so 'wired' maps to
+# usb_port 3 below with the Starlink Kasa outlet left off.
 PORT_TO_CONNECTION_TYPE = {
     1: 'cellular',
-    2: 'wifi', 
-    3: 'starlink',
-    4: 'wired'
+    2: 'wifi',
+    3: 'starlink',   # also the port used for 'wired' - same adapter, different cable
+    4: 'unused'      # no device on hub port 4 (FT232R control chip lives there)
 }
 
 # Extended mapping for cellular-amp (same USB port, different Kasa requirements)
@@ -913,7 +926,10 @@ EXTENDED_CONNECTION_MAPPING = {
     'cellular-amp': {'usb_port': 1, 'kasa_port': 1},
     'wifi': {'usb_port': 2, 'kasa_port': None},
     'starlink': {'usb_port': 3, 'kasa_port': 6},
-    'wired': {'usb_port': 4, 'kasa_port': None}
+    # Wired uses the SAME ethernet adapter as Starlink (usb port 3); the
+    # difference is which RJ45 is plugged into it, and that the dish's Kasa
+    # outlet is not powered. usb_port 4 was wrong - nothing is attached there.
+    'wired': {'usb_port': 3, 'kasa_port': None}
 }
 
 def get_connection_init_delay(port_number):
@@ -1638,30 +1654,42 @@ def get_usb_debug_status() -> dict:
                 "ports": {}
             }
         
-        # Get status of all USB ports
+        # Query the hub ONCE. This used to call get_current_active_port() inside
+        # the per-port loop: 4 serial round-trips (each retrying up to 3x, so up
+        # to 12 transactions) to answer one question. The rapid-fire queries
+        # clipped each other's replies -- observed as
+        # "Invalid hub status response length: FFFFF" -- and any truncated read
+        # returns -1, which rendered EVERY port as enabled:false while port 2 was
+        # demonstrably powered. Verified 2026-10-17.
+        try:
+            active_port = hub.get_current_active_port()
+            query_error = None
+        except Exception as e:
+            active_port = -1
+            query_error = str(e)
+
         ports = {}
         for port_num in range(1, 5):  # USB ports 1-4
-            try:
-                # Get current active port and determine if this specific port is on
-                active_port = hub.get_current_active_port()
-                is_on = (active_port == port_num)
-                connection_type = PORT_TO_CONNECTION_TYPE.get(port_num, 'unknown')
-                ports[port_num] = {
-                    "enabled": is_on,
-                    "connection_type": connection_type,
-                    "name": f"USB Port {port_num} ({connection_type.title()})"
-                }
-            except Exception as e:
-                ports[port_num] = {
-                    "enabled": False,
-                    "connection_type": PORT_TO_CONNECTION_TYPE.get(port_num, 'unknown'),
-                    "name": f"USB Port {port_num} (Error)",
-                    "error": str(e)
-                }
-        
+            connection_type = PORT_TO_CONNECTION_TYPE.get(port_num, 'unknown')
+            entry = {
+                "enabled": active_port == port_num,
+                "connection_type": connection_type,
+                "name": f"USB Port {port_num} ({connection_type.title()})"
+            }
+            # -1 means the query failed; do not report that as "all ports off",
+            # which is indistinguishable from a real all-off state.
+            if active_port == -1:
+                entry["enabled"] = None
+                entry["unknown"] = True
+                if query_error:
+                    entry["error"] = query_error
+            ports[port_num] = entry
+
         return {
             "success": True,
-            "message": "USB ports status retrieved",
+            "message": ("USB ports status retrieved" if active_port != -1
+                        else "USB hub status unavailable (serial query failed)"),
+            "active_port": active_port,
             "ports": ports
         }
     except Exception as e:

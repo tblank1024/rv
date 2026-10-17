@@ -10,7 +10,7 @@
  * - Cellular + Amp: USB port 1 + Kasa port 1 (cellular with signal amplifier)
  * - WiFi: USB port 2, WiFi adapter
  * - Starlink: USB port 3 + Kasa port 6 (satellite internet)
- * - Wired: USB port 4, ethernet adapter
+ * - Wired: USB port 3, shares Starlink's ethernet adapter (move the RJ45; Kasa outlet off)
  * - None: All ports off
  * 
  * === HOW IT WORKS ===
@@ -76,7 +76,12 @@ const Internet = () => {
     { value: 'cellular-amp', text: 'Cellular + Amp', port: 1, waitTime: 60, kasaPort: 1 },
     { value: 'wifi', text: 'WiFi', port: 2, waitTime: 30, kasaPort: null },
     { value: 'starlink', text: 'Starlink', port: 3, waitTime: 120, kasaPort: 6 },
-    { value: 'wired', text: 'Wired', port: 4, waitTime: 30, kasaPort: null },
+    // port 3, NOT 4: hub port 4 has no adapter (it holds the FT232R that controls
+    // the switch). Wired shares Starlink's ethernet adapter on port 3 - same
+    // adapter, you move the RJ45 - with the dish's Kasa outlet left off.
+    // Verified by sweeping every port 2026-10-17; selecting port 4 powered
+    // nothing, which is why Wired never worked.
+    { value: 'wired', text: 'Wired', port: 3, waitTime: 60, kasaPort: null },
     { value: 'none', text: 'None', port: 0, waitTime: 0, kasaPort: null }
   ];
 
