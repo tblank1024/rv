@@ -1,0 +1,43 @@
+# USB hub port power, as root, on loopback.
+#
+# The webserver container cannot do this itself: Docker mounts its
+# /sys/devices read-only, so writing <hub>:1.0/<hub>-portN/disable fails with
+# EACCES even though the container is privileged (verified 2026-10-18). The
+# Coolgear hub was controllable from the container only because its path is a
+# character device, /dev/coolgear-hub. A plain powered hub has no control chip,
+# so the kernel is the only way in -- hence this service.
+#
+# Same shape as wifi-api-rp5.service: stdlib only, loopback, no auth because
+# the bind address IS the access control.
+[Unit]
+Description=USB hub port power API (root, loopback)
+After=network.target
+# No dependency on the hub being present: the service answers /api/hubs with
+# whatever exists, which is what makes it useful for probing a new hub.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/usbhub_api.py
+User=root
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C
+Environment=LANG=C
+
+# NEVER set this to 0.0.0.0 or to br0. br0 carries RV guest devices, and this
+# service can power down the RV's internet.
+Environment=USBHUB_API_BIND=127.0.0.1
+Environment=USBHUB_API_PORT=12347
+Environment=USBHUB_API_ALLOWED_NET=127.0.0.0/8
+
+# Ports that must never be switched off, "hub:port" comma separated. 1-2:4 is
+# the Coolgear's own FT232R control chip: cut it and the old hub cannot be
+# steered at all, which is a control loss rather than an internet loss.
+# Add the Plugable's equivalents once the probe names its ports.
+Environment=USBHUB_PROTECTED=1-2:4
+
+EnvironmentFile=-/etc/default/usbhub-api
+
+[Install]
+WantedBy=multi-user.target
