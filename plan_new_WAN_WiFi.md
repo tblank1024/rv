@@ -479,6 +479,25 @@ New ground truth found while testing (all four cost time to interpret):
   blocks behind a 5.3 s scan; the connect invalidated the cache and only a scan refills it. The
   picker renders `—` for an empty band, so this is invisible in the UI. Leave it alone.
 
+### Signal in dBm (API v0.4.0, verified 2026-10-18)
+
+The picker showed a 0-100 quality percentage because that is all `nmcli` reports. Real RSSI now comes
+from `iw`. Verified against `iw dev wlan1 link` as ground truth: status reported **-78 dBm** where iw
+read -78, and a warm scan resolved all six networks -- five measured, one flagged estimated, none
+missing. Two results worth keeping:
+
+- **Deriving dBm from the percentage cannot work at the top of the scale.** NM clamps at
+  -40 dBm = 100%, so Sophie's own AP reads 100% while iw measures **-32 dBm**; the inverse would have
+  said -40. At the other end the inverse was within ~1 dB. That settles measure-vs-derive.
+- **dBm survives a cold scan cache where the percentage does not.** Thirty seconds after the service
+  restarted, status read `pct=0` but `dBm=-78`, because `iw link` reads the live association and owes
+  nothing to the scan cache. The dBm is now the more reliable of the two numbers.
+
+Note the list and the status panel legitimately differ for a dual-band SSID: the list shows the
+**strongest** BSS (`Decher` -65 dBm, a 2.4 GHz radio) and status the **associated** one (-77 dBm on
+5 GHz). Same split that caused the original band/signal bug -- here it is intended, and `band: "5"`
+makes it legible.
+
 The whole run was done with an unprivileged timed auto-revert armed
 (`scratchpad/wlan1-revert.sh`: after 240 s, re-`POST /api/connect {"ssid":"Decher"}` unless already
 there). Worth reusing — **it needs no sudo**, because the root API is the thing doing the work.
