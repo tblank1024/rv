@@ -1,6 +1,13 @@
 # plan_firewall.md — Host firewall for Sophie (all uplinks)
 
-STATUS: proposal, nothing deployed (2026-10-12). Covers Sophie and the Zero 2W bridge. Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
+STATUS: proposal, nothing deployed. Deferred by the user on 2026-10-18 ("I'm on a home safe lan so the
+firewall isn't important at this time") — revisit before the next trip, when an untrusted park network is live.
+Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
+
+Written 2026-10-12, when the uplink was the Zero 2W bridge. **The Zero was physically disconnected on
+2026-10-18 and the WiFi radio is now the Alfa on Sophie's own `wlan1`** (`plan_new_WAN_WiFi.md`). The Sophie
+half of this plan still applies as written — `wlan1` was already in its untrusted list. The "Zero 2W bridge"
+section does not: there is no `usb0` and no `10.10.0.x`. Keep it only for the case where the Zero is revived.
 
 Intended executor: a Claude Code agent on Sophie, with the user confirming the steps marked **[USER]**.
 
@@ -9,9 +16,10 @@ Intended executor: a Claude Code agent on Sophie, with the user confirming the s
 Sophie (RP5) has two sides:
 
 - **Trusted:** `br0` (the RV LAN: onboard WiFi AP + `eth0`), `lo`, and Docker's own bridges.
-- **Untrusted:** whichever uplink is active on the CoolGear USB hub: Starlink, direct Ethernet, the Zero 2W bridge
-  (`10.10.0.x`), the cellular modem, and soon the Alfa USB WiFi adapter (`wlan1`). Names vary (`eth1`, `eth2`,
-  `usb0`, `wwan0`, `enx*`, `wlan1`, ...).
+- **Untrusted:** whichever uplink is active: the Alfa USB WiFi adapter (`wlan1`, live since 2026-10-18, on a
+  direct RP5 port), plus Starlink, direct Ethernet and the cellular modem on the CoolGear USB hub. Names vary
+  (`eth1`, `eth2`, `wwan0`, `wlan1`, ...). Historically also the Zero 2W bridge on `usb0` (`10.10.0.x`), now
+  disconnected. Note `enx*` never appears on this host — see `WifitoHostBridge/CLAUDE.md`.
 
 NAT (MASQUERADE from `raspap/pi5connect.sh`) protects the **RV LAN devices**, but not **Sophie herself**: a
 connection to Sophie's uplink address is delivered to her own services. Today nothing filters that:
@@ -188,12 +196,12 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
    bridge, API polling) while parked at home, it will be dropped. Check the `SOPHIE-IN drop:` log lines at home,
    and decide per case. Prefer making the connection go outward from Sophie (e.g., Sophie
    publishes to HA's MQTT) over adding an inbound exception.
-3. **The Zero 2W link (`10.10.0.x`) is untrusted.** Sophie → Zero API (12345/12346) is outbound and unaffected.
-   Anything the Zero initiates toward Sophie would be dropped; nothing is expected to, but check the log.
+3. ~~**The Zero 2W link (`10.10.0.x`) is untrusted.**~~ Moot since 2026-10-18: no `usb0`, and TCP:12345 was
+   retired with the socket path. The WiFi API is now `127.0.0.1:12346` on Sophie herself, reached over `lo`,
+   which is in `TRUSTED`. Keep it off `br0`: a root API reachable there lets any RV guest reconfigure the uplink.
 4. **`netfilter-persistent`** loads the old permissive `rules.v4` at boot. It's harmless (our chains decide), but
    confusing. After verifying `pi5connect.sh` provides MASQUERADE on its own, either disable it
-   (`systemctl disable netfilter-persistent`) or replace `rules.v4` with a NAT-only file. Never run
-   `WiFitoHostBridge/fix_interface_routing.sh` on Sophie: it flushes everything and sets FORWARD ACCEPT.
+   (`systemctl disable netfilter-persistent`) or replace `rules.v4` with a NAT-only file.
 5. **IPv6 outbound keeps working** (replies are allowed). If preferred, also disable v6 per uplink profile
    (`nmcli con modify <profile> ipv6.method disabled`), as `plan_new_WAN_WiFi.md` suggests for `wlan1`.
 
@@ -230,11 +238,16 @@ Repeat whenever a new uplink type is first used:
 | Direct park Ethernet / park WiFi (Alfa) / home LAN | From a laptop on that same network (not on Sophie's WiFi): `nmap -Pn -p- <Sophie uplink IPv4>` → all filtered; if Sophie has a global v6 address: `nmap -6 -Pn -p 22,80,1883,5900,8000,9001 <addr>` |
 | Starlink | `ip -6 addr show <uplink>`: if there's a global address, scan it from outside (e.g., phone hotspot with IPv6, or an online IPv6 port scanner) → filtered |
 | Cellular | same as Starlink |
-| Zero bridge | from the Zero: `nc -vz -w 5 10.10.0.17 8000` (Sophie's link address) → times out. The Zero itself: see "Zero 2W bridge" |
+| ~~Zero bridge~~ | n/a since 2026-10-18 (disconnected). If revived: from the Zero, `nc -vz -w 5 10.10.0.17 8000` → times out |
 
 And always: the RV LAN functional checks from rollout step 5.
 
-## Zero 2W bridge (`RP2W`)
+## Zero 2W bridge (`RP2W`) — historical, do not deploy
+
+**Skip this section.** The Zero was physically disconnected from Sophie on 2026-10-18 and its radio is replaced
+by the Alfa on `wlan1`. Everything below assumes a live `usb0`/`10.10.0.0/24` and an SSH path to the Zero, none
+of which exist. It is kept because nothing else records the Zero's firewall design, and reviving the Zero would
+need it (see `WifitoHostBridge/zero-system/README.md`).
 
 The Zero sits on the untrusted network itself (its `wlan0` joins the park/home WiFi), so it needs its own firewall.
 Facts from `WiFitoHostBridge/zero-system/README.md`:
@@ -351,6 +364,5 @@ Defense in depth. Each item still protects Sophie if a firewall rule is ever wro
 ## Afterwards
 
 - Update `buildRP5RaspAP/install_raspap_bridge.sh` so a rebuild doesn't recreate the permissive `rules.v4`.
-- Mark `WiFitoHostBridge/fix_interface_routing.sh` as "do not run on Sophie".
 - Add a "Firewall" line to `rv/CLAUDE.md` (trusted vs untrusted interfaces, where the rules live).
 - Mark this plan deployed (STATUS line).

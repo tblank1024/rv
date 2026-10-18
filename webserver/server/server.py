@@ -490,16 +490,6 @@ class AlarmPostData(BaseModel):
     alarm: str
     state: bool
 
-class WiFiConfigData(BaseModel):
-    ssid: str
-    password: str
-    permanent: bool = False
-
-class WiFiConfigResponse(BaseModel):
-    exit_code: int
-    output: str
-    success: bool
-
 class ScheduleShutdownData(BaseModel):
     hours: int
 
@@ -562,110 +552,34 @@ async def sync_alarm_states_manual() -> dict:
     else:
         return {"status": "no_physical_alarm", "bike": bike_alarm_state, "interior": interior_alarm_state}
 
-@app.post("/api/wifi-config")
-def wifi_config(data: Annotated[WiFiConfigData, Body()]) -> WiFiConfigResponse:  # Removed async
-    """
-    Configure WiFi settings on RP2W device using the RP5toRPZero2WControl.py script
-    """
-    try:
-        # Path to the WiFi control script - relative to server.py for Docker compatibility
-        server_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(server_dir, "RP5toRPZero2WControl.py")
-        
-        # Check if script exists
-        if not os.path.exists(script_path):
-            return WiFiConfigResponse(
-                exit_code=1,
-                output=f"WiFi control script not found at {script_path}",
-                success=False
-            )
-        
-        # Prepare command arguments
-        cmd = [sys.executable, script_path, data.ssid, data.password]
-        
-        # Add profile name if permanent storage is requested
-        if data.permanent:
-            profile_name = f"RV_{data.ssid.replace(' ', '_')}"
-            cmd.append(profile_name)
-        
-        # Pass bridge host/port from environment variables (WIFI_BRIDGE_HOST, WIFI_BRIDGE_PORT)
-        # so Docker deployments can configure the target without rebuilding the image.
-        import copy
-        proc_env = copy.copy(os.environ)
-        proc_env.setdefault('WIFI_BRIDGE_HOST', '10.10.0.1')
-        proc_env.setdefault('WIFI_BRIDGE_PORT', '12345')
-
-        # Execute the WiFi configuration script
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            # Must stay above the client's RESPONSE_TIMEOUT (90 s), which in turn
-            # covers the listener's ~70 s worst case; the old 30 s limit reported a
-            # timeout while the Zero was still working and had often succeeded.
-            timeout=120,
-            env=proc_env
-        )
-        
-        # Determine success based on exit code
-        success = result.returncode == 0
-        
-        # Combine stdout and stderr for output
-        output_lines = []
-        if result.stdout:
-            output_lines.append("STDOUT:")
-            output_lines.append(result.stdout)
-        if result.stderr:
-            output_lines.append("STDERR:")
-            output_lines.append(result.stderr)
-        
-        output = "\n".join(output_lines) if output_lines else "No output received"
-        
-        return WiFiConfigResponse(
-            exit_code=result.returncode,
-            output=output,
-            success=success
-        )
-        
-    except subprocess.TimeoutExpired:
-        return WiFiConfigResponse(
-            exit_code=1,
-            output="WiFi configuration timed out after 120 seconds",
-            success=False
-        )
-    except Exception as e:
-        return WiFiConfigResponse(
-            exit_code=1,
-            output=f"Error executing WiFi configuration: {str(e)}",
-            success=False
-        )
-
 # ---------------------------------------------------------------------------
-# WiFi bridge (Pi Zero 2W): scan, saved profiles, connect, forget
+# WiFi uplink: scan, saved profiles, connect, forget
 # ---------------------------------------------------------------------------
-# The Zero runs rpzero_wifi_api.py (WifitoHostBridge repo) as root and serves
-# JSON on 10.10.0.1:12346. Scanning REQUIRES root there -- unprivileged, nmcli
-# silently ignores --rescan and returns only the already-connected AP -- which
-# is why these endpoints proxy to that service instead of doing the work here.
+# rpzero_wifi_api.py (WifitoHostBridge repo) runs as root and serves JSON on
+# port 12346. Scanning REQUIRES root -- unprivileged, nmcli silently ignores
+# --rescan and returns only the already-connected AP -- which is why these
+# endpoints proxy to that service instead of doing the work here.
+#
+# WIFI_BRIDGE_HOST says which deployment is live, and that is the only thing
+# that changes between them:
+#   127.0.0.1   the API on this host, driving the Alfa USB adapter (wlan1).
+#               This container is network_mode: host, so loopback reaches it.
+#   10.10.0.1   the Pi Zero 2W bridge over the USB link.  Being retired.
 #
 # These return plain dicts with success/message plus a collection, matching
-# GET /api/debug/usb/status. They deliberately do NOT carry the exit_code
-# contract of /api/wifi-config: there is no subprocess any more, and codes
-# 100/101 promised "SSID/PW were updated", which the new flow undoes on
-# purpose when a connect fails.
+# GET /api/debug/usb/status.
 #
-# No caching on this side. The Zero already caches (status 1s, networks 10s
+# No caching on this side. The API already caches (status 1s, networks 10s
 # with a 10s floor between real rescans, profiles 60s), and that is where the
-# cost actually is -- radio time and a 1GHz CPU. A second cache here would add
-# a second staleness window and a second invalidation path to get wrong, to
-# save a round trip over a USB link.
+# cost actually is -- radio time. A second cache here would add a second
+# staleness window and a second invalidation path to get wrong.
 
-WIFI_BRIDGE_API_HOST = os.environ.get('WIFI_BRIDGE_HOST', '10.10.0.1')
+WIFI_BRIDGE_API_HOST = os.environ.get('WIFI_BRIDGE_HOST', '127.0.0.1')
 WIFI_BRIDGE_API_PORT = os.environ.get('WIFI_BRIDGE_API_PORT', '12346')
 
 
 class WifiBridgeError(Exception):
-    """Base for failures talking to the Zero's WiFi API."""
+    """Base for failures talking to the WiFi API."""
     error_code = "bridge_error"
 
 
@@ -730,10 +644,12 @@ def _wifi_bridge(path, method="GET", payload=None, timeout=10):
         if isinstance(reason, socket.timeout):
             raise WifiBridgeTimeout(
                 f"no answer from the WiFi bridge within {timeout}s") from exc
+        hint = ("Is wifi-api-rp5.service running?"
+                if WIFI_BRIDGE_API_HOST.startswith("127.")
+                else "Is the Zero powered on and is the internet source set to WiFi?")
         raise WifiBridgeUnreachable(
-            f"cannot reach the WiFi bridge at {WIFI_BRIDGE_API_HOST}:"
-            f"{WIFI_BRIDGE_API_PORT} ({reason}). Is the Zero powered on and is"
-            f" the internet source set to WiFi?") from exc
+            f"cannot reach the WiFi API at {WIFI_BRIDGE_API_HOST}:"
+            f"{WIFI_BRIDGE_API_PORT} ({reason}). {hint}") from exc
     except socket.timeout as exc:
         raise WifiBridgeTimeout(
             f"no answer from the WiFi bridge within {timeout}s") from exc
@@ -847,9 +763,11 @@ def connect_wifi(data: Annotated[WifiConnectData, Body()]) -> dict:  # Removed a
 @app.post("/api/wifi/forget")
 def forget_wifi(data: Annotated[WifiForgetData, Body()]) -> dict:  # Removed async
     """
-    Deletes a saved profile. Prefer uuid: an SSID can map to several profiles,
-    and the Zero refuses an ambiguous SSID. force=True is required to delete
-    the profile currently providing the connection.
+    Deletes saved profiles. By SSID it deletes every profile for that network,
+    which is what "forget" has to mean: the API stores a 5 GHz-locked profile
+    plus an unlocked fallback, and leaving one behind would let it reconnect.
+    Pass uuid to delete exactly one. force=True is required when one of them is
+    currently providing the connection.
     """
     payload = {"force": data.force}
     if data.uuid:

@@ -23,12 +23,31 @@ Applications running on a Raspberry Pi 5 (RP5) inside "Sophie" the RV. The compa
 
 ## Networking
 
-RASPAp bridges `eth0` to the onboard Wi-Fi, creating the RV's internal network. Internet uplink arrives via a USB-attached switch; the active port appears as `eth1` or `eth2` depending on configuration. Four uplink options:
+RASPAp bridges `eth0` to the onboard Wi-Fi (`wlan0`) as `br0` 10.0.0.1/24, creating the RV's
+internal network. **`eth0` is a LAN port, not an uplink** — it is a `br0` slave.
 
-1. Starlink
-2. Direct Ethernet
-3. RP2 (a second Raspberry Pi acting as a Wi-Fi client/bridge)
+The uplink arrives through a USB-attached switch (the Coolgear hub). Four options, of which only
+one is normally enumerated, so **the interface name does not identify the uplink type** — don't
+key policy on it:
+
+1. Starlink — shares one USB-ethernet adapter with option 2
+2. Direct Ethernet (`eth1` with `asix`/`r8152` drivers, `usb0` with `cdc_ether`/`cdc_ncm`)
+3. **Alfa AWUS036ACM USB WiFi adapter → `wlan1`** (2×2, dual-band). Replaces the Pi Zero 2W
+   client bridge, which was 1×1 and 2.4 GHz only. Pinned to `wlan1` by MAC in
+   `/etc/systemd/network/11-wlan-wan.link`; `wlan0` is the AP radio and is NM-unmanaged
+   (`/etc/NetworkManager/conf.d/99-unmanaged-wlan0.conf`). The dashboard's network picker drives
+   it through `wifi-api-rp5.service` on `127.0.0.1:12346` (`WiFitoHostBridge` repo). Plan and
+   measurements: `plan_new_WAN_WiFi.md`.
 4. 5G modem
+
+`/usr/local/sbin/pi5connect.sh` (repo: `raspap/pi5connect.sh`) picks the WAN, sets the default
+route and rewrites the NAT/FORWARD rules on every interface or connectivity change, recording the
+choice in `/run/pi5connect-wan`. It overwrites the rules at runtime, which is why
+`/etc/iptables/rules.v4` is stale and does not matter.
+
+**No host firewall yet** — `INPUT`/`FORWARD` are open, so on a direct park-network uplink Sophie's
+own services are exposed. `plan_firewall.md` covers it; deploy that before joining an untrusted
+network.
 
 ## Remote Desktop
 

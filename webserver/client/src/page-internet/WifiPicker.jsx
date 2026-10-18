@@ -248,9 +248,12 @@ const WifiPicker = () => {
     const target = forgetFor;
     setForgetFor(null);
     try {
+      // By ssid, not uuid: the API saves a 5 GHz-locked profile plus an
+      // unlocked fallback for a dual-band network, and deleting only the
+      // preferred one would leave the sibling to autoconnect straight back.
       const data = await fetchFromServer('/api/wifi/forget', {
         method: 'POST',
-        body: JSON.stringify({ uuid: target.profile_uuid, force: !!target.in_use }),
+        body: JSON.stringify({ ssid: target.ssid, force: !!target.in_use }),
       });
       if (!data.success) {
         setResult({ type: 'error', message: data.message || 'Could not forget that network' });
@@ -270,7 +273,7 @@ const WifiPicker = () => {
   const wifi = (status && status.wifi) || {};
   const op = (status && status.operation) || {};
   const cooling = Date.now() - lastScanAt < RESCAN_COOLDOWN;
-  // The status endpoint's signal comes from the Zero's scan cache and reads 0
+  // The status endpoint's signal comes from the API's scan cache and reads 0
   // before the first scan; prefer the in-use row when we have it.
   const liveRow = networks.find((n) => n.in_use);
   const liveSignal = wifi.signal || (liveRow ? liveRow.signal : 0);
@@ -309,6 +312,15 @@ const WifiPicker = () => {
               <div className="wifi-status-row">
                 <strong>Signal</strong>
                 <span>{liveSignal ? <><SignalBars signal={liveSignal} /> {liveSignal}%</> : '—'}</span>
+              </div>
+              <div className="wifi-status-row">
+                <strong>Band</strong>
+                <span>
+                  {wifi.band ? `${wifi.band} GHz` : '—'}
+                  {wifi.band === '2.4' && liveRow && liveRow.has_5g && (
+                    <span className="wifi-row__why"> (5 GHz available)</span>
+                  )}
+                </span>
               </div>
               <div className="wifi-status-row">
                 <strong>Address</strong>
@@ -377,6 +389,7 @@ const WifiPicker = () => {
                     <span className="wifi-row__tags">
                       {network.in_use && <span className="wifi-tag wifi-tag--connected">Connected</span>}
                       {!network.in_use && network.saved && <span className="wifi-tag wifi-tag--saved">Saved</span>}
+                      {network.has_5g && <span className="wifi-tag wifi-tag--band">5 GHz</span>}
                       {!network.security && <span className="wifi-tag wifi-tag--open">Open</span>}
                       {network.security && <Icon name="lock" size="small" className="wifi-row__lock" />}
                       {isPending && <Icon name="circle notched" loading />}
@@ -496,8 +509,9 @@ const WifiPicker = () => {
               </p>
               {forgetFor.profile_count > 1 && (
                 <Message info size="small">
-                  {forgetFor.ssid} has {forgetFor.profile_count} saved profiles; only{' '}
-                  <strong>{forgetFor.profile}</strong> will be deleted.
+                  {forgetFor.ssid} has {forgetFor.profile_count} saved profiles. All of them
+                  will be deleted — a dual-band network is saved twice, once locked to 5 GHz
+                  and once unlocked, and leaving one behind would reconnect it.
                 </Message>
               )}
               {forgetFor.in_use && (

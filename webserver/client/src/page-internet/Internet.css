@@ -350,6 +350,10 @@
 .wifi-tag--saved { background-color: #e8f0fb; color: #2a5a9b; }
 .wifi-tag--connected { background-color: #2185d0; color: #fff; }
 .wifi-tag--open { background-color: #f3e9d2; color: #8a6d3b; }
+/* Dual-band marker. Earns its place: the signal bars show the strongest BSS,
+   which on a dual-band SSID is usually the congested 2.4 GHz one, so the list
+   otherwise gives no hint that the faster band is there at all. */
+.wifi-tag--band { background-color: #e4f3e7; color: #2b6b3a; }
 
 .wifi-actions {
   display: flex;

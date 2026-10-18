@@ -40,9 +40,11 @@
  * === WIFI CONFIGURATION ===
  * - Rendered by WifiPicker.jsx when the WiFi source is selected
  * - Lists networks in range with signal strength; tap to connect
- * - Asks for a password only when the Zero has no saved credential
- * - Per-network Forget, and a live status panel for the bridge
- * - Uses /api/wifi/* (the Zero's JSON API), not the old /api/wifi-config
+ * - Asks for a password only when there is no saved credential
+ * - Per-network Forget (deletes every profile for that SSID), a 5 GHz tag, and
+ *   a live status panel showing which band the uplink actually got
+ * - Uses /api/wifi/*, proxied to rpzero_wifi_api.py on whichever host owns the
+ *   uplink radio (WIFI_BRIDGE_HOST: 127.0.0.1 = this host's Alfa adapter)
  * - NOTE: the route /wifi belongs to the Plex page, not to any of this
  * 
  * === STATE MANAGEMENT ===

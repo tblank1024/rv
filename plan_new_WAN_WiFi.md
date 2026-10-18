@@ -1,6 +1,11 @@
 # plan_new_WAN_WiFi.md — USB WiFi adapter as a WAN uplink (replacing the Zero 2W bridge)
 
-STATUS: proposal, nothing purchased or deployed (2026-10-09).
+STATUS: **in deployment.** The AWUS036ACM is bought, bench-tested on the RP5 and joined to the home
+AP as `wlan1` (2026-10-17). Issues 1, 2, 7, 8 and 10 are done, plus issue 11's profile pair, and
+`plan_wifi.md` Phase 5 is complete (2026-10-18). Remaining: the outside antenna mount, moving the
+adapter onto the hub (issue 5/6), captive-portal fallback (issue 4), `plan_firewall.md` (issue 12),
+and the before/after speed comparison. Note the adapter bought was the **ACM**, not the AXML this
+plan recommended — see "Measured on hardware".
 
 ## Goal
 
@@ -66,7 +71,7 @@ while transmitting.
 
 ## Integration issues with RaspAP / Sophie, and the approach
 
-### 1. Interface naming (must fix)
+### 1. Interface naming — DONE 2026-10-18
 hostapd (`interface=wlan0`), `raspap-br0-member-wlan0.network`, `pi5connect.sh`, and `99-pi5connect` all identify
 the AP radio by the name `wlan0`. With a second WiFi device, enumeration order can swap at boot (AP starts on the
 Alfa). After re-plugging (hub port toggle), the adapter could also come back as `wlan2`.
@@ -86,9 +91,25 @@ MACAddress=<Alfa MAC>
 [Link]
 Name=wlan1
 ```
-Then `sudo update-initramfs -u` (if names are applied in initramfs), reboot, and verify with `ip link`.
+Deployed exactly as above, with the real MACs: `10-wlan-ap.link` → `wlan0` (onboard
+`2c:cf:67:ab:1b:94`), `11-wlan-wan.link` → `wlan1` (Alfa `00:c0:ca:be:29:62`). Reference copies are
+in `raspap/`.
 
-### 2. Which network manager owns which interface (must fix)
+`update-initramfs` was **not** needed — Pi OS does not rename network interfaces in the initramfs.
+udev confirms both files applied to the live interfaces:
+
+```
+$ udevadm info /sys/class/net/wlan1 | grep -E 'ID_NET_LINK_FILE|ID_NET_NAME='
+E: ID_NET_LINK_FILE=/etc/systemd/network/11-wlan-wan.link
+E: ID_NET_NAME=wlan1
+```
+
+Also answered: Pi OS would otherwise have called it `wlan1` anyway (`ID_NET_NAME_MAC` is
+`wlx00c0cabe2962`, but the `NamePolicy=mac` that would use it is masked — see the `enx*` trap in
+`WiFitoHostBridge/CLAUDE.md`). The pinning still matters for *which* radio gets which name.
+**[USER]** still to verify: names stable across a reboot and across a hub port off/on.
+
+### 2. Which network manager owns which interface — DONE 2026-10-18
 Sophie has traces of NetworkManager, systemd-networkd (`raspap/*.network`), and dhcpcd
 (`buildRP5RaspAP/install_raspap_bridge.sh`). Exactly one must own `wlan1`.
 
@@ -104,6 +125,10 @@ Approach:
 - **Do not use RaspAP's "WiFi client" page** for `wlan1`. It drives wpa_supplicant directly and will fight NM.
   Ignore `wlan1` in the RaspAP dashboard; never select it as the AP interface.
 - Verify: `nmcli dev status` (wlan1 = managed, wlan0 = unmanaged), `networkctl list`.
+
+Deployed: `/etc/NetworkManager/conf.d/99-unmanaged-wlan0.conf` as written above (copy in
+`raspap/`). Verified on hardware — `nmcli dev status` shows `wlan0 wifi unmanaged` and
+`wlan1 wifi connected`, dhcpcd is `inactive`, and no `.network` file matches `wlan1`.
 
 ### 3. Uplink detection — RESOLVED 2026-10-17, verified live
 This was written against the **stale repo copy** of `99-pi5connect`. The *deployed* hook already matches
@@ -167,7 +192,7 @@ shows US for both phys.
 Disable power save on the uplink: `nmcli con modify <profile> 802-11-wireless.powersave 2` (and in the profiles
 the web UI creates; see 10).
 
-### 10. Web UI WiFi picker path
+### 10. Web UI WiFi picker path — DONE 2026-10-18
 Today: Internet page network picker → `server.py /api/wifi/{status,networks,profiles,connect,forget}` → HTTP JSON
 to `rpzero_wifi_api.py` (WiFitoHostBridge repo) on the Zero at `10.10.0.1:12346`, running as root, driving `nmcli`
 on the Zero's `wlan0`. The webserver container uses `network_mode: host`. (The older `/api/wifi-config` →
@@ -188,8 +213,25 @@ Approach (no new code; `rpzero_wifi_api.py` is already env-configurable):
   `802-11-wireless.cloned-mac-address permanent` (issues 4 and 9). This benefits the Zero too.
 - Check that the code doesn't assume Zero-only details (e.g., the `p2p-dev-wlan0` comment ~line 426) when run on
   the RP5, which also has a `p2p-dev-wlan0` for the AP radio.
-- Keep the Zero setup intact as a fallback until the Alfa is proven; switching back is just hub port +
-  `WIFI_BRIDGE_HOST`.
+- ~~Keep the Zero setup intact as a fallback until the Alfa is proven; switching back is just hub
+  port + `WIFI_BRIDGE_HOST`.~~ **Overtaken by events: the Zero was unplugged on 2026-10-18**, so
+  there is no quick switch back. Reviving it needs the gadget cable re-plugged, `setup_services.sh
+  zero` on the Zero and `WIFI_BRIDGE_HOST=10.10.0.1`. The Alfa is now the only WiFi uplink.
+
+**Done as planned, with these additions:**
+- The RP5 unit is a separate file, `WiFitoHostBridge/wifi-api-rp5.service`, rather than an edit to
+  the Zero's `wifi-bridge-api.service` — so the Zero's fallback stays installable and documented.
+  `setup_services.sh` now takes `rp5|zero` and refuses to install one while the other is enabled
+  (they would collide on port 12346 and both drive one NetworkManager). The RP5 unit drops the
+  `usb0-up.service` ordering: loopback always exists, so there is no bind race.
+- `WIFI_BRIDGE_HOST` default in `server.py` is now `127.0.0.1`, and compose sets it explicitly. The
+  unreachable-API error message names the right service for whichever host is configured.
+- The hardening settings went in as `PROFILE_HARDENING`, applied on every profile the API creates
+  **and on every profile it activates** (idempotent; `nmcli connection modify` does not reactivate,
+  so it cannot drop the uplink). `ipv6.method disabled` is included, which issue 12 also asks for.
+- The `p2p-dev-wlan0` comment was Zero-specific and is fixed; nothing else assumed the Zero.
+- Issue 11's profile pair is implemented here too, so the picker creates it — see issue 11.
+- `plan_wifi.md` Phase 5 was done at the same time, so TCP:12345 and `/api/wifi-config` are gone.
 
 ### 11. Band plan with Sophie's AP
 Campground WiFi is mostly 2.4 GHz; move Sophie's AP (onboard `wlan0`) to 5 GHz so the Roku is off the uplink's
@@ -211,9 +253,23 @@ nmcli con add type wifi ifname wlan1 con-name <ssid>    ssid <ssid> \
   -- ... (no band lock, priority 0)   # fallback for 2.4-only parks
 ```
 
-NM tries the higher priority first and falls back if the 5 GHz BSS is absent. The picker (issue 10) should create
-this pair rather than one profile, or expose a band preference. Note a band-locked profile fails outright where
-that band is missing, which is why the unlocked fallback is required.
+NM tries the higher priority first and falls back if the 5 GHz BSS is absent. Note a band-locked profile fails
+outright where that band is missing, which is why the unlocked fallback is required.
+
+**DONE 2026-10-18 — the picker creates the pair.** `rpzero_wifi_api.py` adds `<name>-5g` (band `a`,
+autoconnect-priority 10) plus the unlocked `<name>`, but only when the scan actually saw that SSID
+on 5/6 GHz — so a 2.4-only park gets one profile and no guaranteed-failing activation attempt.
+Three consequences worth knowing:
+
+- The scan's per-SSID `freq` and `signal` are the **strongest** BSS's, which on a dual-band SSID is
+  routinely the 2.4 GHz one. The API now also reports `bands`, `has_5g`, `in_use_band` and
+  `in_use_signal` from the *associated* BSS. Without that split, `/api/status` reported
+  "band 2.4 GHz" while sitting on a 5 GHz-locked profile.
+- `connect` falls back to the unlocked profile if the 5 GHz activation fails with `no_ap` (the scan
+  can be seconds stale), but not on an auth failure, which would just waste another 50 s.
+- **Forget had to change meaning.** It used to refuse an SSID with several profiles (409
+  `ambiguous`); that would have made every pair unforgettable from the picker. It now deletes every
+  profile for the SSID, active one last, and the picker calls it by `ssid` instead of `uuid`.
 
 ### 12. Sophie directly exposed to the campground network (must fix BEFORE first join)
 > Superseded by `plan_firewall.md`, which covers all uplinks with interface-based default-deny. Deploy that
@@ -245,8 +301,7 @@ if it is UP but never selected). Close it with the same four rules for `wlan1` s
 
 Also:
 - **FORWARD:** confirm new connections from the uplink to `br0` are dropped (`iptables -S FORWARD`: policy DROP,
-  or only the RELATED,ESTABLISHED rule `pi5connect.sh` adds). Never run `WiFitoHostBridge/fix_interface_routing.sh`
-  on Sophie (it sets FORWARD ACCEPT and flushes NAT).
+  or only the RELATED,ESTABLISHED rule `pi5connect.sh` adds).
 - **IPv6:** a park network with SLAAC gives `wlan1` a global v6 address that bypasses all iptables (v4) rules.
   Disable it on the uplink profile: `nmcli con modify <profile> ipv6.method disabled`, and add
   `ipv6.method disabled` to `rpzero_wifi_api.py`'s `connection add` (issue 10). Verify `ip -6 addr show wlan1` shows
@@ -339,17 +394,80 @@ has a 60 W supply, so the Alfa draws from the hub rather than the Pi.
 
 ## Rollout
 
-1. Run `WiFitoHostBridge/plan-speed.md` tests with the current Zero setup (baseline).
-2. Buy the AWUS036AXML (+ active USB 2.0 extension, weatherproof box).
-3. Bench test on Sophie: plug into a spare port, `lsusb`, `dmesg`, `iw dev`, `nmcli dev wifi list ifname wlanX`.
-4. Apply issues 1, 2, 7, 8 (names, NM ownership, firmware, country). Reboot; verify `wlan0` AP still works and
-   names are stable across hub port off/on.
-5. Apply issue 12 (uplink firewall, IPv6 off, avahi), then issue 3 (dispatcher) and 4 (captive-portal
-   fallback). Only then connect manually with `nmcli`; verify default route
-   and MASQUERADE via `wlan1`, internet from the RV LAN.
-6. Apply issue 10 (WiFi API on the RP5 host) and test the Internet page network picker end to end.
-7. Move the adapter to its outside mount on the Zero's hub port (replacing the Zero); run the issue 12 `nmap` check from
-   the park WiFi, then re-run the speed tests and compare
-   with the baseline.
-8. Update `rv/CLAUDE.md` (uplink option 3 description) and `rv/raspap/README.txt`; retire or archive the Zero
-   setup once proven.
+1. ~~Run `WiFitoHostBridge/plan-speed.md` tests with the current Zero setup (baseline).~~ DONE —
+   `WiFitoHostBridge/Results_WiFi_testing.md`.
+2. ~~Buy the adapter~~ DONE — the **ACM**, not the AXML. Active USB extension and weatherproof box
+   still to buy.
+3. ~~Bench test on Sophie~~ DONE 2026-10-17 — "Measured on hardware" above.
+4. ~~Apply issues 1, 2, 7, 8 (names, NM ownership, firmware, country).~~ DONE 2026-10-18. 7 and 8
+   needed nothing. **[USER]** still owes the reboot check: `wlan0` AP still works, and the names
+   are stable across a reboot and a hub port off/on.
+5. Apply `plan_firewall.md` (supersedes issue 12: uplink firewall, IPv6 off, avahi), then issue 4
+   (captive-portal fallback). Issue 3 needed no work — the deployed dispatcher already handles
+   `wlan*`. Deferred by decision 2026-10-18: parked on a trusted home LAN, so not yet urgent.
+   **Must be done before the Alfa first joins a park network.**
+6. ~~Apply issue 10 (WiFi API on the RP5 host)~~ DONE 2026-10-18 — `wifi-api-rp5.service`,
+   `WIFI_BRIDGE_HOST=127.0.0.1`. End-to-end picker test: see Verification below.
+7. Move the adapter to its outside mount on the hub port the Zero used; run the `nmap` check from
+   the park WiFi, then re-run the speed tests and compare with the baseline. Note the Coolgear hub
+   is being replaced by a Plugable 7-port powered hub, which also settles issue 6 (the Pi 5's
+   600 mA total USB cap) by powering the adapter from the hub.
+8. ~~Update `rv/CLAUDE.md` (uplink option 3) and `rv/raspap/README.txt`~~ DONE 2026-10-18. Retire or
+   archive the Zero setup once proven — its installed files were deliberately left in place.
+
+## Verification — picker end to end (2026-10-18)
+
+Run on the RP5 with the wired `eth1` uplink live, so a failed WiFi join cannot strand the session.
+`pi5connect.sh` v2.1 keeps a healthy incumbent WAN, which is the second layer of that protection.
+
+1. `sudo ./setup_services.sh rp5`, then `curl -s http://127.0.0.1:12346/api/health` — expect
+   `ifname: wlan1`.
+2. `curl -s 'http://127.0.0.1:12346/api/networks?rescan=1'` as root — expect `Sophie` with
+   `blocked: "self"`, and dual-band SSIDs carrying `has_5g: true` with `bands: ["2.4","5"]`.
+3. `cd docker && docker compose up -d --build webserver`, then the Internet page: status panel shows
+   the band, list shows 5 GHz tags, connect to a dual-band SSID creates the `-5g` pair
+   (`nmcli -f NAME,TYPE con show`), and Forget removes **both**.
+
+### Results (2026-10-18, service v0.3.0 on `wlan1`, WAN on `eth1` throughout)
+
+Passed: health reports `ifname: wlan1`; root rescan returns `Sophie` with `blocked: "self"` and
+`joinable: false`, and `bands`/`has_5g` are right on every SSID; `/api/status` reports
+`band: "5"`, `signal: 41` while on `alfa-Decher-5g` — the **associated** BSS, not the SSID's
+strongest, which is the bug this fixed (the 2.4 GHz BSS of the same SSID reads 64); the saved pair
+is `alfa-Decher-5g` (band `a`, priority 10) + `alfa-Decher` (unlocked, priority 0); the dashboard
+proxy at `127.0.0.1:12346` returns all of it through `/api/wifi/*`, and `/api/wifi-config` is gone.
+Guards: self-AP → 400 `blocked_self`; 7-char PSK → 400; no ssid → 400; forget an active SSID
+without `force` → 409 naming the profile.
+
+Also passed, on live connects to a network that cannot complete: the `-5g` profile is tried first,
+the **`no_ap` fallback** then retries the unlocked sibling (phase text
+`associating (no 5 GHz; any band)`), the failure is reported as `no_ap`/`auth_failed`, both created
+profiles are deleted, and `rolled_back: true` with `alfa-Decher-5g` reactivated and its IP intact.
+Profile hardening is confirmed applied at creation: `powersave=disable`, `cloned-mac=permanent`,
+`ipv6.method=disabled`.
+
+**Not yet verified: Forget deleting a 2-profile set.** It needs a pair that *survives* a connect,
+and every network here that is joinable without a password cannot complete a join. The 409
+pre-check was exercised against the 2-profile `Decher`, and the delete loop itself was not.
+
+New ground truth found while testing (all four cost time to interpret):
+
+- **The first forced rescan after a service start returns a short list.** At 15 s uptime it was
+  missing `Sophie` at signal 100; three later rescans all returned it. NM's BSS table is still
+  filling. Don't read a cold first scan as a scan bug.
+- **`/api/profiles` is TTL-cached and goes stale during a connect** — `do_connect` refreshes it
+  once at entry, before it creates anything. Polling it mid-connect shows the *pre-connect* list,
+  so use `nmcli -t -f NAME con show` as ground truth when watching profiles get created.
+- **A pair is not guaranteed for a marginal network.** `ssid_has_5ghz` reads the scan, so the same
+  open SSID produced `<name>` + `<name>-5g` in one run and `<name>` alone in the next, because its
+  weak 5 GHz BSS was absent from the second scan. Correct behaviour, not a bug.
+- **`/api/status` reports an empty `band` and `signal: 0` between a connect and the next
+  `/api/networks` call.** `load_status` uses `Cache.peek()` on purpose so a 2-5 s status poll never
+  blocks behind a 5.3 s scan; the connect invalidated the cache and only a scan refills it. The
+  picker renders `—` for an empty band, so this is invisible in the UI. Leave it alone.
+
+The whole run was done with an unprivileged timed auto-revert armed
+(`scratchpad/wlan1-revert.sh`: after 240 s, re-`POST /api/connect {"ssid":"Decher"}` unless already
+there). Worth reusing — **it needs no sudo**, because the root API is the thing doing the work.
+It logged `revert not needed`. The WAN stayed `eth1` the entire time; `wlan1`'s default route sits
+at metric 500, so even a successful join to a captive-portal network could not have stolen it.

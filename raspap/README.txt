@@ -17,6 +17,15 @@ This directory contains configuration files for setting up a network bridge that
 - **raspap-bridge-br0.network** - systemd-networkd configuration for br0 bridge (10.0.0.1/24)
 - **raspap-br0-member-wlan0.network** - Configuration to add wlan0 to br0 bridge
 
+### Two-radio files (added 2026-10-18, for the Alfa USB WiFi uplink):
+- **10-wlan-ap.link** - Pins the ONBOARD radio to wlan0 by MAC (2c:cf:67:ab:1b:94)
+- **11-wlan-wan.link** - Pins the ALFA adapter to wlan1 by MAC (00:c0:ca:be:29:62)
+- **99-unmanaged-wlan0.conf** - Tells NetworkManager to leave wlan0 alone (hostapd owns it)
+
+Without the .link files, enumeration order can swap at boot and hostapd would start on the Alfa;
+a hub port toggle could also bring the adapter back as wlan2. These are reference copies of what
+is deployed -- re-capture them if the hardware changes.
+
 ## Installation:
 
 1. Copy 99-pi5connect to NetworkManager dispatcher directory:
@@ -36,6 +45,16 @@ This directory contains configuration files for setting up a network bridge that
    sudo cp raspap-*.network /etc/systemd/network/
    sudo systemctl enable systemd-networkd
    ```
+
+4. Two-radio setup (only with the Alfa USB WiFi adapter fitted):
+   ```bash
+   sudo cp 10-wlan-ap.link 11-wlan-wan.link /etc/systemd/network/
+   sudo cp 99-unmanaged-wlan0.conf /etc/NetworkManager/conf.d/
+   sudo systemctl reload NetworkManager
+   ```
+   The .link files apply on the next hotplug or boot, not retroactively. Verify with
+   `udevadm info /sys/class/net/wlan1 | grep ID_NET_LINK_FILE` and
+   `nmcli dev status` (wlan0 = unmanaged, wlan1 = managed).
 
 ## How It Works:
 

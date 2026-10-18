@@ -1,0 +1,4 @@
+[Match]
+MACAddress=00:c0:ca:be:29:62
+[Link]
+Name=wlan1

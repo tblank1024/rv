@@ -263,10 +263,11 @@ services:
       - KASA_PASSWORD=${KASA_PASSWORD}
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
-      - WIFI_BRIDGE_HOST=10.10.0.1
-      # 12345: legacy socket listener, used by /api/wifi-config.
-      # 12346: rpzero_wifi_api.py JSON API, used by /api/wifi/*.
-      - WIFI_BRIDGE_PORT=12345
+      # Which rpzero_wifi_api.py is live: 127.0.0.1 = this host's own
+      # wifi-api-rp5.service driving the Alfa adapter (wlan1); 10.10.0.1 = the
+      # Pi Zero 2W bridge over USB. This container is network_mode: host, so
+      # loopback reaches the host service. Port 12346 either way.
+      - WIFI_BRIDGE_HOST=127.0.0.1
       - WIFI_BRIDGE_API_PORT=12346
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     volumes:
