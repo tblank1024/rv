@@ -1,6 +1,10 @@
 /**
  * WifiPicker — a conventional WiFi picker for the Pi Zero 2W uplink.
  *
+ * Signal is shown in dBm (real RSSI from iw, via the API) with the bars driven
+ * by NM's 0-100 quality percentage. A leading "~" means the dBm was derived
+ * from that percentage because the kernel's scan dump lacked the BSS.
+ *
  * Replaces a blind SSID + password form. Shows what is in range with signal
  * strength, connects on tap, and asks for a password only when the Zero has no
  * saved credential for that network.
@@ -32,11 +36,17 @@ const STALE_RESULT_SECONDS = 90;  // older outcomes are history, not news
 
 const stamp = () => new Date().toLocaleTimeString();
 
-/** 0-100 signal as four bars. Semantic's wifi icon has no strength variants. */
-const SignalBars = ({ signal }) => {
+/**
+ * Four bars from the 0-100 quality percentage. The bars stay on the percentage
+ * because it is already clamped to a 0-100 scale and is present for every BSS;
+ * the numeric readout next to them is dBm, which is the useful figure. dbm is
+ * optional, for the tooltip only.
+ */
+const SignalBars = ({ signal, dbm }) => {
   const filled = signal >= 75 ? 4 : signal >= 50 ? 3 : signal >= 25 ? 2 : signal > 0 ? 1 : 0;
+  const label = dbm != null ? `${dbm} dBm (${signal}%)` : `${signal}%`;
   return (
-    <span className="wifi-bars" title={`${signal}%`} aria-label={`signal ${signal}%`}>
+    <span className="wifi-bars" title={label} aria-label={`signal ${label}`}>
       {[1, 2, 3, 4].map((n) => (
         <span key={n} className={`wifi-bar ${n <= filled ? 'wifi-bar--on' : 'wifi-bar--off'}`} />
       ))}
@@ -277,6 +287,12 @@ const WifiPicker = () => {
   // before the first scan; prefer the in-use row when we have it.
   const liveRow = networks.find((n) => n.in_use);
   const liveSignal = wifi.signal || (liveRow ? liveRow.signal : 0);
+  // Real RSSI. /api/status reads it straight off the live association with iw,
+  // so unlike the percentage it is present even before the first scan; fall
+  // back to the in-use scan row only if the service could not read it.
+  const liveDbm = wifi.signal_dbm != null
+    ? wifi.signal_dbm
+    : (liveRow && liveRow.in_use_signal_dbm != null ? liveRow.in_use_signal_dbm : null);
 
   return (
     <div className="wifi-picker">
@@ -311,7 +327,14 @@ const WifiPicker = () => {
               </div>
               <div className="wifi-status-row">
                 <strong>Signal</strong>
-                <span>{liveSignal ? <><SignalBars signal={liveSignal} /> {liveSignal}%</> : '—'}</span>
+                <span>
+                  {liveDbm != null || liveSignal
+                    ? <>
+                        <SignalBars signal={liveSignal} dbm={liveDbm} />{' '}
+                        {liveDbm != null ? `${liveDbm} dBm` : `${liveSignal}%`}
+                      </>
+                    : '—'}
+                </span>
               </div>
               <div className="wifi-status-row">
                 <strong>Band</strong>
@@ -380,7 +403,15 @@ const WifiPicker = () => {
                     aria-disabled={!network.joinable}
                     title={network.unjoinable_reason || network.ssid}
                   >
-                    <SignalBars signal={network.signal} />
+                    <SignalBars signal={network.signal} dbm={network.signal_dbm} />
+                    {network.signal_dbm != null && (
+                      // "~" marks a value derived from NM's percentage rather
+                      // than measured, which happens when the kernel's scan
+                      // dump has no entry for that BSS.
+                      <span className="wifi-row__dbm">
+                        {network.signal_dbm_estimated ? '~' : ''}{network.signal_dbm} dBm
+                      </span>
+                    )}
                     <span className="wifi-row__name">
                       {network.ssid}
                       {!network.joinable && network.unjoinable_reason

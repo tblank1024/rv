@@ -423,3 +423,15 @@
     margin: 0 auto;
   }
 }
+
+/* dBm readout beside the signal bars. Tabular figures so the column does not
+   jiggle as values change, and a fixed width for the same reason. */
+.wifi-row__dbm {
+  flex: 0 0 auto;
+  width: 4.6em;
+  margin-left: 6px;
+  color: #666;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
