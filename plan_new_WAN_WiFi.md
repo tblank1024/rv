@@ -446,9 +446,13 @@ profiles are deleted, and `rolled_back: true` with `alfa-Decher-5g` reactivated 
 Profile hardening is confirmed applied at creation: `powersave=disable`, `cloned-mac=permanent`,
 `ipv6.method=disabled`.
 
-**Not yet verified: Forget deleting a 2-profile set.** It needs a pair that *survives* a connect,
-and every network here that is joinable without a password cannot complete a join. The 409
-pre-check was exercised against the 2-profile `Decher`, and the delete loop itself was not.
+**Forget on a 2-profile set: verified 2026-10-18** on a real WPA2 dual-band SSID. The pair built as
+designed (`-5g` band `a` priority 10 + unlocked priority 0, both hardened) and the join landed on
+the `-5g` profile. `forget {ssid, force}` returned **two** `deleted_profiles`, in the order the code
+claims — unlocked sibling first, **active profile last**, so dropping the link cannot leave a
+sibling behind to autoconnect into the network just forgotten. `nmcli` confirmed zero remaining,
+the `Decher` pair was untouched, and `wlan1` auto-recovered to `alfa-Decher-5g` within 8 s on
+priority 10. `deleted` (singular) is the active profile, which is what the dashboard names.
 
 New ground truth found while testing (all four cost time to interpret):
 
@@ -458,9 +462,18 @@ New ground truth found while testing (all four cost time to interpret):
 - **`/api/profiles` is TTL-cached and goes stale during a connect** — `do_connect` refreshes it
   once at entry, before it creates anything. Polling it mid-connect shows the *pre-connect* list,
   so use `nmcli -t -f NAME con show` as ground truth when watching profiles get created.
-- **A pair is not guaranteed for a marginal network.** `ssid_has_5ghz` reads the scan, so the same
-  open SSID produced `<name>` + `<name>-5g` in one run and `<name>` alone in the next, because its
-  weak 5 GHz BSS was absent from the second scan. Correct behaviour, not a bug.
+- ~~**A pair is not guaranteed for a marginal network.** Correct behaviour, not a bug.~~
+  **Wrong — corrected the same day, it was a bug.** Partly it is a marginal network's volatile
+  5 GHz BSS, but the dominant cause was the cold cache: `ssid_has_5ghz` and `key_mgmt_for` both read
+  `NETWORKS_CACHE.peek()`, and **every mutate invalidates that cache**, so a connect following a
+  failed connect or a forget saw nothing and silently skipped the `-5g` sibling. That is exactly the
+  retry a user makes after mistyping a password. Proved on hardware: with a correct password the
+  first connect built one profile, and the second — after a scan — built the pair. `key_mgmt_for`
+  had it worse: a cold cache reads as `security=""`, which sends a WPA3-only AP down the `wpa-psk`
+  path and fails the handshake, surfacing as a rejected password. Both now use `get()`, which loads
+  with `rescan=False` (sub-second, no radio activity) inside a connect that already runs 20-50 s.
+  Fixed in v0.3.1. **The lesson generalises: `peek()` is only safe where a stale-or-empty answer is
+  acceptable, which is `load_status`, not a decision that shapes what gets created.**
 - **`/api/status` reports an empty `band` and `signal: 0` between a connect and the next
   `/api/networks` call.** `load_status` uses `Cache.peek()` on purpose so a 2-5 s status poll never
   blocks behind a 5.3 s scan; the connect invalidated the cache and only a scan refills it. The

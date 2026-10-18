@@ -8,7 +8,8 @@
  * === SUPPORTED CONNECTION TYPES ===
  * - Cellular: USB port 1, basic cellular modem
  * - Cellular + Amp: USB port 1 + Kasa port 1 (cellular with signal amplifier)
- * - WiFi: USB port 2, WiFi adapter
+ * - WiFi: RETIRED as a hub source. Hub port 2 was the Pi Zero's slot, empty
+ *   since 2026-10-18; the radio is now the Alfa on wlan1, a direct RP5 port
  * - Starlink: USB port 3 + Kasa port 6 (satellite internet)
  * - Wired: USB port 3, shares Starlink's ethernet adapter (move the RJ45; Kasa outlet off)
  * - None: All ports off
@@ -38,7 +39,8 @@
  * - Real-time status updates with success/warning/error states
  * 
  * === WIFI CONFIGURATION ===
- * - Rendered by WifiPicker.jsx when the WiFi source is selected
+ * - Rendered by WifiPicker.jsx, always -- the Alfa uplink is independent of
+ *   the hub's source selection, so it must not be gated on it
  * - Lists networks in range with signal strength; tap to connect
  * - Asks for a password only when there is no saved credential
  * - Per-network Forget (deletes every profile for that SSID), a 5 GHz tag, and
@@ -76,7 +78,13 @@ const Internet = () => {
   const internetOptions = [
     { value: 'cellular', text: 'Cellular', port: 1, waitTime: 60, kasaPort: null },
     { value: 'cellular-amp', text: 'Cellular + Amp', port: 1, waitTime: 60, kasaPort: 1 },
-    { value: 'wifi', text: 'WiFi', port: 2, waitTime: 30, kasaPort: null },
+    // WiFi is no longer a hub source: the Alfa adapter (wlan1) sits on a direct
+    // RP5 USB port, on a different USB controller than the hub. Hub port 2 was
+    // the Pi Zero's slot and has been empty since 2026-10-18, so selecting this
+    // would deselect the live WAN on port 3 and enumerate nothing. Kept in the
+    // list but disabled, so a hub still reporting 'wifi' renders honestly
+    // instead of leaving no option checked.
+    { value: 'wifi', text: 'WiFi (retired hub slot)', port: 2, waitTime: 30, kasaPort: null, disabled: true },
     { value: 'starlink', text: 'Starlink', port: 3, waitTime: 120, kasaPort: 6 },
     // port 3, NOT 4: hub port 4 has no adapter (it holds the FT232R that controls
     // the switch). Wired shares Starlink's ethernet adapter on port 3 - same
@@ -411,7 +419,7 @@ const Internet = () => {
                       value={option.value}
                       checked={selectedOption === option.value}
                       onChange={handleOptionChange}
-                      disabled={selectedOption === null}  // Wait for the real state
+                      disabled={selectedOption === null || option.disabled}  // Wait for the real state; some options are retired
                     />
                   </Form.Field>
                 ))}
@@ -498,12 +506,16 @@ const Internet = () => {
           />
         )}
 
-        {/* WiFi picker: networks in range, tap to connect. See WifiPicker.jsx */}
-        {selectedOption === 'wifi' && (
-          <div style={{ marginBottom: '20px' }}>
-            <WifiPicker />
-          </div>
-        )}
+        {/* WiFi picker: networks in range, tap to connect. See WifiPicker.jsx.
+            Always rendered, because the uplink radio is independent of the hub:
+            the Alfa is on a direct RP5 port, so the WiFi link works whatever
+            source is selected here (and is often up while this page shows
+            Starlink). This used to be gated on selectedOption === 'wifi', which
+            made the picker reachable only by selecting the retired hub slot --
+            and that drops the live WAN. */}
+        <div style={{ marginBottom: '20px' }}>
+          <WifiPicker />
+        </div>
       </div>
     </div>
   );
