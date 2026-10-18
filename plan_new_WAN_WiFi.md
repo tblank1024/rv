@@ -105,16 +105,30 @@ Approach:
   Ignore `wlan1` in the RaspAP dashboard; never select it as the AP interface.
 - Verify: `nmcli dev status` (wlan1 = managed, wlan0 = unmanaged), `networkctl list`.
 
-### 3. Uplink detection (must fix)
-`raspap/99-pi5connect` only triggers `pi5connect.sh` for `KNOWN_UPLINKS=("eth1")` or names matching
-`enx*|eth*|usb*|wwan*|ppp*`. `wlan1` never triggers it, so no default route/MASQUERADE gets set.
-`pi5connect.sh` itself already accepts `wlan1` (it only excludes `wlan0`).
+### 3. Uplink detection — RESOLVED 2026-10-17, verified live
+This was written against the **stale repo copy** of `99-pi5connect`. The *deployed* hook already matches
+`wlan*` (excluding `wlan0`), so `wlan1` does trigger `pi5connect.sh`. Confirmed on hardware while testing the
+Alfa:
 
-Approach: in `99-pi5connect` add `wlan1` to `KNOWN_UPLINKS` (or add `wlan[1-9]*|wlx*` to the pattern). Keep the
-exclude list (`wlan0`, `br0`, ...) unchanged.
+```
+Dispatcher: triggering pi5connect for wlan1 down
+pi5connect.sh triggered: iface=wlan1 status=down
+```
 
-Note: `pi5connect.sh` picks the first UP interface that can ping 8.8.8.8, in `/sys/class/net` order (`eth*` before
-`wlan1`). Fine as long as only one hub port is powered at a time.
+The repo copy has since been synced from the deployed version (it had pointed `MAIN_SCRIPT` at the repo path and
+invoked it with **no arguments**, which would have made pi5connect fall back to its boot scan instead of acting on
+the triggered interface — deploying that copy would have broken uplink switching).
+
+Also added 2026-10-17: the hook now triggers on **`dhcp4-change`**. NM fires `up` as soon as the link is usable,
+which can precede DHCP returning a gateway; pi5connect then logged "cannot determine gateway" and exited, and
+nothing re-ran it. Measured on the cellular port: lease took 37 s, `up` fired with no gateway, lease landed one
+second later, no re-evaluation followed. A slow-DHCP uplink failed while a fast one worked.
+
+The selection note above is also stale. `pi5connect.sh` v2.1 does **not** scan `/sys/class/net` order on an event:
+it takes the interface the dispatcher names, then (a) keeps a healthy incumbent WAN rather than being preempted
+(`PI5_FORCE=1` overrides), (b) probes the candidate out of its own device with ICMP then TCP before touching the
+default route, and (c) rolls back if the commit ends with no internet. Verified: with `eth1` as WAN, bringing up
+`wlan1` logged `Keeping WAN=eth1 (healthy); ignoring candidate wlan1.` and left the route alone.
 
 ### 4. Captive portals (likely at campgrounds)
 `pi5connect.sh` only selects an uplink if `ping -I <iface> 8.8.8.8` succeeds. Behind a captive portal that fails
@@ -182,6 +196,25 @@ Campground WiFi is mostly 2.4 GHz; move Sophie's AP (onboard `wlan0`) to 5 GHz s
 band. If the park AP offers 5 GHz, prefer it for the uplink and put Sophie's AP on a non-overlapping 5 GHz
 channel. See the hostapd fixes C/D in `WiFitoHostBridge/plan-speed.md`.
 
+**"Prefer 5 GHz" must be enforced explicitly — NetworkManager gets it wrong (measured 2026-10-17).** NM ranks
+candidate BSSes by signal strength, so given the same SSID on both bands it picked **2.4 GHz at -62 dBm over
+5 GHz at -78 dBm — and the band it chose was 10-40x slower** (see Measured section). Signal strength is the wrong
+metric when the strong band is congested and the weak one is clean.
+
+Workaround in use: two profiles per SSID, the 5 GHz one with a higher autoconnect priority.
+
+```bash
+nmcli con add type wifi ifname wlan1 con-name <ssid>-5g ssid <ssid> \
+  -- 802-11-wireless-security.key-mgmt wpa-psk 802-11-wireless-security.psk <psk> \
+     802-11-wireless.band a connection.autoconnect-priority 10
+nmcli con add type wifi ifname wlan1 con-name <ssid>    ssid <ssid> \
+  -- ... (no band lock, priority 0)   # fallback for 2.4-only parks
+```
+
+NM tries the higher priority first and falls back if the 5 GHz BSS is absent. The picker (issue 10) should create
+this pair rather than one profile, or expose a band preference. Note a band-locked profile fails outright where
+that band is missing, which is why the unlocked fallback is required.
+
 ### 12. Sophie directly exposed to the campground network (must fix BEFORE first join)
 > Superseded by `plan_firewall.md`, which covers all uplinks with interface-based default-deny. Deploy that
 > before the Alfa first joins a park network; the notes below are kept for context.
@@ -224,6 +257,71 @@ Also:
 Verify before trusting a park network: from a laptop joined **directly to the park WiFi** (not Sophie's), run
 `nmap -Pn -p- <Sophie wlan1 IP>` → all ports filtered. Then from the RV LAN confirm the dashboard, MQTT, SSH,
 and VNC still work via `br0`.
+
+## Measured on hardware — 2026-10-17 (AWUS036ACM on the RP5)
+
+Bench test with the Alfa plugged **directly into an RP5 USB 3 port** (not the hub), `eth1` wired kept as the live
+WAN throughout so the test could not strand the session. Raw data in `WiFitoHostBridge/Results_WiFi_testing.md`.
+
+### It just works — no driver, firmware or modeswitch issues
+
+Contrary to issue 7, nothing was needed. Plugged in, enumerated, bound, radio registered:
+
+```
+usb 4-1: New USB device found, idVendor=0e8d, idProduct=7612
+mt76x2u 4-1:1.0: ASIC revision: 76120044
+mt76x2u 4-1:1.0: ROM patch build: 20141115060606a
+ieee80211 phy1: Selected rate control algorithm 'minstrel_ht'
+```
+
+No virtual-CD mode, no `usb-modeswitch`, no `firmware-misc-nonfree`. `mt76x2u` is in the stock Pi OS kernel
+(6.12.96). The radio exposes **28 channels on 5 GHz** and 14 on 2.4, with VHT (`0x318001b0`, short GI 80 MHz).
+Regulatory domain already `country US: DFS-FCC`, so issue 8 is satisfied as-is.
+
+**Gotcha:** the power LED stays dark until something brings the interface up. It is *not* a sign of failure —
+easy to misread as "no power", since Windows activates the radio on plug-in and lights it immediately.
+
+### Throughput, same SSID, same position, minutes apart
+
+| Path | Download | Latency | Link |
+|---|---|---|---|
+| Wired `eth1` (reference) | **90.5 Mbps** | 1.1 ms to router | 100 Mb full duplex |
+| **Alfa, 5 GHz ch36, -78 dBm** | **28.2 / 29.6 / 30.0 Mbps** — steady | **5.5 ms** avg | VHT-MCS1 40 MHz **NSS 2** |
+| Alfa, 2.4 GHz ch6, -62 dBm | 0.68 / 2.2 / 3.5 Mbps — erratic | ping timed out | MCS5 20 MHz NSS 1 |
+
+**The headline: 5 GHz beat 2.4 GHz by 10-40x despite being 16 dB weaker.** Cause is co-channel contention, not
+signal: a scan found `Decher`, `Decher&BlankGuests`, `Buckley Clan 2` and two hidden networks **all on 2437 MHz**.
+A clean weak channel beats a strong congested one, decisively. This was the opposite of the prediction going in
+(that -78 dBm would be too weak for 5 GHz to be worth using at this location).
+
+So the Alfa's value is **reaching 5 GHz at all** — not signal strength and not MIMO. On 2.4 GHz it measured
+-62 dBm vs the Zero's -64.3, i.e. no meaningful antenna advantage from where it sat. The 2x2 does engage
+(tx MCS 11-12 on 2.4, NSS 2 on 5 GHz under load), but the AP only sent 1x1 rates downstream, so MIMO mostly
+helped upload. The Zero is 2.4-only and cannot escape that congested channel at all, which is the real argument
+for replacing it.
+
+Caveat: the adapter sat on the Pi's chassis with stock dipoles unoriented — the antenna work in "Antenna and
+mounting" should improve the 5 GHz figure, and that is where the remaining headroom is.
+
+### Issue 6 (power) — a real constraint found on the RP5
+
+The Pi 5 caps **total** USB current at 600 mA unless `usb_max_current_enable=1` is set in
+`/boot/firmware/config.txt`. It is not set, and declared draws on the Pi's own ports already exceed it:
+
+| Device | `bMaxPower` |
+|---|---|
+| Edimax Bluetooth | 500 mA |
+| ASUS BT500 | 500 mA |
+| CoolGear hub | 100 mA |
+| Alfa (when added) | ~450-500 mA |
+
+`bMaxPower` is a declared ceiling, not actual draw, and Linux does not enforce the Pi's limit at the descriptor
+level — which is why it initialised fine and scanned fine. But the limiter is real hardware and a 2x2 radio under
+sustained transmit is the load that trips it. `vcgencmd get_throttled` stayed `0x0` throughout this test.
+
+Two mitigations, and the second is free: set `usb_max_current_enable=1` (needs an adequate PSU **and a reboot**),
+or run the adapter from the externally-powered hub as issue 6 already proposes — the planned Plugable replacement
+has a 60 W supply, so the Alfa draws from the hub rather than the Pi.
 
 ## Tradeoffs vs keeping the Zero
 
