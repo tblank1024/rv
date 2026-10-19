@@ -223,10 +223,13 @@ def next_label(sockets, hub):
     return str(len(sockets) + 1)
 
 
-def build_data(existing, sockets, wan, names=None):
+def build_data(existing, sockets, wan, names=None, gated=None):
     if names is None:
         names = dict(existing.get("names") or {})
+    if gated is None:
+        gated = dict(existing.get("gated") or {})
     return {
+        "gated": {k: True for k, v in gated.items() if k in sockets and v},
         "names": {k: v for k, v in names.items() if k in sockets and v},
         "note": existing.get("note") or
                 "Built by map_sockets.py. Each socket lists every (hub, port) "
@@ -270,6 +273,14 @@ def main():
                              "the hub moves to a different port: the socket "
                              "numbers stay the same, only the paths change. "
                              "Roles are kept.")
+    parser.add_argument("--set-gated", action="append", metavar="SOCKET=yes|no",
+                        default=[],
+                        help="gate a socket: power it only while it is the "
+                             "active uplink. Worth it for an expensive device "
+                             "(the cellular modem measured ~1W); not worth it "
+                             "for a cheap one (the WiFi adapter measured "
+                             "0.4W), because leaving it powered buys automatic "
+                             "promotion with no scan.")
     parser.add_argument("--set-name", action="append", metavar="SOCKET=NAME",
                         default=[],
                         help="set a socket's display label, e.g. --set-name "
@@ -308,11 +319,19 @@ def main():
                 print(f"{speed}: {chips[speed][0]} + {chips[speed][1]}")
             else:
                 print(f"{speed}: NOT FOUND")
+        names = dict(existing.get("names") or {})
+        gated = dict(existing.get("gated") or {})
         print(f"\nWrote {args.out}:")
         for label in sorted_labels(sockets):
             ident = ", ".join(f"{h}:{p}" for h, p in sockets[label])
-            role = f"  wan={wan[label]}" if label in wan else ""
-            print(f"  socket {label:<4} {ident}{role}")
+            bits = ""
+            if names.get(label):
+                bits += f"  {names[label]}"
+            if label in wan:
+                bits += f"  wan={wan[label]}"
+            if gated.get(label):
+                bits += "  GATED"
+            print(f"  socket {label:<4} {ident}{bits}")
         if "usb3" not in chips:
             print("\nNote: no USB 3 chip on the bus, so each socket has only its")
             print("USB 2 identity. Two very different causes:")
@@ -325,6 +344,44 @@ def main():
             print("    all, while USB 2 devices keep working. Check for")
             print("    'Cannot enable' on the root port:")
             print("      dmesg | grep -i 'cannot enable'")
+        return
+
+    if args.set_gated:
+        existing = load_existing(args.out)
+        if not existing.get("sockets"):
+            raise SystemExit(f"no map at {args.out} to gate sockets in")
+        sockets = {k: [tuple(x) for x in v]
+                   for k, v in existing["sockets"].items()}
+        gated = dict(existing.get("gated") or {})
+        for item in args.set_gated:
+            label, _, value = item.partition("=")
+            label, value = label.strip(), value.strip().lower()
+            if label not in sockets:
+                raise SystemExit(f"no socket {label!r} in {args.out}")
+            if value in ("yes", "true", "1", "on"):
+                gated[label] = True
+            elif value in ("no", "false", "0", "off", ""):
+                gated.pop(label, None)
+            else:
+                raise SystemExit(f"--set-gated wants yes or no, got {value!r}")
+        wan = dict(existing.get("wan") or {})
+        names = dict(existing.get("names") or {})
+        if not wan:
+            print("warning: no socket has a WAN role, so gating has no effect")
+        for label in sorted(gated):
+            if label not in wan:
+                print(f"warning: socket {label} is gated but has no WAN role, "
+                      "so nothing will ever power it on again")
+        try:
+            save(args.out, build_data(existing, sockets, wan, names, gated))
+        except OSError as exc:
+            raise SystemExit(f"could not write {args.out}: {exc}")
+        for label in sorted_labels(sockets):
+            bits = []
+            if names.get(label): bits.append(names[label])
+            if wan.get(label): bits.append(f"wan={wan[label]}")
+            if gated.get(label): bits.append("GATED (powered only when active)")
+            print(f"  socket {label:<4} {'  '.join(bits)}")
         return
 
     if args.set_name:

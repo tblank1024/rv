@@ -445,6 +445,16 @@ class SocketMap:
         for label, pairs in (data.get("sockets") or {}).items():
             self.sockets[str(label)] = [(str(h), int(n)) for h, n in pairs]
         self.wan = {str(k): str(v) for k, v in (data.get("wan") or {}).items()}
+        # Roles whose socket is powered ONLY while it is the active uplink.
+        # Everything else stays powered, which buys free detection: carrier or
+        # association appears by itself and pi5connect promotes it with no
+        # scan and no button. Measured 2026-10-19 with a USB meter: the Alfa
+        # is 0.4 W (0.8 Ah/day at 12 V) while the cellular modem is ~1 W and
+        # highly variable. Gating the 0.4 W parts saves less than the Pi's own
+        # rails cost and throws away automatic promotion; gating the modem is
+        # worth it and costs nothing, since nothing outranks it from below so
+        # it never needs speculative testing.
+        self.gated = {str(k) for k, v in (data.get("gated") or {}).items() if v}
         # Display label, deliberately NOT the same thing as a WAN role.
         # A socket can be named "Wifi" for the diagnostic page without
         # joining the exclusive group, which is what keeps selecting
@@ -497,7 +507,7 @@ class SocketMap:
                     "enabled": False, "device_present": False}
 
     @staticmethod
-    def _merge(label, wan, name, identities):
+    def _merge(label, wan, name, gated, identities):
         """
         One socket's state from its identities.
 
@@ -513,6 +523,7 @@ class SocketMap:
             "socket": label,
             "wan": wan,
             "name": name,
+            "gated": gated,
             "enabled": all(i.get("enabled") for i in identities) if identities else False,
             "device_present": bool(present),
             "product": device.get("product", ""),
@@ -526,7 +537,8 @@ class SocketMap:
         """One socket, reading only its own identities."""
         identities = [self._identity(h, n) for h, n in self.sockets.get(label, [])]
         return self._merge(label, self.wan.get(label, ""),
-                           self.names.get(label, ""), identities)
+                           self.names.get(label, ""),
+                           label in self.gated, identities)
 
     def states(self):
         """

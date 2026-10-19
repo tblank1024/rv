@@ -1025,6 +1025,9 @@ def get_hub_wan() -> dict:
             # on purpose: a socket can be named without joining the exclusive
             # WAN group (see SocketMap.names).
             "name": sock.get("name", ""),
+            # Gated roles are powered only while active, so the UI can explain
+            # why one shows as unpowered rather than looking broken.
+            "gated": bool(sock.get("gated")),
             "powered": bool(sock.get("enabled")),
             # present=False with powered=True means the socket is live but
             # nothing is plugged into it. Worth surfacing: it is the difference

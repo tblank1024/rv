@@ -115,7 +115,7 @@ rank_of() {
     echo 99
 }
 
-# "label|role|name|hub:port,hub:port" for every socket.
+# "label|role|name|gated|hub:port,hub:port" for every socket.
 #
 # Pipe-separated, not tab. Tab is an IFS *whitespace* character, so bash
 # collapses runs of it and drops empty fields: socket 1 has no role, and
@@ -133,7 +133,8 @@ roles = data.get("wan") or {}
 names = data.get("names") or {}
 for label, ids in sorted((data.get("sockets") or {}).items()):
     ident = ",".join("%s:%s" % (h, p) for h, p in ids)
-    print("|".join([label, roles.get(label, ""), names.get(label, ""), ident]))
+    print("|".join([label, roles.get(label, ""), names.get(label, ""),
+                     "1" if (data.get("gated") or {}).get(label) else "", ident]))
 ' "$SOCKET_MAP"
 }
 
@@ -239,11 +240,12 @@ if [[ ! -r "$SOCKET_MAP" ]]; then
     exit 1
 fi
 
-declare -A ROLES NAMES IDENTS
+declare -A ROLES NAMES IDENTS GATED
 CANDIDATES=()
-while IFS='|' read -r label role name idents; do
+while IFS='|' read -r label role name gated idents; do
     [[ -z "$label" ]] && continue
     ROLES[$label]="$role"; NAMES[$label]="$name"; IDENTS[$label]="$idents"
+    GATED[$label]="$gated"
     # A socket counts as a WAN candidate if its role OR its display name
     # places it in the preference list. The name fallback is what lets socket
     # 1 ("Wifi", no role) be considered without making it switchable.
@@ -373,12 +375,21 @@ for label in "${ORDERED[@]}"; do
 done
 
 if [[ -n "$WINNER" ]]; then
-    # Settle to one powered uplink: switch off every other roled socket.
+    # Settle. Only GATED losers are powered off -- not every losing role.
+    #
+    # Measured with a USB meter 2026-10-19: the WiFi adapter is 0.4 W and the
+    # cellular modem ~1 W. Powering down a 0.4 W adapter saves 0.8 Ah/day at
+    # 12 V, less than a fifth of what the Pi's own rails draw, and it throws
+    # away free detection: left powered, carrier or association appears by
+    # itself and pi5connect promotes it with no scan and no button. So cheap
+    # sockets stay on and only the expensive ones are gated. An earlier
+    # version powered off every loser, which was optimising the wrong thing.
     for label in "${ORDERED[@]}"; do
         [[ "$label" == "$WINNER_LABEL" ]] && continue
-        [[ -z "${ROLES[$label]}" ]] && continue      # name-only: never switch
+        [[ -z "${ROLES[$label]}" ]] && continue          # name-only: never switch
+        [[ -z "${GATED[$label]:-}" ]] && continue        # not gated: leave powered
         socket_is_on "${IDENTS[$label]}" || continue
-        log "settling: socket $label off (winner is $WINNER_LABEL)"
+        log "settling: socket $label off (gated, winner is $WINNER_LABEL)"
         socket_power "$label" off "${IDENTS[$label]}"
     done
     echo "ok $WINNER $WINNER_LABEL $(date +%s)" > "$RESULT_FILE"
