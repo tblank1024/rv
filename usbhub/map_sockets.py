@@ -42,6 +42,99 @@ from usbhub_ports import (            # noqa: E402
 POLL_SECONDS = 0.3
 SETTLE_SECONDS = 0.9      # enumeration populates product/speed after the dir
 
+# --- relocation ------------------------------------------------------------
+#
+# Which chip port each numbered socket on the shell actually is. This is a
+# property of the hub model, not of where its upstream cable is plugged in, so
+# once measured it can be reapplied after the hub moves -- which is what
+# --relocate does, instead of making you walk all seven sockets again.
+#
+# Measured on the Plugable 7-in-1, 2026-10-18, by plugging a device into each
+# socket in turn. Port 3 of the upstream chip is the internal cascade to the
+# downstream chip and is therefore not a socket.
+PLUGABLE_SOCKET_PORTS = {
+    "1": ("down", 3),
+    "2": ("down", 2),
+    "3": ("down", 1),
+    "4": ("down", 4),
+    "5": ("up", 2),
+    "6": ("up", 1),
+    "7": ("up", 4),
+}
+
+# The two chips in the shell. A USB 3 hub is two hubs in one package: the
+# SuperSpeed lanes go to one chip and the D+/D- pair to a different one on a
+# different bus, so each has its own VID:PID and its own sysfs tree.
+PLUGABLE_CHIPS = {
+    "usb2": ("2109", "2817"),     # VIA Labs USB2.0 Hub
+    "usb3": ("2109", "0817"),     # VIA Labs USB3.0 Hub
+}
+CASCADE_PORT = 3
+
+
+def _usb_attr(name, attr):
+    try:
+        with open(f"/sys/bus/usb/devices/{name}/{attr}") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def find_plugable_chips():
+    """Locate the hub's chips as they are attached right now.
+
+    Returns {"usb2": (upstream, downstream), ...} for each speed that is
+    actually on the bus. A speed can be missing: if the SuperSpeed upstream
+    link does not train, the USB 3 chip never enumerates at all and only the
+    USB 2 pair is found. Reported rather than guessed, because it changes what
+    the map can control.
+    """
+    found = {}
+    try:
+        entries = sorted(os.listdir("/sys/bus/usb/devices"))
+    except OSError as exc:
+        raise HubError(f"cannot read /sys/bus/usb/devices: {exc}")
+
+    for speed, (vid, pid) in PLUGABLE_CHIPS.items():
+        # An upstream chip sits directly on a root port, so its name has no
+        # dot ("1-1"); a downstream one is "1-1.3".
+        upstream = [e for e in entries
+                    if not e.startswith("usb") and ":" not in e
+                    and "." not in e
+                    and (_usb_attr(e, "idVendor"), _usb_attr(e, "idProduct"))
+                    == (vid, pid)]
+        if not upstream:
+            continue
+        if len(upstream) > 1:
+            raise HubError(
+                f"found {len(upstream)} {speed} hub chips ({', '.join(upstream)}); "
+                "--relocate cannot tell which shell they belong to. Unplug the "
+                "other hub, or map by hand.")
+        up = upstream[0]
+        down = f"{up}.{CASCADE_PORT}"
+        if (_usb_attr(down, "idVendor"), _usb_attr(down, "idProduct")) != (vid, pid):
+            raise HubError(
+                f"{up} is a {speed} hub but its port {CASCADE_PORT} does not "
+                f"hold the matching downstream chip ({down} missing or wrong). "
+                "This does not look like the 7-in-1; map it by hand.")
+        found[speed] = (up, down)
+    return found
+
+
+def relocate_sockets(chips):
+    """The socket map for the chips as currently attached."""
+    sockets = {}
+    for label, (which, port) in PLUGABLE_SOCKET_PORTS.items():
+        identities = []
+        for speed in ("usb2", "usb3"):       # keep USB 2 first, as mapping did
+            pair = chips.get(speed)
+            if not pair:
+                continue
+            upstream, downstream = pair
+            identities.append((downstream if which == "down" else upstream, port))
+        sockets[label] = identities
+    return sockets
+
 
 def watched_ports(names):
     """
@@ -168,12 +261,54 @@ def main():
                         help=f"where to write the map (default {DEFAULT_SOCKET_MAP})")
     parser.add_argument("--fresh", action="store_true",
                         help="start a new map instead of merging into --out")
+    parser.add_argument("--relocate", action="store_true",
+                        help="rewrite the map for the hub's current sysfs "
+                             "paths, without plugging anything in. Use after "
+                             "the hub moves to a different port: the socket "
+                             "numbers stay the same, only the paths change. "
+                             "Roles are kept.")
     parser.add_argument("--set-role", action="append", metavar="SOCKET=ROLE",
                         default=[],
                         help="assign a WAN role without re-walking the hub, "
                              "e.g. --set-role 1=wifi. ROLE empty clears it. "
                              "Repeatable; exits without watching anything.")
     args = parser.parse_args()
+
+    if args.relocate:
+        existing = load_existing(args.out)
+        try:
+            chips = find_plugable_chips()
+        except HubError as exc:
+            raise SystemExit(f"error: {exc}")
+        if not chips:
+            raise SystemExit(
+                "error: no Plugable hub chips found on the bus. Expected "
+                + " or ".join(f"{v[0]}:{v[1]}" for v in PLUGABLE_CHIPS.values())
+                + ". Is the hub plugged in and powered?")
+        sockets = relocate_sockets(chips)
+        wan = dict(existing.get("wan") or {})
+        wan = {k: v for k, v in wan.items() if k in sockets}
+        try:
+            save(args.out, build_data(existing, sockets, wan))
+        except OSError as exc:
+            raise SystemExit(f"could not write {args.out}: {exc}")
+
+        for speed in ("usb2", "usb3"):
+            if speed in chips:
+                print(f"{speed}: {chips[speed][0]} + {chips[speed][1]}")
+            else:
+                print(f"{speed}: NOT FOUND")
+        print(f"\nWrote {args.out}:")
+        for label in sorted_labels(sockets):
+            ident = ", ".join(f"{h}:{p}" for h, p in sockets[label])
+            role = f"  wan={wan[label]}" if label in wan else ""
+            print(f"  socket {label:<4} {ident}{role}")
+        if "usb3" not in chips:
+            print("\nWARNING: the USB 3 chip is not on the bus, so each socket")
+            print("has only its USB 2 identity and a SuperSpeed device plugged")
+            print("into this hub will not enumerate at all. Check dmesg for")
+            print("'Cannot enable' on the root port and re-run after fixing it.")
+        return
 
     # Roles are the one part of the map that is a decision rather than a
     # measurement, so they can be changed without plugging anything in.
