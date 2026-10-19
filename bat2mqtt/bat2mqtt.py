@@ -78,6 +78,11 @@ def liveness_watchdog():
             log(f"FATAL: no battery data for {int(silent_for)}s "
                 f"(limit {STALE_EXIT_SECONDS}s); exiting so Docker restarts us")
             sys.stdout.flush()
+            # flush() only reaches the fd; the line still has to traverse
+            # container stdout -> docker -> journald, and os._exit can drop it
+            # in flight. Observed 2026-10-19: the watchdog fired on the 45-min
+            # mark and left no FATAL line at all.
+            time.sleep(1.0)
             os._exit(1)
 
 

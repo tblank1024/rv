@@ -476,6 +476,11 @@ async def staleness_watchdog():
             log(f"FATAL: no tire data for {int(silent_for // 60)} min "
                 f"(limit {STALE_EXIT_MIN} min); exiting so Docker restarts us")
             sys.stdout.flush()
+            # flush() only reaches the fd; the line still has to traverse
+            # container stdout -> docker -> journald, and os._exit can drop it
+            # in flight. Observed 2026-10-19: the watchdog fired on the 45-min
+            # mark and left no FATAL line at all.
+            time.sleep(1.0)
             os._exit(1)
         if silent_for > stale_secs:
             # Re-warn at most once per stale interval, not every minute
