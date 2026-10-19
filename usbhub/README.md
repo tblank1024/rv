@@ -253,13 +253,86 @@ Untested: whether disabling a port actually removes VBUS. `ppps` is a claim.
 Measure the current, or watch an LED-bearing device die, before relying on it
 for power saving.
 
+## Rewiring runbook
+
+Written 2026-10-18 for the move off the Coolgear. The ordering is the point:
+**make WiFi carry the WAN before the Coolgear is unplugged**, because the live
+uplink (`eth1`, Coolgear port 3) is also the agent's only route out.
+
+Arm the auto-revert watchdog first — `rv/raspap/wan_revert.sh`, documented in
+`rv/raspap/README.txt`. It restores *some* uplink if a step leaves the RV dark,
+and it outlives the SSH session that armed it.
+
+```bash
+cd rv/usbhub   && sudo ./setup_usbhub_api.sh          # 0.2.1 -> 0.3.0 FIRST:
+                                                      # 0.3.0 carries the fix that
+                                                      # stops a WAN switch cutting
+                                                      # socket 7 (Bluetooth)
+cd ../raspap   && sudo ./wan_revert.sh arm 120
+```
+
+1. **Edimax Bluetooth out of blue A, into the free black port.** Blue A is a
+   SuperSpeed connector holding a 12 Mbit/s device; the Alfa wants it. Check
+   `hciconfig` still lists `08:BE:AC:35:8E:5E` and
+   `docker restart battery` if `bat2mqtt` went quiet — it binds one adapter by
+   MAC with `gatttool` and does not recover from a disappearance on its own.
+2. **Alfa from hub socket 1 into blue A.** Verify `wlan1` appears and the
+   driver bound: `dmesg | tail` must show `ASIC revision` *and* a `phy`
+   registration, not `failed with error -110`.
+3. **Prove WiFi works as an uplink without committing to it:**
+   `nmcli connection up alfa-Decher-5g ifname wlan1` then
+   `curl -4 --interface wlan1 -s -o /dev/null -w '%{http_code}\n' http://1.1.1.1/`.
+   Interface-bound on purpose — `pi5connect.sh` v2.1 keeps the healthy `eth1`
+   incumbent, so this tests the fallback without taking the route away.
+   **Do not continue until this passes.**
+4. **Unplug the Coolgear.** `eth1` disappears and pi5connect fails over to
+   `wlan1` (it did exactly this, in reverse, at 18:18 on 2026-10-18). Confirm
+   with `cat /run/pi5connect-wan`.
+5. **Wired adapter into socket 2, then cellular into 3, then Starlink into 4** —
+   one at a time, confirming each enumerates before the next:
+   `curl -s 127.0.0.1:12347/api/sockets | python3 -m json.tool`.
+6. **Record the roles** (socket 1 is cleared: WiFi is no longer on the hub):
+   ```bash
+   sudo ./map_sockets.py --set-role 1= --set-role 2=wired \
+                         --set-role 3=cell --set-role 4=starlink
+   ```
+7. **Protect the Alfa's new port.** Put `usb2:1` in `USBHUB_PROTECTED` in
+   `usbhub-api.service` and re-run the installer. It is *not* auto-protected:
+   cascade detection only fires on ports with a hub behind them, and the whole
+   point of moving the Alfa off the hub is that nothing here can cut it. The
+   old `1-2:3,1-2:4` entries become dead paths and can go.
+8. `cd ../docker && docker compose up -d --build webserver`
+9. `sudo ./wan_revert.sh disarm`
+
+Two things to expect afterwards:
+
+- **Interface names.** With several sockets powered at once, the three
+  USB-ethernet adapters enumerate together and take `eth1`/`eth2`/`eth3` in
+  arrival order — there is no `enx*` naming on this host (the policy is masked
+  by symlinks to `/dev/null`). `Wired connection 1` is pinned to
+  `connection.interface-name=eth1`, not to a MAC, so an adapter landing on
+  `eth2` has no profile and NM must auto-create one. Once each adapter's MAC is
+  known, pin them with `.link` files the way `11-wlan-wan.link` pins the Alfa.
+  Exclusive WAN selection mostly hides this by powering one at a time.
+- **The Alfa can no longer be power-gated by the hub**, so it draws its 400 mA
+  whenever the Pi is on. `ip link set wlan1 down` on a WAN switch turns the
+  radio off while keeping the device enumerated, which is the version of power
+  saving that does not cost the fallback. Disabling `usb2:1` would also work
+  and is exactly what step 7 forbids.
+
 ## Not yet done
 
-- `server.py` still drives the Coolgear directly and assumes a single active
-  port (`get_current_active_port()` returns one number). The proxy endpoints
-  that would let the dashboard use this service are not written.
-- The debug and Internet pages are therefore unchanged.
-- No socket has a WAN role yet (`"wan": {}` in the map), so there is nothing
-  for the Internet page to select between. Roles are editable in the JSON.
+- `server.py` still drives the Coolgear directly for the live path and assumes
+  a single active port (`get_current_active_port()` returns one number). The
+  proxy endpoints are written (`/api/hub/sockets`, `/api/hub/socket`,
+  `/api/hub/socket/exclusive`, `/api/hub/wan`, `/api/hub/hubs`) and the debug
+  and Internet pages use them, but the Coolgear selector is still the live one.
+- Its `EXTENDED_CONNECTION_MAPPING` has `starlink` and `wired` both on
+  Coolgear port 3, so one of them is wrong. Measured 2026-10-18: port 3 holds
+  the `r8152` serving `192.168.2.197` from the house LAN — i.e. wired. The
+  2026-10-17 sweep found Starlink (`206.214.239.194`, `192.168.100.1`) on that
+  same port and recorded no MAC, so either the adapter or the cable moved
+  between the two dates. Not resolvable from sysfs; the table dies with the
+  Coolgear anyway, and `/api/hub/wan` selects by role.
+- Roles are still unset (`"wan": {}` in the map) until step 6 above runs.
 - The WAN devices are all still on the Coolgear, which is still the switch.
-  Nothing here touches it.
