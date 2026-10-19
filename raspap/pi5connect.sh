@@ -13,7 +13,12 @@
 #   2. iface_has_ip no longer requires operstate "UP". A cdc_ether cellular
 #      modem sits at "state UNKNOWN" while working, so eth1 was invisible as a
 #      candidate AND the incumbent-health guard thought the live WAN was dead.
-#   3. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
+#   3. probe_iface installs a temporary /32 route to each probe endpoint via
+#      the candidate's gateway. Without it a standby candidate is unprobeable:
+#      it has no default route of its own (this script deletes all but one) and
+#      SO_BINDTODEVICE confines lookup to routes on the device, so the probe
+#      failed for every healthy standby. Found by a live failover test.
+#   4. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
 #      tun*, any bridge), not just by the five hardcoded names. The broader
 #      failover search would otherwise probe docker's per-network bridges.
 #
@@ -54,6 +59,9 @@ PROBE_TARGETS=("1.1.1.1" "8.8.8.8")
 # connectivity-check.gstatic.com on this host, so that target never resolved.
 # Any HTTP response (even 400) proves the TCP path works.
 PROBE_URLS=("http://1.1.1.1/" "http://204.79.197.200/")
+# The same endpoints as bare addresses. probe_iface installs a /32 route
+# to each via the candidate's gateway for the duration of the probe.
+PROBE_HOSTS=("1.1.1.1" "8.8.8.8" "204.79.197.200")
 PROBE_COUNT=2
 PROBE_WAIT=2
 PROBE_HTTP_TIMEOUT=6
@@ -135,22 +143,64 @@ iface_has_ip() {
 # public resolvers while passing TCP, and rejecting such a WAN would leave the
 # RV with no internet at all. Both must fail before a candidate is rejected.
 probe_iface() {
-    local iface="$1"
+    local iface="$1" gw="${2:-}"
+    local rc=1 target url host
+    local added=()
+
+    # v2.2: a standby candidate has NO default route of its own, because this
+    # script deletes every default route except the chosen one. Both ping -I
+    # and curl --interface use SO_BINDTODEVICE, which restricts route lookup to
+    # routes on that device -- so with nothing else done, the probe can only
+    # ever succeed for a candidate that has just taken a DHCP lease, and any
+    # long-standing standby is unprobeable by construction.
+    #
+    # Measured 2026-10-19 by taking the live eth2 down: BOTH eth1 and wlan1
+    # were rejected as "gateway reachable but no internet beyond it", purely
+    # for this reason. Their links were fine -- each could ping its own gateway
+    # -- so the failover had two healthy uplinks and refused both.
+    #
+    # Fix: install a /32 route to each probe endpoint via the candidate's
+    # gateway for the duration of the probe. A /32 is more specific than any
+    # default route, so it steers only the probe traffic and never disturbs the
+    # incumbent's default route -- the pre-commit-safe property this function
+    # is supposed to have. Removed again on every exit path below.
+    if [[ -n "$gw" ]]; then
+        for host in "${PROBE_HOSTS[@]}"; do
+            if ip route add "$host/32" via "$gw" dev "$iface" 2>/dev/null; then
+                added+=("$host")
+            fi
+        done
+        [[ ${#added[@]} -gt 0 ]] && \
+            echo "[$(date)] Probe: temporary routes via $gw on $iface for ${added[*]}"
+    fi
+
     for target in "${PROBE_TARGETS[@]}"; do
         if ping -c "$PROBE_COUNT" -W "$PROBE_WAIT" -I "$iface" "$target" >/dev/null 2>&1; then
             echo "[$(date)] Probe OK (icmp): $iface reached $target"
-            return 0
+            rc=0
+            break
         fi
     done
-    echo "[$(date)] ICMP probe failed on $iface; trying TCP"
-    for url in "${PROBE_URLS[@]}"; do
-        if curl -4 --interface "$iface" -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null; then
-            echo "[$(date)] Probe OK (tcp): $iface reached $url"
-            return 0
-        fi
+
+    if [[ "$rc" != "0" ]]; then
+        echo "[$(date)] ICMP probe failed on $iface; trying TCP"
+        for url in "${PROBE_URLS[@]}"; do
+            if curl -4 --interface "$iface" -s -o /dev/null --max-time "$PROBE_HTTP_TIMEOUT" "$url" 2>/dev/null; then
+                echo "[$(date)] Probe OK (tcp): $iface reached $url"
+                rc=0
+                break
+            fi
+        done
+    fi
+
+    for host in "${added[@]:-}"; do
+        [[ -n "$host" ]] && ip route del "$host/32" via "$gw" dev "$iface" 2>/dev/null
     done
-    echo "[$(date)] Probe FAILED: $iface could not reach ${PROBE_TARGETS[*]} or ${PROBE_URLS[*]}"
-    return 1
+
+    if [[ "$rc" != "0" ]]; then
+        echo "[$(date)] Probe FAILED: $iface could not reach ${PROBE_TARGETS[*]} or ${PROBE_URLS[*]}"
+    fi
+    return "$rc"
 }
 
 # Non-AP interfaces that are UP with an IPv4 address, excluding $1.
@@ -303,7 +353,7 @@ elif ! ping -c 1 -W "$PROBE_WAIT" -I "$ACTIVE_IFACE" "$GATEWAY_IP" >/dev/null 2>
     [[ "$GUESSED" == "1" ]] && echo "[$(date)] (gateway was a guess, so this is expected)"
     ensure_dns_input
     exit 1
-elif ! probe_iface "$ACTIVE_IFACE"; then
+elif ! probe_iface "$ACTIVE_IFACE" "$GATEWAY_IP"; then
     echo "[$(date)] Reject $ACTIVE_IFACE: gateway reachable but no internet beyond it."
     echo "[$(date)] Leaving WAN=${PREV_WAN:-none} untouched."
     echo "[$(date)] If this network blocks ICMP and HTTP probes, re-run with PI5_SKIP_PROBE=1."
