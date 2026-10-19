@@ -23,6 +23,14 @@
 #      wired reclaims the route when it returns instead of leaving the RV on
 #      metered cellular. Roles come from the hub socket map, not interface
 #      names, which drift. Failover tries candidates in this order too.
+#      Verified live 2026-10-19: forced onto cellular, then a wired "up"
+#      logged "Promoting eth2 (wired) over healthy eth1 (cell)" and switched
+#      in ~2s; cellular and wifi each offering themselves against healthy
+#      wired were both refused as "not preferred".
+#      CAVEAT: promotion only fires for a candidate whose socket is POWERED,
+#      because an unpowered socket has no interface to raise an event. With
+#      one-WAN-at-a-time power that is the minority of cases -- see the
+#      scan-on-demand design discussion.
 #   5. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
 #      tun*, any bridge), not just by the five hardcoded names. The broader
 #      failover search would otherwise probe docker's per-network bridges.
