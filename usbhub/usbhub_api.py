@@ -60,7 +60,7 @@ from usbhub_ports import (
     probe_report,
 )
 
-SCRIPT_VERSION = "0.2.0"
+SCRIPT_VERSION = "0.2.1"
 
 BIND = os.environ.get("USBHUB_API_BIND", "127.0.0.1")
 PORT = int(os.environ.get("USBHUB_API_PORT", "12347"))
@@ -223,8 +223,9 @@ class Handler(BaseHTTPRequestHandler):
                 if label is not None and label not in smap.sockets:
                     return self._send(404, {"ok": False, "error": "no_socket",
                                             "message": f"no socket {label!r}"})
-                others = [l for l in smap.labels if l != label
-                          and smap.states()[l]["enabled"]]
+                current = smap.states()
+                others = [l for l in smap.labels
+                          if l != label and current[l]["enabled"]]
                 blocked = self._socket_blocked(smap, others)
                 if blocked:
                     return self._send(409, {

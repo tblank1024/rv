@@ -161,11 +161,78 @@ stopped silently at 14:01:56. Plug the Edimax into the Plugable.
 declared ceiling, not consumption, and `throttled=0x0` shows no undervoltage so
 far — but note the two Bluetooth adapters claim more between them than the Alfa.
 
+## The map, measured 2026-10-18
+
+```
+socket 1    3-1.3:3, 4-1.3:3        socket 5    3-1:2, 4-1:2
+socket 2    3-1.3:2, 4-1.3:2        socket 6    3-1:1, 4-1:1
+socket 3    3-1.3:1, 4-1.3:1        socket 7    3-1:4, 4-1:4
+socket 4    3-1.3:4, 4-1.3:4
+```
+
+Two things worth having measured rather than assumed:
+
+- **Physical order does not follow port order.** Sockets 1-4 are on the
+  downstream chip in port order 3, 2, 1, 4; sockets 5-7 on the upstream chip in
+  order 2, 1, 4. Nothing about the geometry was guessable.
+- **Port numbering is identical across the two trees** — `3-1.3:3` and
+  `4-1.3:3` are the same socket for every one of the seven. So the two chips'
+  ports are wired to the connectors in the same order, which is what makes a
+  second mapping pass a confirmation rather than a separate discovery.
+
+### Which identity gates a device
+
+With the AX88179B (SuperSpeed) in socket 7:
+
+| action | result |
+|---|---|
+| disable the USB 2 identity only (`3-1:4`) | device **stays** |
+| disable the USB 3 identity only (`4-1:4`) | device **gone** |
+
+So a device is gated by the identity matching its own speed, and the two chips'
+port power is **independent — not ganged to the connector's VBUS**. Disabling
+the USB 2 half of a socket did not interrupt a SuperSpeed device in it. That is
+why `SocketMap` sets every identity: either half alone is wrong for half the
+devices that could be plugged in.
+
+### Reading a port is expensive on a suspended hub
+
+Measured per `states()` call:
+
+```
+3-1      2.0 ms        4-1      1.8 ms
+3-1.3  273.2 ms        4-1.3    1.6 ms
+```
+
+`3-1.3` is runtime-suspended, and reading a port's `disable` attribute is a USB
+control transfer that wakes it first — 75-220 ms per port. The whole socket map
+cost **2.3 s** per read at first, which is unusable for a dashboard poll.
+
+Three changes, in order of how much they bought:
+
+1. Read each identity once per request instead of a whole hub per identity
+   (`port_state` alongside `states`): 2.3 s → 0.9 s.
+2. Cache the `enabled` reading with a 5 s TTL, invalidated on every write, since
+   that read reports only *our own* switch state: 0.9 s → 0.4 ms warm.
+3. While the hub stays suspended, keep trusting the cache past the TTL (300 s
+   backstop). A suspended hub cannot have changed its own port power — a plug
+   into a powered port resumes it, and a plug into an unpowered one is not
+   detected at all. Steady state is now **~2 ms**, with one 0.9 s read at
+   start-up.
+
+Device presence is deliberately **not** cached: those attributes are populated
+at enumeration and read in microseconds, and a stale "is something plugged in"
+is the kind of lie that made the old debug page untrustworthy. Keeping the hub
+awake would also have fixed the latency, at the cost of standby current — the
+wrong trade on a battery.
+
 ## Verified, and what is still untested
 
-Write path, 2026-10-18, through the root service (first privileged test):
-`POST /api/hub/4-1/port {"port":1,"on":false}` disabled the port and reported
-`active_ports: [2,3,4]`; restoring it brought it back. Every guard answers
+Write path, 2026-10-18, through the root service: `POST /api/hub/4-1/port`
+disabled a port and reported `active_ports: [2,3,4]`; restoring it brought it
+back. `POST /api/socket {"socket":"7","on":false}` switched both identities and
+the device disappeared and returned. `POST /api/socket/exclusive {"socket":"7"}`
+left sockets 1-6 disabled and 7 powered, confirmed in sysfs. Every guard answers
 correctly — 409 on a cascade socket, on an `exclusive` that would cut one and on
 `all-off`; 404 on an unknown socket; 400 on a bad body or malformed JSON; 409
 `no_socket_map` when no map exists; and turning a protected port *on* is allowed.
@@ -180,7 +247,7 @@ for power saving.
   port (`get_current_active_port()` returns one number). The proxy endpoints
   that would let the dashboard use this service are not written.
 - The debug and Internet pages are therefore unchanged.
-- The socket map is not built — it needs a device walked round the hub. Until
-  then the WAN sockets have no names, and nothing can be wired to the UI.
+- No socket has a WAN role yet (`"wan": {}` in the map), so there is nothing
+  for the Internet page to select between. Roles are editable in the JSON.
 - The WAN devices are all still on the Coolgear, which is still the switch.
   Nothing here touches it.

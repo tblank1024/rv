@@ -39,6 +39,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 __all__ = [
     "HubPorts", "SocketMap", "discover_hubs", "discover_cascade_ports",
@@ -86,6 +87,63 @@ def _read(path, default=""):
             return handle.read().strip()
     except (OSError, UnicodeDecodeError):
         return default
+
+
+# Reading a port's "disable" attribute is a USB control transfer to the hub, and
+# on a runtime-suspended hub it wakes it first: measured 75-220 ms per read on
+# the Plugable's downstream USB 2 chip (3-1.3), against 2 ms on its USB 3
+# counterpart. Fourteen identities then cost ~850 ms, which is too slow for a
+# dashboard poll.
+#
+# But that read reports only *our own* switch state, and every write goes
+# through set_port(), which invalidates the entry. So cache it, with a short TTL
+# as the backstop for a change made behind our back -- uhubctl, or a hand-edited
+# sysfs write. Device presence is NOT cached: those attributes are populated at
+# enumeration and read in microseconds, and a stale "is something plugged in"
+# is exactly the kind of lie that made the old debug page untrustworthy.
+#
+# Keeping the hub awake would also fix the latency, at the cost of standby
+# current. On a battery that is the wrong trade.
+_ENABLED_TTL = 5.0
+_ENABLED_STALE_MAX = 300.0
+_enabled_cache = {}
+
+
+def _hub_suspended(hub):
+    """
+    Whether the hub is runtime-suspended. A plain attribute read, no control
+    transfer, so this is cheap even when reading a port is not.
+    """
+    device = (f"/sys/bus/usb/devices/{hub}" if hub.startswith("usb")
+              else f"/sys/bus/usb/devices/{hub}")
+    return _read(f"{device}/power/runtime_status") == "suspended"
+
+
+def _port_enabled(hub, port, port_dir):
+    key = (hub, port)
+    now = time.monotonic()
+    cached = _enabled_cache.get(key)
+    if cached is not None:
+        age = now - cached[0]
+        if age < _ENABLED_TTL:
+            return cached[1]
+        # A suspended hub cannot have changed its own port power: a plug into a
+        # powered port resumes it (and device presence, which is read live,
+        # changes with it), and a plug into an unpowered one is not detected at
+        # all. So while it stays suspended the cached answer is still true, and
+        # waking it to re-ask would cost 200 ms and the current to do it. The
+        # long backstop covers the one case this misses -- a writer outside this
+        # module, such as uhubctl by hand.
+        if age < _ENABLED_STALE_MAX and _hub_suspended(hub):
+            return cached[1]
+    # "disable" is the kernel's own view; 1 means we turned it off.
+    value = _read(f"{port_dir}/disable", "0") != "1"
+    _enabled_cache[key] = (now, value)
+    return value
+
+
+def _forget_enabled(hub, port):
+    _enabled_cache.pop((hub, port), None)
 
 
 def _hub_interface_dirs():
@@ -221,30 +279,39 @@ class HubPorts:
         return any(self.hub in key for key in switching), ""
 
     # -- state ------------------------------------------------------------
+    def port_state(self, port):
+        """
+        One port's state, newest reading each call.
+
+        Reading a port's "disable" attribute is a control transfer to the hub,
+        and on a suspended hub it also wakes it: measured 75-220 ms per read on
+        the Plugable's downstream USB 2 chip, against 2 ms on its USB 3 one. So
+        reading a single port matters -- a caller that wants one socket must
+        not pay for a whole hub, and nothing should read the same port twice in
+        one request.
+        """
+        port_dir = self._port_dir(port)
+        device = port_device_path(self.hub, port)
+        present = os.path.isdir(device)
+        return {
+            "port": port,
+            "name": self.port_names.get(port, ""),
+            "enabled": _port_enabled(self.hub, port, port_dir),
+            "device_present": present,
+            "product": _read(f"{device}/product") if present else "",
+            "vid_pid": (f"{_read(device + '/idVendor')}:"
+                        f"{_read(device + '/idProduct')}") if present else "",
+            "max_power": _read(f"{device}/bMaxPower") if present else "",
+            "speed": _read(f"{device}/speed") if present else "",
+            # Class 09 is a hub. A port with a hub on it may be an internal
+            # cascade rather than a socket -- cutting it takes every port
+            # behind it with it, so callers protect these.
+            "is_hub": present and _read(f"{device}/bDeviceClass") == "09",
+        }
+
     def states(self):
-        """Per-port state, newest reading each call. Needs no privileges."""
-        out = {}
-        for port in self.ports:
-            port_dir = self._port_dir(port)
-            device = port_device_path(self.hub, port)
-            present = os.path.isdir(device)
-            out[port] = {
-                "port": port,
-                "name": self.port_names.get(port, ""),
-                # "disable" is the kernel's own view; 1 means we turned it off.
-                "enabled": _read(f"{port_dir}/disable", "0") != "1",
-                "device_present": present,
-                "product": _read(f"{device}/product") if present else "",
-                "vid_pid": (f"{_read(device + '/idVendor')}:"
-                            f"{_read(device + '/idProduct')}") if present else "",
-                "max_power": _read(f"{device}/bMaxPower") if present else "",
-                "speed": _read(f"{device}/speed") if present else "",
-                # Class 09 is a hub. A port with a hub on it may be an internal
-                # cascade rather than a socket -- cutting it takes every port
-                # behind it with it, so callers protect these.
-                "is_hub": present and _read(f"{device}/bDeviceClass") == "09",
-            }
-        return out
+        """Every port's state. Needs no privileges."""
+        return {port: self.port_state(port) for port in self.ports}
 
     def active_ports(self):
         """Ports currently enabled. The plural is the point: unlike the
@@ -291,7 +358,10 @@ class HubPorts:
                 "writable /sys/devices (the webserver's is read-only)") from exc
         except OSError as exc:
             raise HubError(f"port {port}: {exc}") from exc
-        return self.states()[port]
+        # Drop the cached reading rather than assuming the write took: the
+        # returned state is then the kernel's answer, not ours.
+        _forget_enabled(self.hub, port)
+        return self.port_state(port)
 
     def set_exclusive(self, port):
         """
@@ -304,8 +374,9 @@ class HubPorts:
         because its command was a bitmask; here it is explicit.
         """
         results = {}
+        enabled = {p: s["enabled"] for p, s in self.states().items()}
         for other in self.ports:
-            if other != port and self.states()[other]["enabled"]:
+            if other != port and enabled[other]:
                 results[other] = self.set_port(other, False)
         if port is not None:
             results[port] = self.set_port(port, True)
@@ -400,39 +471,54 @@ class SocketMap:
             self._hubs[name] = HubPorts(name)
         return self._hubs[name]
 
+    def _identity(self, hub_name, port):
+        try:
+            return dict(self._hub(hub_name).port_state(port), hub=hub_name)
+        except (HubError, KeyError) as exc:
+            return {"hub": hub_name, "port": port, "error": str(exc),
+                    "enabled": False, "device_present": False}
+
+    @staticmethod
+    def _merge(label, wan, identities):
+        """
+        One socket's state from its identities.
+
+        "enabled" is AND across them: a socket with either half disabled cannot
+        carry a device of that speed, so reporting it as on would be a lie for
+        half the devices that could go in it. The device fields come from
+        whichever identity actually has something on it -- at most one can,
+        since a device negotiates one speed.
+        """
+        present = [i for i in identities if i.get("device_present")]
+        device = present[0] if present else {}
+        return {
+            "socket": label,
+            "wan": wan,
+            "enabled": all(i.get("enabled") for i in identities) if identities else False,
+            "device_present": bool(present),
+            "product": device.get("product", ""),
+            "vid_pid": device.get("vid_pid", ""),
+            "max_power": device.get("max_power", ""),
+            "speed": device.get("speed", ""),
+            "identities": identities,
+        }
+
+    def socket_state(self, label):
+        """One socket, reading only its own identities."""
+        identities = [self._identity(h, n) for h, n in self.sockets.get(label, [])]
+        return self._merge(label, self.wan.get(label, ""), identities)
+
     def states(self):
         """
-        Per-socket state, merged across identities.
+        Every socket's state, each identity read exactly once.
 
-        "enabled" is AND across identities: a socket with either half disabled
-        cannot carry a device of that speed, so reporting it as on would be a
-        lie for half the devices that could go in it.
+        Reading once per identity rather than once per hub per identity is the
+        difference between a usable endpoint and a 2.3 s one: the Plugable's
+        downstream USB 2 chip autosuspends, and every "disable" read wakes it
+        for 75-220 ms. Keeping it awake would fix the latency and cost standby
+        current, which is the wrong trade on a battery.
         """
-        out = {}
-        for label in self.labels:
-            identities = []
-            for hub_name, port in self.sockets[label]:
-                try:
-                    identities.append(dict(self._hub(hub_name).states()[port],
-                                           hub=hub_name))
-                except (HubError, KeyError) as exc:
-                    identities.append({"hub": hub_name, "port": port,
-                                       "error": str(exc), "enabled": False,
-                                       "device_present": False})
-            present = [i for i in identities if i.get("device_present")]
-            device = present[0] if present else {}
-            out[label] = {
-                "socket": label,
-                "wan": self.wan.get(label, ""),
-                "enabled": all(i.get("enabled") for i in identities) if identities else False,
-                "device_present": bool(present),
-                "product": device.get("product", ""),
-                "vid_pid": device.get("vid_pid", ""),
-                "max_power": device.get("max_power", ""),
-                "speed": device.get("speed", ""),
-                "identities": identities,
-            }
-        return out
+        return {label: self.socket_state(label) for label in self.labels}
 
     # -- control (root) ---------------------------------------------------
     def set_socket(self, label, on):
@@ -448,7 +534,7 @@ class SocketMap:
                 errors.append(f"{hub_name}:{port}: {exc}")
         if errors:
             raise HubError("; ".join(errors))
-        return self.states()[label]
+        return self.socket_state(label)
 
     def set_exclusive(self, label):
         """
@@ -462,8 +548,9 @@ class SocketMap:
         if label is not None and label not in self.sockets:
             raise HubError(f"no socket {label!r} in {self.path}")
         results = {}
+        enabled = {l: s["enabled"] for l, s in self.states().items()}
         for other in self.labels:
-            if other != label:
+            if other != label and enabled[other]:
                 results[other] = self.set_socket(other, False)
         if label is not None:
             results[label] = self.set_socket(label, True)
@@ -471,6 +558,9 @@ class SocketMap:
 
     def all_off(self):
         return {label: self.set_socket(label, False) for label in self.labels}
+
+    def all_on(self):
+        return {label: self.set_socket(label, True) for label in self.labels}
 
 
 def socket_report(path=None):
