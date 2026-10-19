@@ -445,6 +445,11 @@ class SocketMap:
         for label, pairs in (data.get("sockets") or {}).items():
             self.sockets[str(label)] = [(str(h), int(n)) for h, n in pairs]
         self.wan = {str(k): str(v) for k, v in (data.get("wan") or {}).items()}
+        # Display label, deliberately NOT the same thing as a WAN role.
+        # A socket can be named "Wifi" for the diagnostic page without
+        # joining the exclusive group, which is what keeps selecting
+        # another uplink from cutting power to the WiFi adapter.
+        self.names = {str(k): str(v) for k, v in (data.get("names") or {}).items()}
         self.note = data.get("note", "")
         self._hubs = {}
 
@@ -492,7 +497,7 @@ class SocketMap:
                     "enabled": False, "device_present": False}
 
     @staticmethod
-    def _merge(label, wan, identities):
+    def _merge(label, wan, name, identities):
         """
         One socket's state from its identities.
 
@@ -507,6 +512,7 @@ class SocketMap:
         return {
             "socket": label,
             "wan": wan,
+            "name": name,
             "enabled": all(i.get("enabled") for i in identities) if identities else False,
             "device_present": bool(present),
             "product": device.get("product", ""),
@@ -519,7 +525,8 @@ class SocketMap:
     def socket_state(self, label):
         """One socket, reading only its own identities."""
         identities = [self._identity(h, n) for h, n in self.sockets.get(label, [])]
-        return self._merge(label, self.wan.get(label, ""), identities)
+        return self._merge(label, self.wan.get(label, ""),
+                           self.names.get(label, ""), identities)
 
     def states(self):
         """

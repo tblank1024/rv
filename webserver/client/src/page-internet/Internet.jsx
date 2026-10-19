@@ -1,421 +1,87 @@
 /**
- * RV Security Internet Connection Management Page
- * 
- * This page provides a unified interface for managing multiple internet connection types
- * in an RV environment. It controls both USB hub ports and Kasa power strip outlets
- * to enable/disable different internet connection hardware.
- * 
- * === SUPPORTED CONNECTION TYPES ===
- * - Cellular: USB port 1, basic cellular modem
- * - Cellular + Amp: USB port 1 + Kasa port 1 (cellular with signal amplifier)
- * - WiFi: RETIRED as a hub source. Hub port 2 was the Pi Zero's slot, empty
- *   since 2026-10-18; the radio is now the Alfa on wlan1, a direct RP5 port
- * - Starlink: USB port 3 + Kasa port 6 (satellite internet)
- * - Wired: USB port 3, shares Starlink's ethernet adapter (move the RJ45; Kasa outlet off)
- * - None: All ports off
- * 
- * === HOW IT WORKS ===
- * 1. User selects a connection type via radio buttons
- * 2. System automatically executes a 3-step process:
- *    a) Power Control: Activates the correct USB port and Kasa outlets
- *    b) Initialization Wait: Waits for hardware to initialize (varies by type)
- *    c) Connectivity Test: Pings 8.8.8.8 to verify internet connectivity
- * 
- * === USB HUB CONTROL ===
- * - Uses a CoolGear USB hub with ASCII command interface
- * - Implements mutual exclusion (only one port active at a time)
- * - Each connection type maps to a specific USB port
- * - Initialization delays vary by connection type (cellular: 5s, starlink: 20s, etc.)
- * 
- * === KASA POWER STRIP INTEGRATION ===
- * - Port 1: Cellular signal amplifier (only for cellular-amp)
- * - Port 6: Starlink power supply (only for starlink)
- * - All other connection types: both Kasa ports OFF
- * - Provides power consumption monitoring
- * 
- * === CONNECTIVITY TESTING ===
- * - Uses system ping command to 8.8.8.8
- * - Connection-specific settling delays before testing
- * - Real-time status updates with success/warning/error states
- * 
- * === WIFI CONFIGURATION ===
- * - Rendered by WifiPicker.jsx, always -- the Alfa uplink is independent of
- *   the hub's source selection, so it must not be gated on it
- * - Lists networks in range with signal strength; tap to connect
- * - Asks for a password only when there is no saved credential
- * - Per-network Forget (deletes every profile for that SSID), a 5 GHz tag, and
- *   a live status panel showing which band the uplink actually got
- * - Uses /api/wifi/*, proxied to rpzero_wifi_api.py on whichever host owns the
- *   uplink radio (WIFI_BRIDGE_HOST: 127.0.0.1 = this host's Alfa adapter)
- * - NOTE: the route /wifi belongs to the Plex page, not to any of this
- * 
- * === STATE MANAGEMENT ===
- * - Loads current connection state on page load
- * - Supports operation interruption/cancellation
- * - Auto-tests connectivity when status is unknown
- * - Real-time power consumption monitoring for Kasa outlets
+ * RV Internet Connection Management Page
+ *
+ * === THE MODEL (rewritten 2026-10-19) ===
+ * WAN sources live on the Plugable powered hub, one physical socket each, and
+ * are selected BY ROLE rather than by port number: the user picks "starlink",
+ * not "socket 4". Roles come from /etc/usbhub/sockets.json via
+ * /api/hub/wan. Exactly one roled socket is powered at a time, which is the
+ * power-saving goal -- several uplinks may be *considered*, only one is left
+ * drawing current.
+ *
+ * Sockets WITHOUT a role are never touched by a switch here. That is what
+ * stops a WAN change from cutting the Bluetooth adapter in socket 7, and it is
+ * also why socket 1 (the WiFi adapter) has a display *name* but no role: see
+ * the names/wan split in usbhub_ports.py.
+ *
+ * === WHAT THIS PAGE DOES NOT DO ===
+ * Powering a socket OFFERS an uplink; it does not seize the default route.
+ * pi5connect.sh decides that on the interface event which follows, and from
+ * v2.2 it also promotes a replacement when the current WAN goes down. So the
+ * "Connection Status" card reports the route the system actually chose, which
+ * can legitimately differ from the socket selected above.
+ *
+ * === WHAT WAS REMOVED ===
+ * The Coolgear USB switch selector. That hub was physically removed on
+ * 2026-10-19; /dev/coolgear-hub no longer exists and the endpoints behind it
+ * return "USB hub controller not available". Its radio group, its per-type
+ * initialisation delays, its countdown and its connect/abort state machine are
+ * all gone. Git history has them if the hub ever returns.
+ *
+ * === KASA ACCESSORIES ===
+ * Still real hardware, and they lost their only UI when the Coolgear card went:
+ * outlet 1 is the cellular signal amplifier, outlet 6 the Starlink power
+ * supply. Both are plain switched outlets, unrelated to which USB socket is
+ * powered, so they get their own card with live wattage.
+ *
+ * === WIFI ===
+ * Rendered by WifiPicker.jsx, always. The uplink radio is selected by the
+ * picker, not by this page's WAN card -- and it must not be gated on a WAN
+ * selection, because gating it behind a radio button meant reaching the picker
+ * required dropping the live WAN.
+ * NOTE: the route /wifi belongs to the Plex page, not to any of this.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Form, Message, Card, Header, Icon, Radio } from 'semantic-ui-react';
+import { Form, Message, Card, Header, Icon, Radio, Button, Label } from 'semantic-ui-react';
 import './Internet.css';
 import { fetchFromServer } from '../utils/api';
 import WifiPicker from './WifiPicker';
 
-const Internet = () => {
-  const [selectedOption, setSelectedOption] = useState(null);  // null until the real state is read from the server
-  const [hubReachable, setHubReachable] = useState(true);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState(null);
-  const [statusMessage, setStatusMessage] = useState('');
-  const [countdown, setCountdown] = useState(0);
-  const [abortController, setAbortController] = useState(null);
+// Kasa outlets that are internet accessories. Numbers are the strip's own.
+const KASA_AMP = 1;
+const KASA_STARLINK = 6;
 
-  // Power reading states
-  const [kasaPort1Power, setKasaPort1Power] = useState(0);
-  const [kasaPort6Power, setKasaPort6Power] = useState(0);
-  // Powered-hub WAN selection, keyed on role rather than socket number.
+const Internet = () => {
+  // Powered-hub WAN selection
   const [wanCandidates, setWanCandidates] = useState([]);
   const [wanActive, setWanActive] = useState(null);
+  const [wanPoweredPresent, setWanPoweredPresent] = useState([]);
   const [wanConfigured, setWanConfigured] = useState(null);
   const [wanBusy, setWanBusy] = useState(false);
   const [wanMessage, setWanMessage] = useState('');
 
-  const internetOptions = [
-    { value: 'cellular', text: 'Cellular', port: 1, waitTime: 60, kasaPort: null },
-    { value: 'cellular-amp', text: 'Cellular + Amp', port: 1, waitTime: 60, kasaPort: 1 },
-    // WiFi is no longer a hub source: the Alfa adapter (wlan1) sits on a direct
-    // RP5 USB port, on a different USB controller than the hub. Hub port 2 was
-    // the Pi Zero's slot and has been empty since 2026-10-18, so selecting this
-    // would deselect the live WAN on port 3 and enumerate nothing. Kept in the
-    // list but disabled, so a hub still reporting 'wifi' renders honestly
-    // instead of leaving no option checked.
-    { value: 'wifi', text: 'WiFi (retired hub slot)', port: 2, waitTime: 30, kasaPort: null, disabled: true },
-    { value: 'starlink', text: 'Starlink', port: 3, waitTime: 120, kasaPort: 6 },
-    // port 3, NOT 4: Coolgear port 4 holds the FT232R that controls the switch,
-    // so selecting port 4 powered nothing, which is why Wired never worked
-    // (swept 2026-10-17).
-    //
-    // But port 3 is UNCONFIRMED for Wired. That sweep concluded Wired shared
-    // Starlink's adapter; the user corrected that on 2026-10-18 -- they are two
-    // separate adapters on two separate USB ports. Port 4 being empty was fully
-    // explained by the FT232R and never implied a shared adapter. So this points
-    // at Starlink's adapter and needs the real Coolgear port, or becomes moot
-    // once both adapters move to the powered hub and the panel below drives
-    // selection by role.
-    { value: 'wired', text: 'Wired', port: 3, waitTime: 60, kasaPort: null },
-    { value: 'none', text: 'None', port: 0, waitTime: 0, kasaPort: null }
-  ];
+  // The route the system actually took
+  const [wanInterface, setWanInterface] = useState(null);  // null until read
+  const [routeStatus, setRouteStatus] = useState(null);
 
-  useEffect(() => {
-    let interval;
-    if (countdown > 0) {
-      interval = setInterval(() => {
-        setCountdown(prev => prev - 1);
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [countdown]);
+  // Connectivity test
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);   // {connected, message}
 
-  // Fetch current internet connection status on component mount
-  useEffect(() => {
-    // The hub and power strip may not answer right after a reboot or docker
-    // restart, so retry a few times until the hub reports a real state.
-    let cancelled = false;
-    let timer;
-    const fetchCurrentStatus = async (attempt = 0) => {
-      let reachable = false;
-      try {
-        const response = await fetchFromServer('/api/internet/status');
-        if (cancelled) return;
-        reachable = response.hub_reachable !== false;
-        setHubReachable(reachable);
-        // An unreachable hub returns only the last known value, so keep
-        // retrying and show that value only once retries are exhausted.
-        const known = response.current_connection && response.current_connection !== 'unknown';
-        if (known && (reachable || attempt >= 6)) {
-          setSelectedOption(response.current_connection);
-          console.log('Loaded current internet connection:', response.current_connection);
-        }
-      } catch (error) {
-        console.error('Failed to fetch current internet status:', error);
-      }
-      if (!cancelled && !reachable && attempt < 6) {
-        timer = setTimeout(() => fetchCurrentStatus(attempt + 1), 5000);
-      } else if (!cancelled) {
-        // Retries exhausted (or fetch failed): stop showing the loading state
-        setSelectedOption(prev => prev ?? 'none');
-      }
-    };
+  // Kasa accessories
+  const [ampPower, setAmpPower] = useState(null);
+  const [starlinkPower, setStarlinkPower] = useState(null);
+  const [kasaBusy, setKasaBusy] = useState(false);
 
-    fetchCurrentStatus();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, []); // Empty dependency array means this runs once on mount
-
-  const handleOptionChange = (e, { value }) => {
-    // Always allow changing the selection - this will interrupt any ongoing operations
-    setSelectedOption(value);
-    setConnectionStatus(null);
-    setStatusMessage('');
-    setCountdown(0);
-    
-    // Abort any ongoing operation
-    if (abortController) {
-      abortController.abort();
-    }
-    
-    // Reset states
-    setIsConnecting(false);
-    
-    // Automatically execute the selected action
-    setTimeout(() => {
-      executeAction(value);
-    }, 100); // Small delay to ensure UI updates
-  };
-
-  const executeAction = async (selectedValue) => {
-    if (!selectedValue) return;
-
-    const option = internetOptions.find(opt => opt.value === selectedValue);
-    if (!option) return;
-
-    // Create new AbortController for this operation
-    const newAbortController = new AbortController();
-    setAbortController(newAbortController);
-
-    // Handle "None" option - just power off all ports
-    if (selectedValue === 'none') {
-      setIsConnecting(true);
-      setConnectionStatus(null);
-      setStatusMessage('Powering off all internet connections...');
-
-      try {
-        const response = await fetchFromServer('/api/internet/power', {
-          method: 'POST',
-          body: JSON.stringify({
-            port: 0, // 0 means all ports off
-            action: 'off',
-            kasaPort: null,
-            connection_type: 'none'
-          }),
-          signal: newAbortController.signal
-        });
-
-        if (newAbortController.signal.aborted) return;
-
-        if (response.success) {
-          setConnectionStatus('info');
-          setStatusMessage('🔌 All internet connections powered off');
-        } else {
-          throw new Error(response.message || 'Failed to power off ports');
-        }
-
-      } catch (error) {
-        if (newAbortController.signal.aborted) return;
-        console.error('Power off error:', error);
-        setConnectionStatus('error');
-        setStatusMessage(`❌ Failed to power off connections: ${error.message}`);
-      } finally {
-        setIsConnecting(false);
-        setAbortController(null);
-      }
-      return;
-    }
-
-    // Handle regular connection options
-    setIsConnecting(true);
-    setConnectionStatus(null);
-    setStatusMessage(`Connecting to ${option.text}...`);
-
-    try {
-      // Step 1: Power on the selected port and turn off others
-      setStatusMessage(`Powering on ${option.text} (Port ${option.port})...`);
-      
-      const powerResponse = await fetchFromServer('/api/internet/power', {
-        method: 'POST',
-        body: JSON.stringify({
-          port: option.port,
-          action: 'on',
-          kasaPort: option.kasaPort,
-          connection_type: option.value
-        }),
-        signal: newAbortController.signal
-      });
-
-      if (newAbortController.signal.aborted) return;
-
-      if (!powerResponse.success) {
-        throw new Error(powerResponse.message || 'Failed to power on port');
-      }
-
-      // Step 2: Wait for the specified time with countdown (but check for abort)
-      setStatusMessage(`Waiting for ${option.text} to initialize...`);
-      setCountdown(option.waitTime);
-      
-      // Use a more granular wait that can be interrupted
-      for (let i = option.waitTime; i > 0; i--) {
-        if (newAbortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        if (newAbortController.signal.aborted) return;
-        setCountdown(i - 1);
-      }
-
-      if (newAbortController.signal.aborted) return;
-
-      // Step 3: Test internet connectivity
-      setStatusMessage(`Testing internet connectivity...`);
-      setCountdown(0);
-      
-      const testResponse = await fetchFromServer('/api/internet/test', {
-        method: 'POST',
-        body: JSON.stringify({
-          connection_type: selectedValue
-        }),
-        signal: newAbortController.signal
-      });
-
-      if (newAbortController.signal.aborted) return;
-
-      if (testResponse.success && testResponse.connected) {
-        setConnectionStatus('success');
-        setStatusMessage(`Connected - Internet Verified`);
-      } else {
-        setConnectionStatus('warning');
-        setStatusMessage(`⚠️ ${option.text} powered on, but internet connectivity could not be verified. ${testResponse.message || ''}`);
-      }
-
-    } catch (error) {
-      if (newAbortController.signal.aborted) return;
-      console.error('Connection error:', error);
-      setConnectionStatus('error');
-      setStatusMessage(`❌ Failed to connect via ${option.text}: ${error.message}`);
-    } finally {
-      setIsConnecting(false);
-      setAbortController(null);
-    }
-  };
-
-  // WiFi configuration functions
-  const fetchKasaPower = useCallback(async () => {
-    try {
-      // Fetch power from port 1 (cellular amp)
-      const port1Response = await fetchFromServer('/api/kasa/power/1');
-      if (port1Response.success) {
-        setKasaPort1Power(port1Response.power);
-      }
-
-      // Fetch power from port 6 (starlink)
-      const port6Response = await fetchFromServer('/api/kasa/power/6');
-      if (port6Response.success) {
-        setKasaPort6Power(port6Response.power);
-      }
-    } catch (error) {
-      console.error('Failed to fetch Kasa power readings:', error);
-    }
-  }, []);
-
-  // Fetch power readings only on component mount (page load/refresh)
-  useEffect(() => {
-    fetchKasaPower();
-  }, [fetchKasaPower]);
-
-  // Function to get power consumption text for each option
-  const getPowerText = useCallback((option) => {
-    const isSelected = selectedOption === option.value;
-    
-    switch (option.value) {
-      case 'cellular':
-        return isSelected ? 'Actual: 2 Watts' : 'Est: 2 Watts';
-      case 'cellular-amp':
-        return isSelected ? `Actual: ${2 + kasaPort1Power} Watts` : 'Est: 54 Watts';
-      case 'wifi':
-        return isSelected ? 'Actual: 0.7 Watts' : 'Est: 0.7 Watts';
-      case 'starlink':
-        return isSelected ? `Actual: ${kasaPort6Power} Watts` : 'Est: 120 Watts';
-      case 'wired':
-        return isSelected ? 'Actual: 0.1 Watts' : 'Est: 0.1 Watts';
-      case 'none':
-        return isSelected ? 'Actual: 0 Watts' : 'Est: 0 Watts';
-      default:
-        return isSelected ? 'Actual: 0 Watts' : 'Est: 0 Watts';
-    }
-  }, [kasaPort1Power, kasaPort6Power, selectedOption]);
-
-  // Function to automatically test connectivity when status is "Not tested"
-  const autoTestConnectivity = useCallback(async () => {
-    if (selectedOption && selectedOption !== 'none' && connectionStatus === null) {
-      try {
-        setStatusMessage('Running automatic connectivity test...');
-        const testResponse = await fetchFromServer('/api/internet/test', {
-          method: 'POST',
-          body: JSON.stringify({
-            connection_type: selectedOption
-          })
-        });
-
-        if (testResponse.success) {
-          if (testResponse.connected) {
-            setConnectionStatus('success');
-            setStatusMessage('Connected \& Verified');
-          } else {
-            setConnectionStatus('warning');
-            setStatusMessage('⚠️ Port active but no internet connectivity detected');
-          }
-        } else {
-          setConnectionStatus('error');
-          setStatusMessage(`❌ Connectivity test failed: ${testResponse.message}`);
-        }
-      } catch (error) {
-        console.error('Auto connectivity test error:', error);
-        setConnectionStatus('error');
-        setStatusMessage(`❌ Auto test failed: ${error.message}`);
-      }
-    }
-  }, [selectedOption, connectionStatus]);
-
-  // Automatically test connectivity when status is "Not tested"
-  useEffect(() => {
-    if (selectedOption && selectedOption !== 'none' && connectionStatus === null && !isConnecting) {
-      const timer = setTimeout(() => {
-        autoTestConnectivity();
-      }, 2000); // Wait 2 seconds before auto-testing
-      
-      return () => clearTimeout(timer);
-    }
-  }, [selectedOption, connectionStatus, isConnecting, autoTestConnectivity]);
-
-  const getStatusIcon = () => {
-    switch (connectionStatus) {
-      case 'success': return 'check circle';
-      case 'warning': return 'warning circle';
-      case 'error': return 'times circle';
-      case 'info': return 'info circle';
-      default: return 'wifi';
-    }
-  };
-
-  const getStatusColor = () => {
-    switch (connectionStatus) {
-      case 'success': return 'green';
-      case 'warning': return 'yellow';
-      case 'error': return 'red';
-      case 'info': return 'blue';
-      default: return 'grey';
-    }
-  };
-
-  // Read the powered hub's WAN candidates. Independent of the Coolgear status
-  // poll above: a hub that is not installed yet must not make this page look
-  // broken, so a failure here only disables this panel.
+  // ---- powered hub ------------------------------------------------------
   const fetchHubWan = useCallback(async () => {
     try {
       const response = await fetchFromServer('/api/hub/wan');
       if (response && response.success) {
         setWanCandidates(response.candidates || []);
         setWanActive(response.active || null);
+        setWanPoweredPresent(response.powered_present || []);
         setWanConfigured(!!response.configured);
         setWanMessage(response.message || '');
       } else {
@@ -427,8 +93,6 @@ const Internet = () => {
       setWanMessage('Could not reach the hub API: ' + error.message);
     }
   }, []);
-
-  useEffect(() => { fetchHubWan(); }, [fetchHubWan]);
 
   const selectHubWan = async (role) => {
     setWanBusy(true);
@@ -445,9 +109,82 @@ const Internet = () => {
       setWanMessage('Switch failed: ' + error.message);
     } finally {
       await fetchHubWan();
+      await fetchRoute();
       setWanBusy(false);
     }
   };
+
+  // ---- the real default route -------------------------------------------
+  const fetchRoute = useCallback(async () => {
+    try {
+      const response = await fetchFromServer('/api/internet/status');
+      setWanInterface(response.wan_interface || '');
+      setRouteStatus(response.status || null);
+    } catch (error) {
+      console.error('Failed to read internet status:', error);
+      setWanInterface('');
+      setRouteStatus(null);
+    }
+  }, []);
+
+  const runTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const response = await fetchFromServer('/api/internet/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_type: wanActive || 'wired' }),
+      });
+      setTestResult({
+        connected: !!(response && response.connected),
+        message: (response && response.message) || '',
+      });
+    } catch (error) {
+      setTestResult({ connected: false, message: error.message });
+    } finally {
+      await fetchRoute();
+      setTesting(false);
+    }
+  };
+
+  // ---- Kasa accessories --------------------------------------------------
+  const fetchKasaPower = useCallback(async () => {
+    try {
+      const amp = await fetchFromServer(`/api/kasa/power/${KASA_AMP}`);
+      if (amp.success) setAmpPower(amp.power);
+      const star = await fetchFromServer(`/api/kasa/power/${KASA_STARLINK}`);
+      if (star.success) setStarlinkPower(star.power);
+    } catch (error) {
+      console.error('Failed to fetch Kasa power readings:', error);
+    }
+  }, []);
+
+  const setKasaOutlet = async (outlet, action) => {
+    setKasaBusy(true);
+    try {
+      await fetchFromServer(`/api/debug/kasa/${outlet}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+    } catch (error) {
+      console.error('Kasa control failed:', error);
+    } finally {
+      await fetchKasaPower();
+      setKasaBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchHubWan();
+    fetchRoute();
+    fetchKasaPower();
+  }, [fetchHubWan, fetchRoute, fetchKasaPower]);
+
+  // A candidate's display name: the socket's cosmetic label if the map has
+  // one, else the role itself.
+  const candidateName = (cand) => cand.name || cand.role;
 
   return (
     <div className="internet-page">
@@ -455,123 +192,18 @@ const Internet = () => {
         <Header as="h1" icon textAlign="center">
           <Icon name="wifi" />
           <Header.Content>
-            Internet Connection Control
-            <Header.Subheader>Select and manage your internet connection method</Header.Subheader>
+            Internet Connection
+            <Header.Subheader>Choose which uplink is powered</Header.Subheader>
           </Header.Content>
         </Header>
 
-        <Card className="internet-control-card">
+        {/* ---- WAN source, by role ---------------------------------------- */}
+        <Card className="internet-control-card" fluid>
           <Card.Content>
-            <Form>
-              <Form.Field>
-                <label className="internet-connection-label">Select Internet Connection:</label>
-                {internetOptions.map(option => (
-                  <Form.Field key={option.value}>
-                    <Radio
-                      label={`${option.text} (${getPowerText(option)})`}
-                      name="internetOption"
-                      value={option.value}
-                      checked={selectedOption === option.value}
-                      onChange={handleOptionChange}
-                      disabled={selectedOption === null || option.disabled}  // Wait for the real state; some options are retired
-                    />
-                  </Form.Field>
-                ))}
-              </Form.Field>
-            </Form>
-            
-            {/* Internet Status at bottom of connection selection */}
-            <div style={{ marginTop: '15px', paddingTop: '15px', borderTop: '1px solid #e0e0e0' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <strong>Internet Status:</strong>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  {isConnecting ? (
-                    <>
-                      <Icon name="circle notched" loading />
-                      Initializing...
-                    </>
-                  ) : selectedOption === null ? (
-                    <>
-                      <Icon name="circle notched" loading />
-                      Reading current state...
-                    </>
-                  ) : connectionStatus === 'success' ? (
-                    <>
-                      <Icon name="check circle" color="green" />
-                      Connected & Verified
-                    </>
-                  ) : connectionStatus === 'warning' ? (
-                    <>
-                      <Icon name="warning circle" color="yellow" />
-                      Port Active, Connectivity Unknown
-                    </>
-                  ) : connectionStatus === 'error' ? (
-                    <>
-                      <Icon name="times circle" color="red" />
-                      Failed
-                    </>
-                  ) : (
-                    <>
-                      <Icon name="circle outline" />
-                      Not tested
-                    </>
-                  )}
-                  {countdown > 0 && (
-                    <span className="countdown-badge" style={{ marginLeft: '10px', padding: '2px 8px', backgroundColor: '#f0f0f0', borderRadius: '12px', fontSize: '0.8em' }}>
-                      {countdown}s
-                    </span>
-                  )}
-                </span>
-              </div>
-            </div>
-          </Card.Content>
-        </Card>
-
-        {!hubReachable && (
-          <Message
-            color="yellow"
-            icon="plug"
-            header="USB switch not responding"
-            content="The selection shown is the last known one. The Internet Status test checks the actual link and is not affected."
-            style={{ marginBottom: '15px' }}
-          />
-        )}
-
-        {/* Starlink Power Warning */}
-        {selectedOption === 'starlink' && (
-          <Message 
-            color="red"
-            icon="warning sign"
-            header="Important Notice"
-            content="Be sure Power is applied"
-            style={{ marginBottom: '15px' }}
-          />
-        )}
-
-        {/* Status Message Display */}
-        {statusMessage && connectionStatus !== 'success' && (
-          <Message 
-            color={getStatusColor()}
-            icon={getStatusIcon()}
-            header={connectionStatus === 'warning' ? 'Partial Success' : 
-                    connectionStatus === 'error' ? 'Connection Failed' : 
-                    connectionStatus === 'info' ? 'Information' : 'Status'}
-            content={statusMessage}
-          />
-        )}
-
-        {/* Powered-hub WAN selection, by role.
-            Separate from the selector above, which drives the Coolgear and is
-            still the live path: only the Alfa has moved to the powered hub, so
-            the other three roles show an empty socket until their adapters
-            move. Single selection on purpose -- several WAN options may be
-            considered, only one is left drawing current. */}
-        <Card className="internet-control-card" style={{ marginTop: '20px' }}>
-          <Card.Content>
-            <Card.Header>Powered Hub WAN Source</Card.Header>
+            <Card.Header>WAN Source</Card.Header>
             <Card.Meta>
-              One socket powered at a time. Sockets without a WAN role are not
-              touched, so switching here cannot cut the Bluetooth adapter.
+              One socket powered at a time. Sockets with no WAN role are left
+              alone, so switching here cannot cut Bluetooth or the WiFi adapter.
             </Card.Meta>
             {wanConfigured === false ? (
               <Message warning size="small" style={{ marginTop: '10px' }}>
@@ -579,67 +211,150 @@ const Internet = () => {
               </Message>
             ) : (
               <Form style={{ marginTop: '12px' }}>
-                <Form.Field>
-                  {wanCandidates.map(cand => (
-                    <Form.Field key={cand.role}>
-                      <Radio
-                        label={
-                          `${cand.role} — socket ${cand.socket}` +
-                          (cand.present
-                            ? ` (${cand.product || 'device'}${cand.max_power ? ', ' + cand.max_power : ''})`
-                            : ' (empty — adapter not moved yet)')
-                        }
-                        name="hubWanRole"
-                        value={cand.role}
-                        checked={wanActive === cand.role}
-                        onChange={() => selectHubWan(cand.role)}
-                        /* An empty socket is not selectable: powering one
-                           enumerates nothing, which is exactly how 'Wired'
-                           appeared broken for weeks on the old hub. */
-                        disabled={wanBusy || !cand.present}
-                      />
-                    </Form.Field>
-                  ))}
-                  <Form.Field>
+                {wanCandidates.map(cand => (
+                  <Form.Field key={cand.role}>
                     <Radio
-                      label="None (all WAN sockets off)"
+                      label={
+                        `${candidateName(cand)} — socket ${cand.socket}` +
+                        (cand.present
+                          ? ` (${cand.product || 'device'}${cand.max_power ? ', ' + cand.max_power : ''})`
+                          : ' — empty socket')
+                      }
                       name="hubWanRole"
-                      value="none"
-                      checked={wanActive === null}
-                      onChange={() => selectHubWan(null)}
-                      disabled={wanBusy}
+                      value={cand.role}
+                      checked={wanActive === cand.role}
+                      onChange={() => selectHubWan(cand.role)}
+                      /* An empty socket is not selectable: powering one
+                         enumerates nothing, which is exactly how "Wired"
+                         appeared broken for weeks on the old hub. */
+                      disabled={wanBusy || !cand.present}
                     />
                   </Form.Field>
+                ))}
+                <Form.Field>
+                  <Radio
+                    label="None (all WAN sockets off)"
+                    name="hubWanRole"
+                    value="none"
+                    checked={wanActive === null && wanPoweredPresent.length === 0}
+                    onChange={() => selectHubWan(null)}
+                    disabled={wanBusy}
+                  />
                 </Form.Field>
               </Form>
             )}
+
             {wanBusy && (
               <div style={{ marginTop: '8px' }}>
-                <Icon name="circle notched" loading /> Switching sockets...
+                <Icon name="circle notched" loading /> Switching sockets…
               </div>
             )}
-            {wanMessage && wanConfigured !== false && (
-              <div style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
-                {wanMessage}
-              </div>
+
+            {/* More than one powered means exclusivity has never been applied
+                -- the state the hub is in after a fresh socket map. Saying so
+                is better than showing an arbitrary radio as selected. */}
+            {!wanBusy && wanPoweredPresent.length > 1 && (
+              <Message warning size="small" style={{ marginTop: '10px' }}>
+                {wanPoweredPresent.length} uplinks are powered at once
+                ({wanPoweredPresent.join(', ')}). Pick one above to apply
+                exclusivity.
+              </Message>
             )}
+
             <Message info size="small" style={{ marginTop: '10px' }}>
               Powering a socket offers an uplink; it does not seize the default
               route. pi5connect.sh decides that on the interface event which
-              follows, and it keeps a healthy incumbent rather than being
-              preempted.
+              follows, keeps a healthy incumbent rather than being preempted,
+              and promotes a replacement if the current WAN drops.
             </Message>
           </Card.Content>
         </Card>
 
-        {/* WiFi picker: networks in range, tap to connect. See WifiPicker.jsx.
-            Always rendered, because the uplink radio is independent of the hub:
-            the Alfa is on a direct RP5 port, so the WiFi link works whatever
-            source is selected here (and is often up while this page shows
-            Starlink). This used to be gated on selectedOption === 'wifi', which
-            made the picker reachable only by selecting the retired hub slot --
-            and that drops the live WAN. */}
-        <div style={{ marginBottom: '20px' }}>
+        {/* ---- the route the system actually chose ------------------------- */}
+        <Card className="internet-control-card" fluid style={{ marginTop: '20px' }}>
+          <Card.Content>
+            <Card.Header>Connection Status</Card.Header>
+            <Card.Meta>
+              Read from the live routing table, not from which socket is
+              powered. The two can differ, and that is not a fault.
+            </Card.Meta>
+            <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center',
+                          justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+              <span>
+                <strong>Default route: </strong>
+                {wanInterface === null ? (
+                  <><Icon name="circle notched" loading /> reading…</>
+                ) : wanInterface ? (
+                  <><Icon name="check circle" color="green" />
+                    <Label basic>{wanInterface}</Label></>
+                ) : (
+                  <><Icon name="times circle" color="red" /> none</>
+                )}
+              </span>
+              <Button size="small" onClick={runTest} loading={testing} disabled={testing}>
+                <Icon name="exchange" /> Test connectivity
+              </Button>
+            </div>
+
+            {routeStatus && wanInterface === '' && (
+              <Message negative size="small" style={{ marginTop: '10px' }}>
+                No default route. The RV has no internet; the LAN and SSH over
+                br0 are unaffected.
+              </Message>
+            )}
+
+            {testResult && (
+              <Message
+                size="small"
+                positive={testResult.connected}
+                negative={!testResult.connected}
+                style={{ marginTop: '10px' }}
+              >
+                {testResult.message || (testResult.connected ? 'Reachable' : 'Not reachable')}
+              </Message>
+            )}
+          </Card.Content>
+        </Card>
+
+        {/* ---- Kasa accessories ------------------------------------------- */}
+        <Card className="internet-control-card" fluid style={{ marginTop: '20px' }}>
+          <Card.Content>
+            <Card.Header>Powered Accessories</Card.Header>
+            <Card.Meta>
+              Switched mains outlets, independent of which USB socket is
+              powered. Starlink needs its outlet on as well as its socket.
+            </Card.Meta>
+            <div style={{ marginTop: '12px' }}>
+              {[
+                { outlet: KASA_AMP, name: 'Cellular signal amplifier', watts: ampPower },
+                { outlet: KASA_STARLINK, name: 'Starlink power supply', watts: starlinkPower },
+              ].map(item => (
+                <div key={item.outlet}
+                     style={{ display: 'flex', alignItems: 'center',
+                              justifyContent: 'space-between', padding: '6px 0',
+                              flexWrap: 'wrap', gap: '8px' }}>
+                  <span>
+                    {item.name}
+                    {item.watts !== null && (
+                      <Label basic size="small" style={{ marginLeft: '8px' }}>
+                        {item.watts} W
+                      </Label>
+                    )}
+                  </span>
+                  <Button.Group size="mini">
+                    <Button disabled={kasaBusy}
+                            onClick={() => setKasaOutlet(item.outlet, 'on')}>On</Button>
+                    <Button disabled={kasaBusy}
+                            onClick={() => setKasaOutlet(item.outlet, 'off')}>Off</Button>
+                  </Button.Group>
+                </div>
+              ))}
+            </div>
+          </Card.Content>
+        </Card>
+
+        {/* ---- WiFi -------------------------------------------------------- */}
+        <div style={{ marginTop: '20px', marginBottom: '20px' }}>
           <WifiPicker />
         </div>
       </div>

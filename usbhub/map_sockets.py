@@ -223,8 +223,11 @@ def next_label(sockets, hub):
     return str(len(sockets) + 1)
 
 
-def build_data(existing, sockets, wan):
+def build_data(existing, sockets, wan, names=None):
+    if names is None:
+        names = dict(existing.get("names") or {})
     return {
+        "names": {k: v for k, v in names.items() if k in sockets and v},
         "note": existing.get("note") or
                 "Built by map_sockets.py. Each socket lists every (hub, port) "
                 "identity it has -- USB 2 and USB 3 chips are separate hubs.",
@@ -267,6 +270,13 @@ def main():
                              "the hub moves to a different port: the socket "
                              "numbers stay the same, only the paths change. "
                              "Roles are kept.")
+    parser.add_argument("--set-name", action="append", metavar="SOCKET=NAME",
+                        default=[],
+                        help="set a socket's display label, e.g. --set-name "
+                             "1=Wifi. This is cosmetic: unlike --set-role it "
+                             "does NOT put the socket in the exclusive WAN "
+                             "group, so naming socket 1 'Wifi' will not make a "
+                             "WAN switch cut power to it. NAME empty clears.")
     parser.add_argument("--set-role", action="append", metavar="SOCKET=ROLE",
                         default=[],
                         help="assign a WAN role without re-walking the hub, "
@@ -315,6 +325,36 @@ def main():
             print("    all, while USB 2 devices keep working. Check for")
             print("    'Cannot enable' on the root port:")
             print("      dmesg | grep -i 'cannot enable'")
+        return
+
+    if args.set_name:
+        existing = load_existing(args.out)
+        if not existing.get("sockets"):
+            raise SystemExit(f"no map at {args.out} to name sockets in")
+        sockets = {k: [tuple(x) for x in v]
+                   for k, v in existing["sockets"].items()}
+        names = dict(existing.get("names") or {})
+        for item in args.set_name:
+            label, _, value = item.partition("=")
+            label, value = label.strip(), value.strip()
+            if label not in sockets:
+                raise SystemExit(f"no socket {label!r} in {args.out}")
+            if value:
+                names[label] = value
+            else:
+                names.pop(label, None)
+        wan = dict(existing.get("wan") or {})
+        try:
+            save(args.out, build_data(existing, sockets, wan, names))
+        except OSError as exc:
+            raise SystemExit(f"could not write {args.out}: {exc}")
+        for label in sorted_labels(sockets):
+            bits = []
+            if names.get(label):
+                bits.append(names[label])
+            if wan.get(label):
+                bits.append(f"wan={wan[label]}")
+            print(f"  socket {label:<4} {'  '.join(bits)}")
         return
 
     # Roles are the one part of the map that is a decision rather than a

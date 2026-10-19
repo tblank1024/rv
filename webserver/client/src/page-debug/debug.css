@@ -373,3 +373,99 @@
 .status-display div {
   margin-bottom: 5px;
 }
+
+/* Per-socket power switch on the USB Hub Socket Power card. Replaces a
+   checkbox, which read as "select this socket" rather than "power it". */
+.power-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.power-switch:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.power-switch-track {
+  position: relative;
+  display: inline-block;
+  width: 52px;
+  height: 28px;
+  border-radius: 14px;
+  background-color: #bdc3c7;
+  transition: background-color 0.18s ease;
+}
+
+.power-switch.on .power-switch-track {
+  background-color: #27ae60;
+}
+
+.power-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background-color: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+
+.power-switch.on .power-switch-knob {
+  transform: translateX(24px);
+}
+
+.power-switch-text {
+  font-weight: 700;
+  font-size: 0.95em;
+  letter-spacing: 0.04em;
+  color: #7f8c8d;
+}
+
+.power-switch.on .power-switch-text {
+  color: #27ae60;
+}
+
+.power-switch:focus-visible .power-switch-track {
+  outline: 2px solid #3498db;
+  outline-offset: 2px;
+}
+
+/* Buttons on the System card. The page had no generic button style -- the
+   other cards each roll their own -- so this is the shared one. */
+.control-btn {
+  padding: 10px 18px;
+  margin-right: 10px;
+  border: none;
+  border-radius: 6px;
+  background-color: #3498db;
+  color: white;
+  font-size: 0.95em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.control-btn:hover:not(:disabled) {
+  background-color: #2980b9;
+}
+
+.control-btn:disabled {
+  background-color: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.control-btn.danger {
+  background-color: #c0392b;
+}
+
+.control-btn.danger:hover:not(:disabled) {
+  background-color: #a5281b;
+}

@@ -1021,6 +1021,10 @@ def get_hub_wan() -> dict:
         entry = {
             "role": role,
             "socket": label,
+            # The map's cosmetic label, if it has one. Separate from the role
+            # on purpose: a socket can be named without joining the exclusive
+            # WAN group (see SocketMap.names).
+            "name": sock.get("name", ""),
             "powered": bool(sock.get("enabled")),
             # present=False with powered=True means the socket is live but
             # nothing is plugged into it. Worth surfacing: it is the difference

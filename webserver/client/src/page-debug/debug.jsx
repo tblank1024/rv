@@ -4,9 +4,13 @@ import { getServerUrl } from '../utils/api';
 
 console.log("Debug component loaded");
 
+// A socket's display label: the map's cosmetic "name" if it has one, else its
+// WAN role. The two are separate on purpose -- naming socket 1 "Wifi" must not
+// put it in the exclusive WAN group, or selecting another uplink would cut
+// power to the WiFi adapter.
+const socketLabel = (sock) => sock.name || sock.wan || '';
+
 function Debug() {
-  const [usbPorts, setUsbPorts] = useState({});
-  const [usbConnected, setUsbConnected] = useState(null);
   const [hubSockets, setHubSockets] = useState({});
   const [hubConfigured, setHubConfigured] = useState(null);
   const [hubConnected, setHubConnected] = useState(null);
@@ -27,44 +31,9 @@ function Debug() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [confirmReboot, setConfirmReboot] = useState(false);
+  const [rebooting, setRebooting] = useState(false);
 
-  // Fetch USB port status
-  const getUsbStatus = async () => {
-    console.log('getUsbStatus: Starting request...');
-    try {
-      const response = await fetch(`${getServerUrl()}/api/debug/usb/status`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
-      
-      console.log('getUsbStatus: Raw response status:', response.status);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const data = await response.json();
-      console.log('getUsbStatus: Parsed response:', data);
-      
-      if (data.success) {
-        setUsbPorts(data.ports);
-        setUsbConnected(true);
-        return data;
-      } else {
-        setMessage(data.message || 'Failed to fetch USB status');
-        setUsbConnected(false);
-        return data;
-      }
-    } catch (error) {
-      console.error('Error fetching USB status:', error);
-      setMessage('Failed to fetch USB status: ' + error.message);
-      setUsbConnected(false);
-      return { success: false, message: 'Failed to fetch USB status: ' + error.message };
-    }
-  };
 
     // Fetch Kasa outlet status
   const getKasaStatus = async () => {
@@ -192,43 +161,6 @@ function Debug() {
   }, [watcherAutoRefresh]);
 
   // Control USB port
-  const controlUsbPort = async (portNum, action) => {
-    try {
-      // Optimistic UI update - immediately update the visual state
-      setUsbPorts(prevPorts => ({
-        ...prevPorts,
-        [portNum]: {
-          ...prevPorts[portNum],
-          enabled: action === 'on'
-        }
-      }));
-      
-      const response = await fetch(`${getServerUrl()}/api/debug/usb/${portNum}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ action }),
-      });
-      
-      const result = await response.json();
-      
-      if (result.success) {
-        setMessage(result.message);
-        // Refresh USB status after a short delay
-        setTimeout(getUsbStatus, 500);
-      } else {
-        setMessage(result.message);
-        // If command failed, revert the optimistic update
-        setTimeout(getUsbStatus, 100);
-      }
-    } catch (error) {
-      console.error('Error controlling USB port:', error);
-      setMessage(`Error controlling USB port ${portNum}`);
-      // If network error occurred, revert the optimistic update
-      setTimeout(getUsbStatus, 100);
-    }
-  };
 
   // Fetch the Plugable hub's physical sockets.
   //
@@ -266,6 +198,26 @@ function Debug() {
   // which is the whole point of this control and why it is a checkbox rather
   // than the Coolgear's radio group. The Internet page uses the exclusive
   // endpoint instead.
+  // Moved here from the Home page: a reboot drops every WiFi client on the
+  // RV and takes the dashboard down with it, so it belongs behind the
+  // diagnostics rather than one tap from the status screen.
+  const doReboot = async () => {
+    setConfirmReboot(false);
+    setRebooting(true);
+    try {
+      await fetch(`${getServerUrl()}/api/system/reboot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      setMessage('Reboot requested. This page will stop responding shortly.');
+    } catch (error) {
+      // A reboot often kills the connection before the reply arrives, so a
+      // fetch failure here is not evidence that the reboot did not happen.
+      console.error('Reboot request error:', error);
+      setMessage('Reboot requested; no reply received (expected if it already went down).');
+    }
+  };
+
   const controlHubSocket = async (label, on) => {
     setHubBusy(prev => ({ ...prev, [label]: true }));
     // No optimistic update here. A write is a USB control transfer per
@@ -426,8 +378,8 @@ function Debug() {
       setMessage('Loading initial data...');
       try {
         // Load both USB and Kasa status in parallel - timeout is handled in each function
-        console.log('useEffect: Calling getUsbStatus and getKasaStatus...');
-        await Promise.allSettled([getUsbStatus(), getKasaStatus(), getHubSockets(),
+        console.log('useEffect: Calling getKasaStatus and getHubSockets...');
+        await Promise.allSettled([getKasaStatus(), getHubSockets(),
                                   controlSynology('status')]);
         console.log('useEffect: Data loading completed');
         setMessage('Data loaded successfully');
@@ -451,7 +403,7 @@ function Debug() {
   const refreshData = async () => {
     setLoading(true);
     setMessage('Refreshing data...');
-    await Promise.all([getUsbStatus(), getKasaStatus(), getHubSockets()]);
+    await Promise.all([getKasaStatus(), getHubSockets()]);
     setLoading(false);
     setLastUpdate(new Date());
     setMessage('Data refreshed successfully');
@@ -515,45 +467,6 @@ function Debug() {
       )}
 
       <div className="debug-sections">
-        {/* USB Ports Section */}
-        <div className="debug-section">
-          <h2>Internet Access via USB Port Switch{commBadge(usbConnected)}</h2>
-          <div className="control-grid">
-            {Object.entries(usbPorts).map(([portNum, portData]) => (
-              <div key={portNum} className="control-item">
-                <h3>{portData.name}</h3>
-                <div className="control-buttons">
-                  <label className="radio-control">
-                    <input
-                      type="radio"
-                      name={`usb-${portNum}`}
-                      checked={portData.enabled}
-                      onChange={() => controlUsbPort(portNum, 'on')}
-                    />
-                    <span className={`radio-label ${portData.enabled ? 'active' : ''}`}>
-                      ON
-                    </span>
-                  </label>
-                  <label className="radio-control">
-                    <input
-                      type="radio"
-                      name={`usb-${portNum}`}
-                      checked={!portData.enabled}
-                      onChange={() => controlUsbPort(portNum, 'off')}
-                    />
-                    <span className={`radio-label ${!portData.enabled ? 'active' : ''}`}>
-                      OFF
-                    </span>
-                  </label>
-                </div>
-                {portData.error && (
-                  <div className="error-text">{portData.error}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
         {/* Plugable hub: physical sockets, independent power */}
         <div className="debug-section">
           <h2>USB Hub Socket Power{commBadge(hubConnected)}</h2>
@@ -576,21 +489,29 @@ function Debug() {
                 <div key={label} className="control-item">
                   <h3>
                     Socket {label}
-                    {sock.wan ? ` \u2014 ${sock.wan}` : ''}
+                    {socketLabel(sock) ? ` \u2014 ${socketLabel(sock)}` : ''}
                   </h3>
-                  <div className="control-buttons">
-                    <label className="radio-control">
-                      <input
-                        type="checkbox"
-                        checked={!!sock.enabled}
-                        disabled={busy}
-                        onChange={() => controlHubSocket(label, !sock.enabled)}
-                      />
-                      <span className={`radio-label ${sock.enabled ? 'active' : ''}`}>
-                        {busy ? 'WAIT' : (sock.enabled ? 'ON' : 'OFF')}
-                      </span>
-                    </label>
-                  </div>
+                  {/* A switch, not a checkbox. A checkbox reads as "select
+                      this socket" when the action is actually powering it on
+                      or off; colour plus the word carries that unambiguously.
+                      Several sockets can still be on at once -- this is the
+                      diagnostic page, and the Internet page is the one that
+                      enforces a single WAN. */}
+                  <button
+                    type="button"
+                    className={`power-switch ${sock.enabled ? 'on' : 'off'}`}
+                    disabled={busy}
+                    aria-pressed={!!sock.enabled}
+                    title={`Turn socket ${label} ${sock.enabled ? 'off' : 'on'}`}
+                    onClick={() => controlHubSocket(label, !sock.enabled)}
+                  >
+                    <span className="power-switch-track">
+                      <span className="power-switch-knob" />
+                    </span>
+                    <span className="power-switch-text">
+                      {busy ? 'WAIT' : (sock.enabled ? 'ON' : 'OFF')}
+                    </span>
+                  </button>
                   <div style={{fontSize: '12px', color: '#666', marginTop: '4px'}}>
                     {sock.device_present
                       ? `${sock.product || 'device'}${sock.max_power ? ' ' + sock.max_power : ''}`
@@ -723,6 +644,40 @@ function Debug() {
                   Full Off (cut power)
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* System: destructive actions, kept at the bottom and behind a
+            confirmation. A reboot drops every WiFi client on Sophie. */}
+        <div className="debug-section">
+          <h2>System</h2>
+          <div className="control-grid">
+            <div className="control-item">
+              <h3>Reboot</h3>
+              <div style={{fontSize: '12px', color: '#666', marginBottom: '12px'}}>
+                Reboots the Pi. Every WiFi client on the RV loses its
+                connection, including this browser, and the uplink is
+                re-selected from scratch on the way back up.
+              </div>
+              {confirmReboot ? (
+                <div className="control-buttons">
+                  <button className="control-btn danger" onClick={doReboot}>
+                    Yes, reboot
+                  </button>
+                  <button className="control-btn" onClick={() => setConfirmReboot(false)}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="control-btn danger"
+                  disabled={rebooting}
+                  onClick={() => setConfirmReboot(true)}
+                >
+                  {rebooting ? 'Rebooting\u2026' : 'Reboot Pi'}
+                </button>
+              )}
             </div>
           </div>
         </div>

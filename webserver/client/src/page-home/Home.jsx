@@ -66,8 +66,6 @@ function Home() {
   const [data, setData] = useState({});
   const [tireRunning, setTireRunning] = useState(null); // null = unknown
   const [restarting, setRestarting] = useState(false);
-  const [rebooting, setRebooting] = useState(false);
-  const [confirmReboot, setConfirmReboot] = useState(false);
   const [tireFaultSilenced, setTireFaultSilenced] = useState(false);
   const serverWentDown = useRef(false);
   const tireStatusLockedUntil = useRef(0); // epoch ms — ignore poll results until this time
@@ -81,7 +79,6 @@ function Home() {
         if (serverWentDown.current) {
           serverWentDown.current = false;
           setRestarting(false);
-          setRebooting(false);
         }
         // Reset silenced state if faults cleared or a new (previously un-silenced) fault appears
         if (tireFaultSilencedRef.current) {
@@ -125,16 +122,6 @@ function Home() {
     return () => { clearInterval(dataInterval); clearInterval(svcInterval); };
   }, []);
 
-  const handleReboot = () => setConfirmReboot(true);
-
-  const doReboot = () => {
-    setConfirmReboot(false);
-    serverWentDown.current = false;
-    setRebooting(true);
-    fetchFromServer('/api/system/reboot', { method: 'POST' })
-      .catch(err => { console.error('Reboot error:', err); setRebooting(false); });
-  };
-
   const handleRestart = () => {
     serverWentDown.current = false;
     setRestarting(true);
@@ -166,17 +153,6 @@ function Home() {
 
   return (
     <div className="Home">
-      {confirmReboot && (
-        <div className="confirm-overlay">
-          <div className="confirm-dialog">
-            <p className="confirm-msg">Confirm reboot?</p>
-            <div className="confirm-buttons">
-              <button className="confirm-btn confirm-btn--yes" onClick={doReboot}>Yes</button>
-              <button className="confirm-btn confirm-btn--no" onClick={() => setConfirmReboot(false)}>No</button>
-            </div>
-          </div>
-        </div>
-      )}
       <div className="home-wrapper">
 
         {/* ── Header bar ─────────────────────────── */}
@@ -320,9 +296,6 @@ function Home() {
               </button>
               <button className="action-btn action-btn--debug" onClick={() => { window.location.href = '/debug'; }}>
                 Debug
-              </button>
-              <button className="action-btn action-btn--reboot" onClick={handleReboot} disabled={rebooting}>
-                {rebooting ? 'Rebooting' : 'Reboot'}
               </button>
             </div>
             <AlertsPanel />
