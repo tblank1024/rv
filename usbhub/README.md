@@ -102,6 +102,18 @@ stick in socket 3 is invisible on the USB 3 tree. Two consequences:
   is a board-layout question sysfs cannot answer, so both are set; setting one
   that is not wired to the switch is harmless.
 
+### Exclusivity applies to WAN sockets only
+
+`set_exclusive` switches only sockets that have a **WAN role** in the map, plus
+the target. A socket with no role is not an uplink and is not touched.
+
+That distinction is not cosmetic. The hub also carries things that are not
+uplinks: with the ASUS BT500 in socket 7, an exclusive switch over *every*
+socket would cut Bluetooth every time the WAN changed, taking the TPMS and
+battery monitors with it. `all_off` is literal by choice, since "all off" has to
+mean what it says, so the API's `/api/sockets/all-off` defaults to WAN sockets
+and needs `{"all": true}` to cut the rest.
+
 `SocketMap` handles this, and the socket endpoints (`/api/sockets`,
 `/api/socket`, `/api/socket/exclusive`, `/api/sockets/all-off`) are what callers
 should use. The raw `/api/hub/<hub>/port` endpoints act on half a socket.

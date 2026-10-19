@@ -466,6 +466,19 @@ class SocketMap:
         """Sorted numerically where the labels are numeric, else as text."""
         return sorted(self.sockets, key=lambda k: (not k.isdigit(), k.zfill(4)))
 
+    @property
+    def wan_labels(self):
+        """
+        Sockets that are WAN candidates, i.e. have a role in the map.
+
+        This is what exclusivity applies to, and the distinction is not
+        cosmetic: the hub also carries things that are not uplinks at all. With
+        a Bluetooth adapter in socket 7, an exclusive switch over *every* socket
+        would cut Bluetooth every time the WAN changed, taking the TPMS and
+        battery monitors down with it.
+        """
+        return [label for label in self.labels if self.wan.get(label)]
+
     def _hub(self, name):
         if name not in self._hubs:
             self._hubs[name] = HubPorts(name)
@@ -536,28 +549,54 @@ class SocketMap:
             raise HubError("; ".join(errors))
         return self.socket_state(label)
 
+    def exclusive_group(self, label=None):
+        """
+        The sockets an exclusive switch is allowed to touch: the WAN candidates,
+        plus the target itself even if it has no role yet.
+
+        Anything without a role is left alone -- see wan_labels.
+        """
+        group = list(self.wan_labels)
+        if label is not None and label not in group:
+            group.append(label)
+        return group
+
     def set_exclusive(self, label):
         """
-        Power exactly one socket, across both trees and both chips.
+        Power exactly one WAN socket, across both trees and both chips.
 
         Others go off BEFORE the target comes on, so the hub is never briefly
         feeding two uplinks -- the whole point of routing WAN selection through
         here rather than letting the UI toggle sockets one at a time. Pass None
-        to leave everything off.
+        to leave every WAN socket off.
+
+        Only WAN sockets are switched. A socket with no role is not an uplink
+        and is not touched, so selecting a WAN source cannot cut the Bluetooth
+        adapter sharing the hub.
         """
         if label is not None and label not in self.sockets:
             raise HubError(f"no socket {label!r} in {self.path}")
+        group = self.exclusive_group(label)
         results = {}
         enabled = {l: s["enabled"] for l, s in self.states().items()}
-        for other in self.labels:
-            if other != label and enabled[other]:
+        for other in group:
+            if other != label and enabled.get(other):
                 results[other] = self.set_socket(other, False)
         if label is not None:
             results[label] = self.set_socket(label, True)
         return results
 
-    def all_off(self):
-        return {label: self.set_socket(label, False) for label in self.labels}
+    def all_off(self, wan_only=False):
+        """
+        Every socket off -- literally every one, unless wan_only.
+
+        Unlike set_exclusive this does not respect the WAN group, because
+        "all off" has to mean what it says. On a hub that also carries a
+        Bluetooth adapter that is rarely what a caller wants, so the API
+        defaults to wan_only and nothing in the UI calls the literal form.
+        """
+        targets = self.wan_labels if wan_only else self.labels
+        return {label: self.set_socket(label, False) for label in targets}
 
     def all_on(self):
         return {label: self.set_socket(label, True) for label in self.labels}

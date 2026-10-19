@@ -28,7 +28,8 @@ API -- physical sockets (what is printed on the hub's shell)
     GET  /api/sockets                   the socket map and each socket's state
     POST /api/socket                    {"socket": "3", "on": bool}
     POST /api/socket/exclusive          {"socket": "3"} or {"socket": null}
-    POST /api/sockets/all-off           every socket off
+    POST /api/sockets/all-off           WAN sockets off; {"all":true} for every
+                                        socket, Bluetooth adapter included
 
 Prefer the socket endpoints. A USB 3 hub is two hubs in one shell, so one
 physical socket has a USB 2 identity and a USB 3 identity on different buses
@@ -60,7 +61,7 @@ from usbhub_ports import (
     probe_report,
 )
 
-SCRIPT_VERSION = "0.2.1"
+SCRIPT_VERSION = "0.3.0"
 
 BIND = os.environ.get("USBHUB_API_BIND", "127.0.0.1")
 PORT = int(os.environ.get("USBHUB_API_PORT", "12347"))
@@ -224,7 +225,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, {"ok": False, "error": "no_socket",
                                             "message": f"no socket {label!r}"})
                 current = smap.states()
-                others = [l for l in smap.labels
+                # Only the WAN group is switched, so only it can be blocked.
+                others = [l for l in smap.exclusive_group(label)
                           if l != label and current[l]["enabled"]]
                 blocked = self._socket_blocked(smap, others)
                 if blocked:
@@ -237,11 +239,15 @@ class Handler(BaseHTTPRequestHandler):
                                         "sockets": smap.states()})
 
             if path == "/api/sockets/all-off":
-                blocked = self._socket_blocked(smap, smap.labels)
+                # Defaults to the WAN sockets. {"all": true} really means every
+                # socket, which on this hub includes a Bluetooth adapter.
+                wan_only = not bool(body.get("all"))
+                targets = smap.wan_labels if wan_only else smap.labels
+                blocked = self._socket_blocked(smap, targets)
                 if blocked:
                     return self._send(409, {"ok": False, "error": "protected",
                                             "message": f"protected: {blocked}"})
-                changed = smap.all_off()
+                changed = smap.all_off(wan_only=wan_only)
                 print("socket all-off")
                 return self._send(200, {"ok": True, "changed": changed,
                                         "sockets": smap.states()})
