@@ -304,10 +304,17 @@ def main():
             role = f"  wan={wan[label]}" if label in wan else ""
             print(f"  socket {label:<4} {ident}{role}")
         if "usb3" not in chips:
-            print("\nWARNING: the USB 3 chip is not on the bus, so each socket")
-            print("has only its USB 2 identity and a SuperSpeed device plugged")
-            print("into this hub will not enumerate at all. Check dmesg for")
-            print("'Cannot enable' on the root port and re-run after fixing it.")
+            print("\nNote: no USB 3 chip on the bus, so each socket has only its")
+            print("USB 2 identity. Two very different causes:")
+            print("  - the hub is in a USB 2 (black) port. Harmless: with no")
+            print("    SuperSpeed upstream the chip keeps its downstream SS lanes")
+            print("    dark, so USB 3 devices fall back to 480 Mb/s and work.")
+            print("  - the hub is in a USB 3 (blue) port and the SuperSpeed link")
+            print("    is failing to train. Then USB 3 devices in a socket train")
+            print("    SS against a chip with no upstream and DO NOT enumerate at")
+            print("    all, while USB 2 devices keep working. Check for")
+            print("    'Cannot enable' on the root port:")
+            print("      dmesg | grep -i 'cannot enable'")
         return
 
     # Roles are the one part of the map that is a decision rather than a

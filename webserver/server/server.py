@@ -1030,16 +1030,38 @@ def get_hub_wan() -> dict:
             "max_power": sock.get("max_power", ""),
         }
         candidates.append(entry)
-        if entry["powered"] and entry["present"]:
-            active = role
     candidates.sort(key=lambda c: (not c["socket"].isdigit(), c["socket"].zfill(4)))
+
+    # "active" means the hub has SELECTED one uplink. powered and present is
+    # necessary but not sufficient: until something calls /api/hub/wan or
+    # /api/socket/exclusive, every socket is powered and several roles qualify
+    # at once. An earlier version assigned active inside the loop, so the last
+    # qualifying role won -- it reported "cell" on 2026-10-19 while the default
+    # route was on wired. No selection is a real state; report it as one.
+    live = [c["role"] for c in candidates if c["powered"] and c["present"]]
+    active = live[0] if len(live) == 1 else None
+
+    if not data.get("configured"):
+        message = "No socket map yet -- run rv/usbhub/map_sockets.py"
+    elif len(live) > 1:
+        message = (f"{len(live)} uplinks are powered at once ({', '.join(live)}); "
+                   "none has been selected. Pick one to apply exclusivity.")
+    elif not live:
+        message = "No roled socket has a device both powered and plugged in."
+    else:
+        message = ""
+
     return {
         "success": True,
-        "message": "" if data.get("configured") else
-                   "No socket map yet -- run rv/usbhub/map_sockets.py",
+        "message": message,
         "configured": bool(data.get("configured")),
         "candidates": candidates,
+        # Which uplink the hub has selected, or null when it has not. This is
+        # about socket POWER, never the default route -- pi5connect.sh owns
+        # that and keeps a healthy incumbent, so a powered socket is an offer,
+        # not a takeover.
         "active": active,
+        "powered_present": live,
     }
 
 
