@@ -30,8 +30,10 @@ The uplink arrives through a USB-attached switch (the Coolgear hub). Four option
 one is normally enumerated, so **the interface name does not identify the uplink type** — don't
 key policy on it:
 
-1. Starlink — shares one USB-ethernet adapter with option 2
-2. Direct Ethernet (`eth1` with `asix`/`r8152` drivers, `usb0` with `cdc_ether`/`cdc_ncm`)
+1. Starlink — its own USB-ethernet adapter, on its own port (**not** shared with option 2;
+   corrected 2026-10-18)
+2. Direct Ethernet — a second, separate USB-ethernet adapter (`eth1` with `asix`/`r8152` drivers,
+   `usb0` with `cdc_ether`/`cdc_ncm`)
 3. **Alfa AWUS036ACM USB WiFi adapter → `wlan1`** (2×2, dual-band). Replaces the Pi Zero 2W
    client bridge, which was 1×1 and 2.4 GHz only. Pinned to `wlan1` by MAC in
    `/etc/systemd/network/11-wlan-wan.link`; `wlan0` is the AP radio and is NM-unmanaged

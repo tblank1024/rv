@@ -991,6 +991,104 @@ def set_hub_socket_exclusive(data: Annotated[HubExclusiveData, Body()]) -> dict:
     }
 
 
+class HubWanData(BaseModel):
+    # None powers nothing, which the Internet page needs for an explicit
+    # no-uplink state.
+    role: Optional[str] = None
+
+
+@app.get("/api/hub/wan")
+def get_hub_wan() -> dict:
+    """
+    WAN candidates on the Plugable: one entry per socket that has a role.
+
+    Role rather than socket number is the right key for the Internet page --
+    the user picks "starlink", not "socket 4" -- and it is the mapping the RV
+    actually cares about. Sockets without a role are not uplinks and do not
+    appear here at all; that is also what keeps an exclusive switch from
+    cutting the Bluetooth adapter sharing the hub.
+    """
+    try:
+        data = _usbhub_api("/api/sockets", timeout=10)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, configured=False, candidates=[], active=None)
+
+    candidates, active = [], None
+    for label, sock in (data.get("sockets") or {}).items():
+        role = sock.get("wan")
+        if not role:
+            continue
+        entry = {
+            "role": role,
+            "socket": label,
+            "powered": bool(sock.get("enabled")),
+            # present=False with powered=True means the socket is live but
+            # nothing is plugged into it. Worth surfacing: it is the difference
+            # between "this uplink is off" and "this uplink is not installed".
+            "present": bool(sock.get("device_present")),
+            "product": sock.get("product", ""),
+            "max_power": sock.get("max_power", ""),
+        }
+        candidates.append(entry)
+        if entry["powered"] and entry["present"]:
+            active = role
+    candidates.sort(key=lambda c: (not c["socket"].isdigit(), c["socket"].zfill(4)))
+    return {
+        "success": True,
+        "message": "" if data.get("configured") else
+                   "No socket map yet -- run rv/usbhub/map_sockets.py",
+        "configured": bool(data.get("configured")),
+        "candidates": candidates,
+        "active": active,
+    }
+
+
+@app.post("/api/hub/wan")
+def set_hub_wan(data: Annotated[HubWanData, Body()]) -> dict:
+    """
+    Power exactly the WAN source named by role, or none at all.
+
+    This is the "consider several, power one" policy: the others go off before
+    this one comes on, so the hub never briefly feeds two uplinks, and only WAN
+    sockets are touched.
+
+    This does NOT change the default route. pi5connect.sh does that on the
+    interface event that follows, and it keeps a healthy incumbent rather than
+    being preempted -- so powering a socket offers an uplink, it does not seize
+    the route.
+    """
+    try:
+        current = _usbhub_api("/api/sockets", timeout=10)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, sockets={})
+
+    target = None
+    if data.role:
+        for label, sock in (current.get("sockets") or {}).items():
+            if sock.get("wan") == data.role:
+                target = label
+                break
+        if target is None:
+            return {"success": False, "error": "no_such_role",
+                    "message": f"no socket has the WAN role {data.role!r}; "
+                               "assign one with map_sockets.py --set-role",
+                    "sockets": {}}
+    try:
+        result = _usbhub_api("/api/socket/exclusive", method="POST",
+                             payload={"socket": target}, timeout=60)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, sockets={})
+    return {
+        "success": True,
+        "message": (f"{data.role} (socket {target}) is now the only WAN powered"
+                    if target else "All WAN sockets off"),
+        "role": data.role,
+        "socket": target,
+        "changed": result.get("changed", {}),
+        "sockets": result.get("sockets", {}),
+    }
+
+
 @app.get("/api/hub/hubs")
 def get_hub_raw() -> dict:
     """
@@ -1047,14 +1145,23 @@ CONNECTION_SETTLE_DELAYS = {
 #             answers (Starlink dish mgmt)                          => starlink. Correct.
 #   port 4 -> NOTHING ATTACHED. Hub port 4 holds the FT232R that controls the
 #             switch itself and is always powered; there is no adapter there.
-# So 'wired' was never reachable: selecting it powered an empty port, which is
-# why the wired uplink appeared not to work. Wired shares port 3's ethernet
-# adapter with Starlink (one adapter, you move the RJ45), so 'wired' maps to
-# usb_port 3 below with the Starlink Kasa outlet left off.
+# So 'wired' was never reachable on this hub: selecting it powered an empty
+# port, which is why the wired uplink appeared not to work.
+#
+# CORRECTED 2026-10-18 by the user: Starlink and wired are TWO separate
+# adapters on TWO separate USB ports. The sweep inferred one shared adapter
+# from finding nothing on port 4 -- but port 4 is the FT232R, so "empty" said
+# nothing about how many adapters exist; the wired adapter simply was not on
+# this hub that day. Don't re-derive the shared-adapter conclusion from this
+# table.
+#
+# This table is the Coolgear path and is transitional. On the Plugable each WAN
+# source has its own socket with its own role, which is what /api/hub/wan uses
+# (roles live in /etc/usbhub/sockets.json). Prefer that.
 PORT_TO_CONNECTION_TYPE = {
     1: 'cellular',
     2: 'wifi',
-    3: 'starlink',   # also the port used for 'wired' - same adapter, different cable
+    3: 'starlink',
     4: 'unused'      # no device on hub port 4 (FT232R control chip lives there)
 }
 
@@ -1064,10 +1171,14 @@ EXTENDED_CONNECTION_MAPPING = {
     'cellular-amp': {'usb_port': 1, 'kasa_port': 1},
     'wifi': {'usb_port': 2, 'kasa_port': None},
     'starlink': {'usb_port': 3, 'kasa_port': 6},
-    # Wired uses the SAME ethernet adapter as Starlink (usb port 3); the
-    # difference is which RJ45 is plugged into it, and that the dish's Kasa
-    # outlet is not powered. usb_port 4 was wrong - nothing is attached there.
-    'wired': {'usb_port': 3, 'kasa_port': None}
+    # UNCONFIRMED. Wired has its own adapter on its own port (corrected
+    # 2026-10-18), so usb_port 3 here is Starlink's adapter and is wrong --
+    # kept only because it is what the live Coolgear path has always done, and
+    # changing it blind would select a different device. usb_port 4 was also
+    # wrong: that is the FT232R. Fix with the real Coolgear port number, or let
+    # it die with the Coolgear once both adapters are on the Plugable and
+    # /api/hub/wan drives selection by role.
+    'wired': {'usb_port': 3, 'kasa_port': None, 'unconfirmed': True}
 }
 
 def get_connection_init_delay(port_number):

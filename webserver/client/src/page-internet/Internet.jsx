@@ -74,6 +74,12 @@ const Internet = () => {
   // Power reading states
   const [kasaPort1Power, setKasaPort1Power] = useState(0);
   const [kasaPort6Power, setKasaPort6Power] = useState(0);
+  // Powered-hub WAN selection, keyed on role rather than socket number.
+  const [wanCandidates, setWanCandidates] = useState([]);
+  const [wanActive, setWanActive] = useState(null);
+  const [wanConfigured, setWanConfigured] = useState(null);
+  const [wanBusy, setWanBusy] = useState(false);
+  const [wanMessage, setWanMessage] = useState('');
 
   const internetOptions = [
     { value: 'cellular', text: 'Cellular', port: 1, waitTime: 60, kasaPort: null },
@@ -86,11 +92,17 @@ const Internet = () => {
     // instead of leaving no option checked.
     { value: 'wifi', text: 'WiFi (retired hub slot)', port: 2, waitTime: 30, kasaPort: null, disabled: true },
     { value: 'starlink', text: 'Starlink', port: 3, waitTime: 120, kasaPort: 6 },
-    // port 3, NOT 4: hub port 4 has no adapter (it holds the FT232R that controls
-    // the switch). Wired shares Starlink's ethernet adapter on port 3 - same
-    // adapter, you move the RJ45 - with the dish's Kasa outlet left off.
-    // Verified by sweeping every port 2026-10-17; selecting port 4 powered
-    // nothing, which is why Wired never worked.
+    // port 3, NOT 4: Coolgear port 4 holds the FT232R that controls the switch,
+    // so selecting port 4 powered nothing, which is why Wired never worked
+    // (swept 2026-10-17).
+    //
+    // But port 3 is UNCONFIRMED for Wired. That sweep concluded Wired shared
+    // Starlink's adapter; the user corrected that on 2026-10-18 -- they are two
+    // separate adapters on two separate USB ports. Port 4 being empty was fully
+    // explained by the FT232R and never implied a shared adapter. So this points
+    // at Starlink's adapter and needs the real Coolgear port, or becomes moot
+    // once both adapters move to the powered hub and the panel below drives
+    // selection by role.
     { value: 'wired', text: 'Wired', port: 3, waitTime: 60, kasaPort: null },
     { value: 'none', text: 'None', port: 0, waitTime: 0, kasaPort: null }
   ];
@@ -395,6 +407,48 @@ const Internet = () => {
     }
   };
 
+  // Read the powered hub's WAN candidates. Independent of the Coolgear status
+  // poll above: a hub that is not installed yet must not make this page look
+  // broken, so a failure here only disables this panel.
+  const fetchHubWan = useCallback(async () => {
+    try {
+      const response = await fetchFromServer('/api/hub/wan');
+      if (response && response.success) {
+        setWanCandidates(response.candidates || []);
+        setWanActive(response.active || null);
+        setWanConfigured(!!response.configured);
+        setWanMessage(response.message || '');
+      } else {
+        setWanConfigured(false);
+        setWanMessage((response && response.message) || 'Hub API unavailable');
+      }
+    } catch (error) {
+      setWanConfigured(false);
+      setWanMessage('Could not reach the hub API: ' + error.message);
+    }
+  }, []);
+
+  useEffect(() => { fetchHubWan(); }, [fetchHubWan]);
+
+  const selectHubWan = async (role) => {
+    setWanBusy(true);
+    // No optimistic update: a switch is a USB control transfer per identity and
+    // takes seconds, so the radio must not move before the kernel confirms it.
+    try {
+      const response = await fetchFromServer('/api/hub/wan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      setWanMessage((response && response.message) || '');
+    } catch (error) {
+      setWanMessage('Switch failed: ' + error.message);
+    } finally {
+      await fetchHubWan();
+      setWanBusy(false);
+    }
+  };
+
   return (
     <div className="internet-page">
       <div className="internet-container">
@@ -505,6 +559,78 @@ const Internet = () => {
             content={statusMessage}
           />
         )}
+
+        {/* Powered-hub WAN selection, by role.
+            Separate from the selector above, which drives the Coolgear and is
+            still the live path: only the Alfa has moved to the powered hub, so
+            the other three roles show an empty socket until their adapters
+            move. Single selection on purpose -- several WAN options may be
+            considered, only one is left drawing current. */}
+        <Card className="internet-control-card" style={{ marginTop: '20px' }}>
+          <Card.Content>
+            <Card.Header>Powered Hub WAN Source</Card.Header>
+            <Card.Meta>
+              One socket powered at a time. Sockets without a WAN role are not
+              touched, so switching here cannot cut the Bluetooth adapter.
+            </Card.Meta>
+            {wanConfigured === false ? (
+              <Message warning size="small" style={{ marginTop: '10px' }}>
+                {wanMessage || 'No socket map yet. Build one with rv/usbhub/map_sockets.py.'}
+              </Message>
+            ) : (
+              <Form style={{ marginTop: '12px' }}>
+                <Form.Field>
+                  {wanCandidates.map(cand => (
+                    <Form.Field key={cand.role}>
+                      <Radio
+                        label={
+                          `${cand.role} — socket ${cand.socket}` +
+                          (cand.present
+                            ? ` (${cand.product || 'device'}${cand.max_power ? ', ' + cand.max_power : ''})`
+                            : ' (empty — adapter not moved yet)')
+                        }
+                        name="hubWanRole"
+                        value={cand.role}
+                        checked={wanActive === cand.role}
+                        onChange={() => selectHubWan(cand.role)}
+                        /* An empty socket is not selectable: powering one
+                           enumerates nothing, which is exactly how 'Wired'
+                           appeared broken for weeks on the old hub. */
+                        disabled={wanBusy || !cand.present}
+                      />
+                    </Form.Field>
+                  ))}
+                  <Form.Field>
+                    <Radio
+                      label="None (all WAN sockets off)"
+                      name="hubWanRole"
+                      value="none"
+                      checked={wanActive === null}
+                      onChange={() => selectHubWan(null)}
+                      disabled={wanBusy}
+                    />
+                  </Form.Field>
+                </Form.Field>
+              </Form>
+            )}
+            {wanBusy && (
+              <div style={{ marginTop: '8px' }}>
+                <Icon name="circle notched" loading /> Switching sockets...
+              </div>
+            )}
+            {wanMessage && wanConfigured !== false && (
+              <div style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
+                {wanMessage}
+              </div>
+            )}
+            <Message info size="small" style={{ marginTop: '10px' }}>
+              Powering a socket offers an uplink; it does not seize the default
+              route. pi5connect.sh decides that on the interface event which
+              follows, and it keeps a healthy incumbent rather than being
+              preempted.
+            </Message>
+          </Card.Content>
+        </Card>
 
         {/* WiFi picker: networks in range, tap to connect. See WifiPicker.jsx.
             Always rendered, because the uplink radio is independent of the hub:
