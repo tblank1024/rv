@@ -1069,6 +1069,88 @@ def get_hub_wan() -> dict:
     }
 
 
+@app.post("/api/hub/wan/scan")
+def scan_hub_wan() -> dict:
+    """
+    Look for a better uplink, powering sockets only while testing them.
+
+    This exists because powering one WAN at a time and preferring a better
+    uplink are in tension: pi5connect only reconsiders the WAN when
+    NetworkManager raises an interface event, and an unpowered socket has no
+    interface and raises nothing. Rather than burn standby power keeping every
+    adapter enumerated just to notice, the scan is on demand.
+
+    Runs rv/raspap/wan_scan.sh detached via systemd-run, because a scan can
+    briefly change the default route and must not die with this request. The
+    result lands in /run/wan-scan-result and the progress log in
+    /var/log/wan-scan.log; poll GET /api/hub/wan to see where it ended up.
+
+    Measured cost: a cold cellular candidate takes ~60s to test (17s to
+    enumerate, 22s to a netdev, 52s to a DHCP lease). Wired and WiFi are far
+    cheaper. Carrier is checked before DHCP so an unplugged cable or a
+    powered-off Starlink dish is rejected in ~10s.
+    """
+    script = "/usr/local/sbin/wan_scan.sh"
+    # nsenter into the host namespaces, the same way /api/system/reboot does.
+    # The scan has to run on the HOST: it drives sysfs USB power and calls
+    # pi5connect, and systemd-run inside the container cannot reach the host's
+    # systemd. Requires pid: host + privileged: true, which this service has.
+    # systemd-run detaches it, so a scan that outlives this request -- a cold
+    # cellular test takes ~60s -- is not killed when the HTTP call returns.
+    try:
+        # --on-loss when there is no default route at all: then every role is
+        # worth trying, not just ones better than a WAN we do not have.
+        mode = [] if default_route_interface() else ["--on-loss"]
+        result = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
+             "systemd-run", "--unit=wan-scan-ondemand", "--collect",
+             "--service-type=oneshot", "/bin/bash", script, *mode],
+            capture_output=True, text=True, timeout=20)
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            # A unit of that name already existing is the common case: a scan
+            # is already in flight, which is not an error worth alarming about.
+            if "already exists" in detail or "already running" in detail:
+                return {"success": True, "started": False,
+                        "message": "A scan is already running."}
+            return {"success": False, "error": "launch_failed",
+                    "message": detail or f"rc={result.returncode}"}
+    except Exception as exc:
+        return {"success": False, "error": "launch_failed", "message": str(exc)}
+    return {"success": True, "started": True,
+            "message": "Scanning for a better uplink. This can take a minute "
+                       "if the cellular modem has to be powered up and tested."}
+
+
+@app.get("/api/hub/wan/scan")
+def get_hub_wan_scan() -> dict:
+    """Last scan outcome, and whether one is running now."""
+    running = False
+    try:
+        probe = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
+             "systemctl", "is-active", "wan-scan-ondemand"],
+            capture_output=True, text=True, timeout=8)
+        running = probe.stdout.strip() == "active"
+    except Exception:
+        pass
+    outcome, iface, socket_label, when = "", "", "", 0
+    try:
+        # The container has its own /run, so read the host's copy.
+        got = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
+             "cat", "/run/wan-scan-result"],
+            capture_output=True, text=True, timeout=8)
+        parts = got.stdout.split()
+        if len(parts) >= 4:
+            outcome, iface, socket_label = parts[0], parts[1], parts[2]
+            when = int(parts[3])
+    except Exception:
+        pass
+    return {"success": True, "running": running, "outcome": outcome,
+            "interface": iface, "socket": socket_label, "finished": when}
+
+
 @app.post("/api/hub/wan")
 def set_hub_wan(data: Annotated[HubWanData, Body()]) -> dict:
     """

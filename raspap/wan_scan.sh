@@ -1,0 +1,392 @@
+#!/bin/bash
+#
+# wan_scan.sh - find a working uplink, powering sockets only while testing.
+#
+# WHY THIS EXISTS
+# pi5connect.sh reconsiders the WAN when NetworkManager raises an interface
+# event. That only happens for a device that is POWERED -- an unpowered hub
+# socket has no interface and raises nothing. So with one WAN powered at a
+# time (the power-saving goal), a better uplink coming back is invisible, and
+# a failover has nothing to fail over to.
+#
+# This script closes that gap without paying standby power: it walks the WAN
+# roles in preference order, powering each socket only for as long as it takes
+# to test it, and hands the winner to pi5connect.sh to commit.
+#
+# MEASURED COST OF GATING A SOCKET (why the cheap rejections below matter)
+# A powered, already-leased candidate probes in ~3s (2026-10-19 failover test).
+# From cold, measured on this hardware the same day by cycling socket 3:
+#   +1s   socket powered
+#   +17s  USB enumeration (the modem boots firmware and mode-switches)
+#   +22s  netdev and carrier
+#   +52s  DHCP lease (one clean run). A second attempt was still waiting at
+#         +33s when an unrelated exclusivity switch from the dashboard cut the
+#         socket, so +52s is the only solid figure -- not evidence of worse.
+# So a cold CELLULAR candidate costs roughly 60-90s to test. Wired and WiFi are
+# far cheaper: no modem boot, and carrier appears with the netdev.
+#
+# That is the real price of gating a socket, and it is worse than the 37s the
+# 2026-10-17 note records. Carrier is therefore checked before DHCP: carrier==0
+# means nothing is on the other end, rejecting an unplugged cable or a
+# powered-off Starlink dish in ~10s instead of waiting out the DHCP timeout.
+#
+# Usage:
+#   wan_scan.sh                 look for an uplink BETTER than the current one
+#   wan_scan.sh --on-loss       consider every role (use when there is no WAN)
+#   wan_scan.sh --dry-run       log the walk, change nothing
+#
+# SAFETY
+#   - A candidate is powered ALONGSIDE the incumbent, never instead of it, so
+#     a working uplink is not dropped to test a speculative one. Exclusivity is
+#     the steady state, not an invariant during a scan.
+#   - Only sockets with a real WAN role are ever switched. A socket that merely
+#     has a display NAME (socket 1, "Wifi") is tested if its interface is
+#     already up and otherwise skipped -- never powered off. That is the whole
+#     point of keeping names and roles separate.
+#   - An EXIT trap powers off every socket this run turned on and did not
+#     settle on, and re-powers the incumbent if it somehow ended up off.
+#   - pi5connect.sh makes the commit decision, so its gateway detection,
+#     pre-commit probe, preference guard and rollback all still apply. This
+#     script never touches the routing table itself.
+#
+set -u
+
+LOGFILE="${LOGFILE:-/var/log/wan-scan.log}"
+exec >> "$LOGFILE" 2>&1
+
+SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
+HUB_API="${HUB_API:-http://127.0.0.1:12347}"
+PI5CONNECT="/usr/local/sbin/pi5connect.sh"
+STATE_FILE="/run/pi5connect-wan"
+RESULT_FILE="/run/wan-scan-result"
+
+# Same order and the same aliases as pi5connect.sh. Keep them in step.
+WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
+
+# Timeouts MEASURED on this hardware 2026-10-19, not guessed. Powering the
+# cellular socket from cold: USB enumeration +17s (the modem boots its own
+# firmware and mode-switches from QCOM 05c6:f000 to TCL 1bbb:0646), netdev and
+# carrier +22s, DHCP +52s. My first guesses here were 12/6/40, which would have
+# abandoned the modem five seconds before it even appeared on the bus.
+IFACE_WAIT=35        # seconds for a powered socket to present an interface
+CARRIER_WAIT=10      # then for carrier -- 0 means nothing on the other end
+DHCP_WAIT=75         # then for an IPv4 address
+SETTLE=2
+
+MODE="better"
+DRYRUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --on-loss) MODE="all" ;;
+        --dry-run) DRYRUN=1 ;;
+        -h|--help) sed -n '3,40p' "$0"; exit 0 ;;
+        *) echo "[$(date)] unknown argument: $arg"; exit 2 ;;
+    esac
+done
+
+log() { echo "[$(date)] $*"; }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    log "ERROR: must run as root"
+    exit 1
+fi
+
+normalise_role() {
+    # Lowercase first. Socket display names are human-written -- the map holds
+    # "Wifi" -- and a case-sensitive match silently dropped socket 1 out of the
+    # scan entirely on the first run of wan_scan.sh.
+    local r="${1,,}"
+    case "$r" in
+        cell|cellular|lte|4g|5g)  echo cellular ;;
+        wired|ethernet|eth|lan)   echo wired ;;
+        wifi|wlan|wireless)       echo wifi ;;
+        starlink|sat|satellite)   echo starlink ;;
+        *)                        echo "$r" ;;
+    esac
+}
+
+rank_of() {
+    local role i=0 p
+    role="$(normalise_role "$1")"
+    for p in "${WAN_PREFERENCE[@]}"; do
+        [[ "$role" == "$p" ]] && { echo "$i"; return 0; }
+        i=$((i + 1))
+    done
+    echo 99
+}
+
+# "label|role|name|hub:port,hub:port" for every socket.
+#
+# Pipe-separated, not tab. Tab is an IFS *whitespace* character, so bash
+# collapses runs of it and drops empty fields: socket 1 has no role, and
+# "1<tab><tab>Wifi<tab>1-2.3:3" read back as role=Wifi, name=1-2.3:3,
+# idents=empty. The socket then looked like it had no adapter and was skipped.
+socket_table() {
+    python3 -I -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception as exc:
+    sys.stderr.write("socket map unreadable: %s\n" % exc)
+    sys.exit(1)
+roles = data.get("wan") or {}
+names = data.get("names") or {}
+for label, ids in sorted((data.get("sockets") or {}).items()):
+    ident = ",".join("%s:%s" % (h, p) for h, p in ids)
+    print("|".join([label, roles.get(label, ""), names.get(label, ""), ident]))
+' "$SOCKET_MAP"
+}
+
+port_dir() {
+    local hub="$1" port="$2"
+    if [[ "$hub" == usb* ]]; then
+        echo "/sys/bus/usb/devices/$hub/${hub#usb}-0:1.0/$hub-port$port"
+    else
+        echo "/sys/bus/usb/devices/$hub/$hub:1.0/$hub-port$port"
+    fi
+}
+
+# Is every identity of this socket enabled?
+socket_is_on() {
+    local idents="$1" id hub port dir
+    for id in ${idents//,/ }; do
+        hub="${id%:*}"; port="${id##*:}"
+        dir="$(port_dir "$hub" "$port")"
+        [[ "$(cat "$dir/disable" 2>/dev/null)" == "1" ]] && return 1
+    done
+    return 0
+}
+
+# Does any identity of this socket have a device on it?
+socket_has_device() {
+    local idents="$1" id hub port
+    for id in ${idents//,/ }; do
+        hub="${id%:*}"; port="${id##*:}"
+        [[ -d "/sys/bus/usb/devices/$hub.$port" ]] && return 0
+    done
+    return 1
+}
+
+# Power a socket. Hub API first so its cache is invalidated and the change is
+# logged there; direct sysfs as a fallback, because the API being down is
+# exactly the situation in which a scan matters.
+socket_power() {
+    local label="$1" on="$2" idents="$3" id hub port dir
+    if [[ "$DRYRUN" == "1" ]]; then
+        log "  DRYRUN would power socket $label ${on}"
+        return 0
+    fi
+    if curl -s --max-time 3 -o /dev/null "$HUB_API/api/health" 2>/dev/null; then
+        local body='{"socket": "'"$label"'", "on": '"$([[ "$on" == on ]] && echo true || echo false)"'}'
+        if curl -s --fail --max-time 15 -X POST "$HUB_API/api/socket" \
+                -H 'Content-Type: application/json' -d "$body" >/dev/null 2>&1; then
+            log "  socket $label -> $on (hub API)"
+            return 0
+        fi
+        log "  socket $label: hub API refused; falling back to sysfs"
+    fi
+    local wrote=0
+    for id in ${idents//,/ }; do
+        hub="${id%:*}"; port="${id##*:}"
+        dir="$(port_dir "$hub" "$port")"
+        [[ -w "$dir/disable" ]] || continue
+        echo "$([[ "$on" == on ]] && echo 0 || echo 1)" > "$dir/disable" 2>/dev/null && wrote=1
+    done
+    [[ "$wrote" == "1" ]] && log "  socket $label -> $on (sysfs)" || log "  socket $label: could not switch"
+}
+
+# Which interface belongs to this socket, by resolving each netdev's USB path.
+socket_iface() {
+    local idents="$1" n devdir dev hub port id
+    for n in /sys/class/net/*; do
+        n="$(basename "$n")"
+        devdir="$(readlink -f "/sys/class/net/$n/device" 2>/dev/null)" || continue
+        [[ -z "$devdir" ]] && continue
+        dev="${devdir##*/}"; dev="${dev%%:*}"
+        [[ "$dev" == *.* ]] || continue
+        hub="${dev%.*}"; port="${dev##*.}"
+        for id in ${idents//,/ }; do
+            [[ "$id" == "$hub:$port" ]] && { echo "$n"; return 0; }
+        done
+    done
+    return 1
+}
+
+CUR_IFACE="$(cut -d' ' -f1 "$STATE_FILE" 2>/dev/null)"
+CUR_ROLE=""
+CUR_RANK=99
+
+# --- restore on any exit --------------------------------------------------
+TURNED_ON=()
+WINNER=""
+WINNER_LABEL=""
+cleanup() {
+    local label
+    for label in "${TURNED_ON[@]:-}"; do
+        [[ -z "$label" ]] && continue
+        [[ "$label" == "$WINNER_LABEL" ]] && continue
+        log "cleanup: powering socket $label back off (tested, not chosen)"
+        socket_power "$label" off "${IDENTS[$label]}"
+    done
+}
+trap cleanup EXIT
+
+log "===== wan_scan start (mode=$MODE dryrun=$DRYRUN current=${CUR_IFACE:-none}) ====="
+
+if [[ ! -r "$SOCKET_MAP" ]]; then
+    log "ERROR: no socket map at $SOCKET_MAP; nothing to scan"
+    echo "error no_socket_map" > "$RESULT_FILE"
+    exit 1
+fi
+
+declare -A ROLES NAMES IDENTS
+CANDIDATES=()
+while IFS='|' read -r label role name idents; do
+    [[ -z "$label" ]] && continue
+    ROLES[$label]="$role"; NAMES[$label]="$name"; IDENTS[$label]="$idents"
+    # A socket counts as a WAN candidate if its role OR its display name
+    # places it in the preference list. The name fallback is what lets socket
+    # 1 ("Wifi", no role) be considered without making it switchable.
+    local_role="${role:-$name}"
+    [[ "$(rank_of "$local_role")" == "99" ]] && continue
+    CANDIDATES+=("$label")
+done < <(socket_table) || { log "ERROR: could not read socket map"; exit 1; }
+
+if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
+    log "ERROR: no socket has a WAN role or a recognised WAN name"
+    echo "error no_candidates" > "$RESULT_FILE"
+    exit 1
+fi
+
+if [[ -n "$CUR_IFACE" ]]; then
+    for label in "${CANDIDATES[@]}"; do
+        if [[ "$(socket_iface "${IDENTS[$label]}" 2>/dev/null)" == "$CUR_IFACE" ]]; then
+            CUR_ROLE="$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")"
+            CUR_RANK="$(rank_of "$CUR_ROLE")"
+            break
+        fi
+    done
+fi
+log "current WAN ${CUR_IFACE:-none} role=${CUR_ROLE:-unknown} rank=$CUR_RANK"
+
+# Preference order
+ORDERED=()
+for want in "${WAN_PREFERENCE[@]}"; do
+    for label in "${CANDIDATES[@]}"; do
+        [[ "$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")" == "$want" ]] && ORDERED+=("$label")
+    done
+done
+
+for label in "${ORDERED[@]}"; do
+    role="$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")"
+    rank="$(rank_of "$role")"
+    idents="${IDENTS[$label]}"
+    switchable=0
+    [[ -n "${ROLES[$label]}" ]] && switchable=1
+
+    if [[ "$MODE" == "better" ]] && (( rank >= CUR_RANK )); then
+        log "socket $label ($role): not better than current ($CUR_ROLE); stopping here"
+        break
+    fi
+
+    # "No device on this socket" and "this socket is powered off" look
+    # IDENTICAL in sysfs -- an unpowered port has no child device either way.
+    # So this check is only meaningful while the socket is ON. Treating an off
+    # socket as empty made the scan skip every gated socket, which defeats the
+    # entire feature: the live test on 2026-10-19 powered the wired socket off
+    # and the scan reported "socket 2 (wired): no adapter installed, skipped"
+    # and settled for WiFi instead. An off socket has to be powered to find out.
+    if socket_is_on "$idents" && ! socket_has_device "$idents"; then
+        log "socket $label ($role): powered but nothing plugged in, skipped"
+        continue
+    fi
+
+    was_on=0
+    socket_is_on "$idents" && was_on=1
+    if [[ "$was_on" == "0" ]]; then
+        if [[ "$switchable" == "0" ]]; then
+            log "socket $label ($role): off and not switchable (name only, no role), skipped"
+            continue
+        fi
+        log "socket $label ($role): powering on to test"
+        socket_power "$label" on "$idents"
+        TURNED_ON+=("$label")
+        [[ "$DRYRUN" == "1" ]] && { log "  DRYRUN stops here for $label"; continue; }
+        sleep "$SETTLE"
+    else
+        log "socket $label ($role): already powered"
+    fi
+
+    # interface
+    iface=""
+    for _ in $(seq 1 "$IFACE_WAIT"); do
+        iface="$(socket_iface "$idents" 2>/dev/null)" && [[ -n "$iface" ]] && break
+        sleep 1
+    done
+    if [[ -z "$iface" ]]; then
+        log "  no interface within ${IFACE_WAIT}s -- socket is empty or the device failed to bind"
+        continue
+    fi
+    log "  interface $iface"
+
+    # carrier -- the cheap rejection
+    carrier=0
+    for _ in $(seq 1 "$CARRIER_WAIT"); do
+        [[ "$(cat "/sys/class/net/$iface/carrier" 2>/dev/null)" == "1" ]] && { carrier=1; break; }
+        sleep 1
+    done
+    if [[ "$carrier" != "1" ]]; then
+        log "  no carrier on $iface after ${CARRIER_WAIT}s -- nothing on the other end"
+        continue
+    fi
+
+    # address
+    got_ip=0
+    for _ in $(seq 1 "$DHCP_WAIT"); do
+        ip -4 addr show "$iface" 2>/dev/null | grep -q 'inet ' && { got_ip=1; break; }
+        sleep 1
+    done
+    if [[ "$got_ip" != "1" ]]; then
+        log "  no IPv4 on $iface after ${DHCP_WAIT}s"
+        continue
+    fi
+    log "  $iface has $(ip -4 -br addr show "$iface" | awk '{print $3}')"
+
+    # Hand the decision to pi5connect: it probes before committing, refuses a
+    # less-preferred candidate, and rolls back if the commit loses internet.
+    if [[ "$DRYRUN" == "1" ]]; then
+        # An already-powered socket reaches here without the dry-run check
+        # above, so guard the one call that changes the routing table.
+        log "  DRYRUN would hand $iface to pi5connect"
+        continue
+    fi
+    log "  handing $iface to pi5connect"
+    "$PI5CONNECT" "$iface" up
+    sleep "$SETTLE"
+    now="$(cut -d' ' -f1 "$STATE_FILE" 2>/dev/null)"
+    if [[ "$now" == "$iface" ]]; then
+        log "WINNER: socket $label ($role) on $iface"
+        WINNER="$iface"; WINNER_LABEL="$label"
+        break
+    fi
+    log "  pi5connect did not take $iface (WAN is ${now:-none}); continuing"
+done
+
+if [[ -n "$WINNER" ]]; then
+    # Settle to one powered uplink: switch off every other roled socket.
+    for label in "${ORDERED[@]}"; do
+        [[ "$label" == "$WINNER_LABEL" ]] && continue
+        [[ -z "${ROLES[$label]}" ]] && continue      # name-only: never switch
+        socket_is_on "${IDENTS[$label]}" || continue
+        log "settling: socket $label off (winner is $WINNER_LABEL)"
+        socket_power "$label" off "${IDENTS[$label]}"
+    done
+    echo "ok $WINNER $WINNER_LABEL $(date +%s)" > "$RESULT_FILE"
+    log "===== wan_scan done: WAN=$WINNER socket=$WINNER_LABEL ====="
+    exit 0
+fi
+
+log "no better uplink found; leaving WAN=${CUR_IFACE:-none} as it was"
+echo "nochange ${CUR_IFACE:-none} - $(date +%s)" > "$RESULT_FILE"
+log "===== wan_scan done: no change ====="
+exit 0

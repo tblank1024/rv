@@ -136,12 +136,16 @@ for label, ids in (data.get("sockets") or {}).items():
 # silently fell to unknown-rank, which only LOOKED correct because unknown
 # sorts last anyway. A second unclassified uplink would have exposed it.
 normalise_role() {
-    case "$1" in
+    # Lowercase first. Socket display names are human-written -- the map holds
+    # "Wifi" -- and a case-sensitive match silently dropped socket 1 out of the
+    # scan entirely on the first run of wan_scan.sh.
+    local r="${1,,}"
+    case "$r" in
         cell|cellular|lte|4g|5g)      echo cellular ;;
         wired|ethernet|eth|lan)       echo wired ;;
         wifi|wlan|wireless)           echo wifi ;;
         starlink|sat|satellite)       echo starlink ;;
-        *)                            echo "$1" ;;
+        *)                            echo "$r" ;;
     esac
 }
 

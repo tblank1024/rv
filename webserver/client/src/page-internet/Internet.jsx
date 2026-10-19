@@ -69,6 +69,11 @@ const Internet = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);   // {connected, message}
 
+  // On-demand scan for a better uplink
+  const [scanRunning, setScanRunning] = useState(false);
+  const [scanResult, setScanResult] = useState(null);   // {outcome, interface, socket}
+  const [scanMessage, setScanMessage] = useState('');
+
   // Kasa accessories
   const [ampPower, setAmpPower] = useState(null);
   const [starlinkPower, setStarlinkPower] = useState(null);
@@ -148,6 +153,62 @@ const Internet = () => {
     }
   };
 
+  // ---- on-demand scan ----------------------------------------------------
+  // Deliberately manual. Keeping every adapter powered so a better uplink
+  // could be noticed automatically would cost standby current continuously,
+  // which defeats the point of powering one WAN at a time. A button costs
+  // nothing until pressed.
+  const fetchScanStatus = useCallback(async () => {
+    try {
+      const response = await fetchFromServer('/api/hub/wan/scan');
+      if (response && response.success) {
+        setScanRunning(!!response.running);
+        if (response.outcome) {
+          setScanResult({
+            outcome: response.outcome,
+            interface: response.interface,
+            socket: response.socket,
+          });
+        }
+        return !!response.running;
+      }
+    } catch (error) {
+      console.error('Scan status failed:', error);
+    }
+    return false;
+  }, []);
+
+  const startScan = async () => {
+    setScanMessage('');
+    setScanResult(null);
+    try {
+      const response = await fetchFromServer('/api/hub/wan/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      setScanMessage((response && response.message) || '');
+      if (!response || !response.success) return;
+      setScanRunning(true);
+    } catch (error) {
+      setScanMessage('Could not start the scan: ' + error.message);
+    }
+  };
+
+  // Poll only while a scan is in flight. A cold cellular test takes ~60s, so
+  // this is a slow poll, and it stops as soon as the unit goes inactive.
+  useEffect(() => {
+    if (!scanRunning) return undefined;
+    const timer = setInterval(async () => {
+      const stillRunning = await fetchScanStatus();
+      if (!stillRunning) {
+        await fetchHubWan();
+        await fetchRoute();
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [scanRunning, fetchScanStatus, fetchHubWan, fetchRoute]);
+
   // ---- Kasa accessories --------------------------------------------------
   const fetchKasaPower = useCallback(async () => {
     try {
@@ -180,7 +241,8 @@ const Internet = () => {
     fetchHubWan();
     fetchRoute();
     fetchKasaPower();
-  }, [fetchHubWan, fetchRoute, fetchKasaPower]);
+    fetchScanStatus();
+  }, [fetchHubWan, fetchRoute, fetchKasaPower, fetchScanStatus]);
 
   // A candidate's display name: the socket's cosmetic label if the map has
   // one, else the role itself.
@@ -261,11 +323,43 @@ const Internet = () => {
               </Message>
             )}
 
+            <div style={{ marginTop: '14px', paddingTop: '12px',
+                          borderTop: '1px solid #e8e8e8' }}>
+              <Button size="small" onClick={startScan}
+                      loading={scanRunning} disabled={scanRunning}>
+                <Icon name="search" /> Look for a better connection
+              </Button>
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '6px' }}>
+                Tries each uplink in order — wired, WiFi, Starlink, cellular —
+                powering a socket only while it is tested, and keeps the best
+                one that works. Nothing is left powered speculatively, so an
+                uplink that comes back on its own is only noticed here or when
+                the current one fails. Allow up to a minute: the cellular modem
+                takes ~17s just to enumerate and ~52s to get an address.
+              </div>
+              {scanMessage && (
+                <Message size="small" info style={{ marginTop: '8px' }}>
+                  {scanMessage}
+                </Message>
+              )}
+              {!scanRunning && scanResult && (
+                <Message size="small"
+                         positive={scanResult.outcome === 'ok'}
+                         style={{ marginTop: '8px' }}>
+                  {scanResult.outcome === 'ok'
+                    ? `Settled on ${scanResult.interface} (socket ${scanResult.socket}).`
+                    : scanResult.outcome === 'nochange'
+                      ? 'Nothing better found; the current uplink was left alone.'
+                      : `Scan reported: ${scanResult.outcome}`}
+                </Message>
+              )}
+            </div>
+
             <Message info size="small" style={{ marginTop: '10px' }}>
               Powering a socket offers an uplink; it does not seize the default
               route. pi5connect.sh decides that on the interface event which
-              follows, keeps a healthy incumbent rather than being preempted,
-              and promotes a replacement if the current WAN drops.
+              follows, keeps a healthy incumbent unless a more preferred uplink
+              appears, and promotes a replacement if the current WAN drops.
             </Message>
           </Card.Content>
         </Card>
