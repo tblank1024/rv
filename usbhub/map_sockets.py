@@ -130,6 +130,28 @@ def next_label(sockets, hub):
     return str(len(sockets) + 1)
 
 
+def build_data(existing, sockets, wan):
+    return {
+        "note": existing.get("note") or
+                "Built by map_sockets.py. Each socket lists every (hub, port) "
+                "identity it has -- USB 2 and USB 3 chips are separate hubs.",
+        "sockets": {k: [list(pair) for pair in v] for k, v in sockets.items()},
+        "wan": wan,
+    }
+
+
+def save(path, data):
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    # Write and rename, so an interrupted save cannot leave a half-written map
+    # that the service would then refuse to parse.
+    temporary = f"{path}.tmp"
+    with open(temporary, "w") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
 def load_existing(path):
     try:
         with open(path) as handle:
@@ -171,6 +193,7 @@ def main():
     print("Ctrl-C when done.\n")
 
     baseline = occupied(pairs)
+    saved = None
     try:
         while True:
             hub, port = wait_for_plug(pairs, set(baseline))
@@ -191,6 +214,18 @@ def main():
                 role = input("  WAN role (starlink/wired/cell/wifi, blank=none): ").strip()
                 if role:
                     wan[label] = role
+
+            # Save as we go. Walking a device round seven sockets is work that
+            # should not be lost to a closed terminal or a stray kill, so the
+            # file is current after every socket rather than only on exit.
+            try:
+                save(args.out, build_data(existing, sockets, wan))
+                saved = True
+            except OSError as exc:
+                if saved is not False:
+                    print(f"  WARNING: cannot write {args.out}: {exc}")
+                    print("  Carrying on -- the map will be printed at the end.")
+                saved = False
             print("  recorded. Move the device to the next socket.\n")
     except KeyboardInterrupt:
         print()
@@ -198,20 +233,9 @@ def main():
     if not sockets:
         raise SystemExit("nothing recorded; map not written")
 
-    data = {
-        "note": existing.get("note") or
-                "Built by map_sockets.py. Each socket lists every (hub, port) "
-                "identity it has -- USB 2 and USB 3 chips are separate hubs.",
-        "sockets": {k: [list(pair) for pair in v] for k, v in sockets.items()},
-        "wan": wan,
-    }
-
-    directory = os.path.dirname(os.path.abspath(args.out))
+    data = build_data(existing, sockets, wan)
     try:
-        os.makedirs(directory, exist_ok=True)
-        with open(args.out, "w") as handle:
-            json.dump(data, handle, indent=2)
-            handle.write("\n")
+        save(args.out, data)
     except OSError as exc:
         print(json.dumps(data, indent=2))
         raise SystemExit(f"\ncould not write {args.out}: {exc}\n"
