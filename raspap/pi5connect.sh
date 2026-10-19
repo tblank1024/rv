@@ -4,6 +4,19 @@
 # Triggered by /etc/NetworkManager/dispatcher.d/99-pi5connect on interface
 # up/down/connectivity-change, and by setup-bridge.sh at boot (no args).
 #
+# v2.2 changes (2026-10-19):
+#   1. A "down" event now PROMOTES A REPLACEMENT. Up to v2.1 it removed the
+#      rules and exited, so the RV sat with no WAN until some other interface
+#      happened to fire its own up/dhcp4-change -- which an already-up
+#      interface never does. Each candidate is tried by re-running this script
+#      with "up", so all the probe/commit/rollback logic applies unchanged.
+#   2. iface_has_ip no longer requires operstate "UP". A cdc_ether cellular
+#      modem sits at "state UNKNOWN" while working, so eth1 was invisible as a
+#      candidate AND the incumbent-health guard thought the live WAN was dead.
+#   3. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
+#      tun*, any bridge), not just by the five hardcoded names. The broader
+#      failover search would otherwise probe docker's per-network bridges.
+#
 # v2.1 changes (2026-10-17) - see Results_WiFi_testing.md / WifitoHostBridge:
 #   1. A candidate WAN is PROBED before it is committed. v2.0 accepted any
 #      interface with a gateway, deleted every default route and pointed NAT at
@@ -26,6 +39,7 @@
 # route on its device and therefore fails the probe, which is the intent.
 # Known limitation: a captive portal answers the probe and still looks healthy.
 
+SCRIPT_VERSION="2.2"
 LOGFILE="/var/log/pi5connect.log"
 exec >> $LOGFILE 2>&1
 echo "[$(date)] pi5connect.sh triggered: iface=${1:-unset} status=${2:-unset}"
@@ -52,6 +66,18 @@ is_ap_side() {
     for ap in "${AP_SIDE[@]}"; do
         [[ "$iface" == "$ap" ]] && return 0
     done
+    # Never-WAN by shape, not by name: docker's per-network bridges
+    # (br-<hex>), veth pairs, CAN buses, tunnels. v2.1 never saw these because
+    # its boot scan required a default route; v2.2's failover search is
+    # broader, and br-3275f2636efe duly turned up as a candidate on
+    # 2026-10-19. It would have been rejected by the probe, but its guessed
+    # gateway (its own address) passes the reachability check first, so it
+    # wastes a probe cycle on every failover and is a latent hazard.
+    case "$iface" in
+        br-*|veth*|docker*|can*|tun*|tap*|wg*|dummy*) return 0 ;;
+    esac
+    # Any bridge at all is LAN-side by construction
+    [[ -d "/sys/class/net/$iface/bridge" ]] && return 0
     # Also skip anything enslaved to br0
     ip link show "$iface" 2>/dev/null | grep -q "master br0" && return 0
     return 1
@@ -88,7 +114,18 @@ ensure_dns_input() {
 iface_has_ip() {
     local iface="$1"
     [[ -z "$iface" ]] && return 1
-    ip link show "$iface" 2>/dev/null | grep -q "state UP" || return 1
+    local flags
+    flags="$(ip link show "$iface" 2>/dev/null | head -1)"
+    [[ -z "$flags" ]] && return 1
+    # Admin-up is read from the FLAG list, not from operstate. A cdc_ether
+    # cellular modem reports "state UNKNOWN" while working perfectly: on
+    # 2026-10-19 eth1 held 192.168.0.118 and had been the live WAN, yet
+    # `state UP` did not match -- so it was invisible to the candidate search,
+    # and worse, the incumbent-health guard concluded the live WAN was dead
+    # and would have let an untested candidate preempt it.
+    grep -qE '[<,]UP[,>]' <<< "$flags" || return 1
+    # Admin-up with no carrier is not a WAN (docker0 looks like this).
+    grep -q 'NO-CARRIER' <<< "$flags" && return 1
     ip -4 addr show "$iface" 2>/dev/null | grep -q "inet " || return 1
     return 0
 }
@@ -114,6 +151,27 @@ probe_iface() {
     done
     echo "[$(date)] Probe FAILED: $iface could not reach ${PROBE_TARGETS[*]} or ${PROBE_URLS[*]}"
     return 1
+}
+
+# Non-AP interfaces that are UP with an IPv4 address, excluding $1.
+# Ordered: those that already carry a default route of their own first, then
+# the rest. A DHCP-supplied default route is a good signal, but it cannot be
+# required -- this script deletes every default route except the chosen one,
+# so a perfectly healthy standby (wlan1, routinely) has none.
+candidate_ifaces() {
+    local skip="$1" iface
+    local routed="" plain=""
+    for iface in $(ip -o link show up | awk -F': ' '{print $2}' | cut -d@ -f1); do
+        [[ "$iface" == "$skip" ]] && continue
+        is_ap_side "$iface" && continue
+        iface_has_ip "$iface" || continue
+        if ip route show dev "$iface" 2>/dev/null | grep -q "^default"; then
+            routed="$routed $iface"
+        else
+            plain="$plain $iface"
+        fi
+    done
+    echo $routed $plain
 }
 
 # Can we reach the internet via the current default route? (post-commit check)
@@ -145,9 +203,45 @@ fi
 # --- Handle down event ---
 if [[ "$TRIGGERED_STATUS" == "down" ]]; then
     remove_wan_rules "$TRIGGERED_IFACE"
-    [[ "$(cut -d' ' -f1 $STATE_FILE 2>/dev/null)" == "$TRIGGERED_IFACE" ]] && rm -f "$STATE_FILE"
+    WAS_WAN=0
+    if [[ "$(cut -d' ' -f1 $STATE_FILE 2>/dev/null)" == "$TRIGGERED_IFACE" ]]; then
+        WAS_WAN=1
+        rm -f "$STATE_FILE"
+    fi
     ensure_dns_input
     echo "[$(date)] Interface $TRIGGERED_IFACE went down; rules removed."
+
+    # v2.2: promote a replacement instead of just exiting.
+    #
+    # Up to v2.1 this path removed the rules and stopped, so the RV had no WAN
+    # until some OTHER interface happened to fire its own up/dhcp4-change event
+    # -- which an interface that is already up never does. Observed 2026-10-18:
+    # the Alfa's driver failed, wlan1 went down, and nothing promoted the
+    # healthy eth1 sitting right there. Recovery only came ~90s later because
+    # eth1 independently re-leased.
+    #
+    # Each candidate is tried by re-running this script with "up", so the
+    # existing gateway detection, pre-commit probe, commit and rollback all
+    # apply unchanged. No recursion: the child runs the "up" path.
+    if [[ "$WAS_WAN" == "1" || -z "$(ip route show default)" ]]; then
+        FAILOVER_CANDIDATES="$(candidate_ifaces "$TRIGGERED_IFACE")"
+        if [[ -z "${FAILOVER_CANDIDATES// /}" ]]; then
+            echo "[$(date)] Failover: no other interface is up with an address."
+            exit 0
+        fi
+        echo "[$(date)] Failover: candidates after $TRIGGERED_IFACE:$FAILOVER_CANDIDATES"
+        for cand in $FAILOVER_CANDIDATES; do
+            echo "[$(date)] Failover: trying $cand"
+            if PI5_FAILOVER=1 "$0" "$cand" up; then
+                echo "[$(date)] Failover: $cand accepted as WAN"
+                exit 0
+            fi
+            echo "[$(date)] Failover: $cand rejected"
+        done
+        echo "[$(date)] Failover: no candidate passed; the RV has no WAN."
+    else
+        echo "[$(date)] $TRIGGERED_IFACE was not the WAN; nothing to promote."
+    fi
     exit 0
 fi
 
@@ -242,11 +336,11 @@ if [[ "$PI5_SKIP_PROBE" != "1" ]] && ! probe_default; then
         add_wan_rules "$PREV_WAN"
         echo "$PREV_WAN $PREV_GW" > "$STATE_FILE"
         ensure_dns_input
-        echo "[$(date)] pi5connect.sh rolled back v2.1 WAN=$PREV_WAN GW=$PREV_GW"
+        echo "[$(date)] pi5connect.sh rolled back v$SCRIPT_VERSION WAN=$PREV_WAN GW=$PREV_GW"
         exit 1
     fi
     echo "[$(date)] No previous WAN to roll back to; leaving $ACTIVE_IFACE in place."
 fi
 
 echo "$ACTIVE_IFACE $GATEWAY_IP" > "$STATE_FILE"
-echo "[$(date)] pi5connect.sh complete v2.1 WAN=$ACTIVE_IFACE GW=$GATEWAY_IP"
+echo "[$(date)] pi5connect.sh complete v$SCRIPT_VERSION WAN=$ACTIVE_IFACE GW=$GATEWAY_IP"

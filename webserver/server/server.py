@@ -1556,20 +1556,50 @@ def acknowledge_alerts(data: Annotated[dict, Body()]) -> dict:
     acknowledged_alert_keys = set(keys)
     return {"success": True, "keys": sorted(acknowledged_alert_keys)}
 
+def default_route_interface():
+    """The interface carrying the default route, or "" if there is none.
+
+    Read from /proc/net/route rather than /run/pi5connect-wan, which is not
+    mounted into this container. The webserver runs with network_mode: host,
+    so /proc/net/route is the host's routing table.
+    """
+    try:
+        with open("/proc/net/route") as handle:
+            next(handle, None)                      # header
+            for line in handle:
+                fields = line.split()
+                # destination 00000000 == the default route
+                if len(fields) > 1 and fields[1] == "00000000":
+                    return fields[0]
+    except (OSError, StopIteration):
+        pass
+    return ""
+
+
 @app.get("/api/internet/status")
 def get_internet_status() -> dict:  # Removed async
     """Get current internet connection status."""
     global current_internet_connection
-    
+
     try:
         # Detect current connection from USB hub
         detected_connection = detect_current_internet_connection()
-        
+        wan_interface = default_route_interface()
+
         return {
             "current_connection": detected_connection,
-            "status": "connected" if detected_connection != "none" else "disconnected",
+            # Whether the RV has internet is NOT the same question as which
+            # Coolgear port is selected. Since the move to the Plugable the
+            # live WAN is not a Coolgear port at all, so deriving this from
+            # the switch reported "disconnected" while the RV was routing
+            # happily over wired (2026-10-19). Report the real default route.
+            "status": "connected" if wan_interface else "disconnected",
+            # Kept separate so a caller can still see the switch's own idea.
+            "switch_selection": detected_connection,
+            "wan_interface": wan_interface,
             "hub_reachable": usb_hub_failures < USB_HUB_FAILURES_BEFORE_UNREACHABLE,
-            "message": f"Current internet connection: {detected_connection}"
+            "message": (f"WAN via {wan_interface}" if wan_interface
+                        else "No default route"),
         }
     except Exception as e:
         print(f"Error getting internet status: {e}")
