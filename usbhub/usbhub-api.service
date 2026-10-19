@@ -31,11 +31,26 @@ Environment=USBHUB_API_BIND=127.0.0.1
 Environment=USBHUB_API_PORT=12347
 Environment=USBHUB_API_ALLOWED_NET=127.0.0.0/8
 
-# Ports that must never be switched off, "hub:port" comma separated. 1-2:4 is
-# the Coolgear's own FT232R control chip: cut it and the old hub cannot be
-# steered at all, which is a control loss rather than an internet loss.
-# Add the Plugable's equivalents once the probe names its ports.
-Environment=USBHUB_PROTECTED=1-2:4
+# Ports that must never be switched off, "hub:port" comma separated.
+#
+# Any port carrying another hub is protected automatically and need not be
+# listed -- a hub's upstream port, and the internal cascade that fronts four of
+# the Plugable's seven sockets (measured: 3-1:3 and 4-1:3). Cutting one of
+# those takes out everything behind it.
+#
+# 1-2:4 is the Coolgear's own FT232R control chip: cut it and the old hub
+# cannot be steered at all, which is a control loss rather than an internet
+# loss. 1-2:3 is the USB-ethernet adapter carrying the live WAN -- listed while
+# the Coolgear is still the WAN switch, because that path is steered over
+# serial (webserver/usbhub_ascii.py), not through this service, so protecting
+# it here costs nothing and stops an accidental cut of the only uplink.
+# Remove 1-2:3 once the WAN devices move to the Plugable.
+Environment=USBHUB_PROTECTED=1-2:4,1-2:3
+
+# Where the physical-socket map lives. Built by map_sockets.py -- socket
+# numbers cannot be derived from sysfs, they have to be observed. Absent is a
+# normal state: the socket endpoints then answer 409 rather than guessing.
+Environment=USBHUB_SOCKET_MAP=/etc/usbhub/sockets.json
 
 EnvironmentFile=-/etc/default/usbhub-api
 

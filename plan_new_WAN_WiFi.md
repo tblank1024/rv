@@ -503,3 +503,48 @@ The whole run was done with an unprivileged timed auto-revert armed
 there). Worth reusing — **it needs no sudo**, because the root API is the thing doing the work.
 It logged `revert not needed`. The WAN stayed `eth1` the entire time; `wlan1`'s default route sits
 at metric 500, so even a successful join to a captive-portal network could not have stolen it.
+
+## The Plugable hub goes in — measured 2026-10-18
+
+Installed into the free blue USB3 port, the Alfa moved to the other blue port.
+The Coolgear and the live WAN (`eth1`, Coolgear port 3) were not touched, so the
+session was never at risk. Driver and service: `usbhub/`, and its README now
+carries the detail.
+
+**The `.link` MAC pinning held across a physical port move.** The Alfa went from
+`usb4/4-1` to `usb2/2-1` — a different bus and a different controller — and came
+back as `wlan1`, still on `alfa-Decher-5g` with its lease. That was the stated
+purpose of `11-wlan-wan.link` and it is now demonstrated rather than assumed.
+
+**A "7-in-1" hub is four hub chips, not one.** One upstream cable presents as:
+
+```
+3-1  +  3-1.3     USB 2 chips (bus 3)     port 3 of each pair = internal cascade
+4-1  +  4-1.3     USB 3 chips (bus 4)
+```
+
+Two 4-port chips in series on each speed, so 4 + 4 presents as 7 sockets. The
+consequence for control: **a socket has two sysfs identities**, one per speed,
+and a device appears under only the one matching its own speed. Port numbers are
+therefore not socket numbers, and the map has to be observed with a device in
+hand (`usbhub/map_sockets.py`). `SocketMap` switches all of a socket's
+identities, since which one gates VBUS is a board-layout question.
+
+All four chips claim `ppps` to `uhubctl`. That is a capability claim, not proof
+that disabling a port removes VBUS; still to be confirmed with a measurement.
+
+### Collateral: the Edimax Bluetooth adapter was displaced
+
+The Pi 5's blue ports each carry both speeds on one connector — blue A is
+`usb2:1` (SS) + `usb1:1` (HS), blue B is `usb4:1` + `usb3:1`. Moving the Alfa
+into blue A therefore evicted the Edimax, which was on blue A's USB 2 half.
+
+`bat2mqtt` pins that adapter **by MAC** (`08:BE:AC:35:8E:5E` → `hci1`), so when
+it vanished battery monitoring stopped at 14:01:56 with no error in the log and
+no healthcheck to trip `autoheal` — it still reports `Up`. `hciconfig hci1` now
+says "No such device". TireLinc was unaffected: it pins
+`C8:7F:54:97:71:1B` = the ASUS BT500, still on `usb3:2`, and is publishing.
+
+Fix: plug the Edimax into the Plugable and restart the container. Worth noting as
+a pattern — MAC-pinned adapters survive renumbering but not unplugging, and a
+container with no healthcheck fails silently.

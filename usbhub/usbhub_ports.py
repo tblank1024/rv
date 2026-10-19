@@ -41,10 +41,17 @@ import re
 import subprocess
 
 __all__ = [
-    "HubPorts", "discover_hubs", "probe_report", "UHUBCTL", "HubError",
+    "HubPorts", "SocketMap", "discover_hubs", "discover_cascade_ports",
+    "probe_report", "socket_report", "UHUBCTL", "HubError",
+    "DEFAULT_SOCKET_MAP",
 ]
 
 UHUBCTL = "/usr/sbin/uhubctl"
+
+# Which physical socket is which (hub, port) pair. Cannot be derived -- see
+# SocketMap. map_sockets.py writes this file; a reference copy with the
+# Plugable's geometry but no labels lives beside this script.
+DEFAULT_SOCKET_MAP = "/etc/usbhub/sockets.json"
 
 # A hub's ports appear under the hub's *interface* directory, not the hub
 # device itself: /sys/bus/usb/devices/1-2:1.0/1-2-port3/. Interface 0 is where
@@ -232,6 +239,10 @@ class HubPorts:
                             f"{_read(device + '/idProduct')}") if present else "",
                 "max_power": _read(f"{device}/bMaxPower") if present else "",
                 "speed": _read(f"{device}/speed") if present else "",
+                # Class 09 is a hub. A port with a hub on it may be an internal
+                # cascade rather than a socket -- cutting it takes every port
+                # behind it with it, so callers protect these.
+                "is_hub": present and _read(f"{device}/bDeviceClass") == "09",
             }
         return out
 
@@ -239,6 +250,17 @@ class HubPorts:
         """Ports currently enabled. The plural is the point: unlike the
         Coolgear, this hub can have several on at once."""
         return [p for p, s in self.states().items() if s["enabled"]]
+
+    def cascade_ports(self):
+        """
+        Ports with another hub attached.
+
+        On the Plugable these are not sockets at all: a "7-in-1" is two 4-port
+        chips in series, so port 3 of the upstream chip is the link to the
+        downstream one. Disabling it removes four sockets, and nothing in the
+        port's own attributes says so. Returned so callers can refuse.
+        """
+        return [p for p, s in self.states().items() if s["is_hub"]]
 
     def get_current_active_port(self):
         """
@@ -298,6 +320,179 @@ class HubPorts:
         return {p: self.set_port(p, True) for p in self.ports}
 
 
+def discover_cascade_ports():
+    """
+    Every (hub, port) that carries another hub, across the whole tree.
+
+    These are the ports a caller must not cut blind. Two kinds show up here and
+    both matter: a hub's internal cascade (the Plugable's port 3 on each chip,
+    which fronts four sockets) and a hub plugged into a socket by hand. The
+    distinction is invisible from sysfs, so both are simply reported.
+    """
+    found = []
+    for hub in discover_hubs():
+        try:
+            found += [(hub["hub"], port) for port in HubPorts(hub["hub"]).cascade_ports()]
+        except HubError:
+            continue
+    return found
+
+
+class SocketMap:
+    """
+    Physical sockets, each of which is one or more (hub, port) pairs.
+
+    A USB 3 hub is two hubs in one shell. The SuperSpeed lanes of a socket go
+    to a USB 3 hub chip and that socket's D+/D- pair goes to a separate USB 2
+    hub chip, on a different bus -- measured on the Plugable 2026-10-18, one
+    upstream cable presenting as 3-1/3-1.3 (USB 2) and 4-1/4-1.3 (USB 3). So
+    one socket has two sysfs identities and a plugged device appears under
+    exactly one of them, chosen by its own speed. A USB 2 stick in socket 3 is
+    invisible on the USB 3 tree, and vice versa.
+
+    Two consequences:
+
+      - A socket's state is the union of its identities: "occupied" if a device
+        is on any of them.
+      - Controlling a socket means acting on *every* identity it has. Which one
+        actually gates VBUS is a board-layout question sysfs cannot answer, so
+        setting both is the only way to be sure, and is harmless if one of them
+        is not wired to the switch.
+
+    The map itself cannot be derived -- nothing relates socket silkscreen to
+    port number -- so it is discovered once with map_sockets.py and stored as
+    JSON. An absent or empty map is a normal state, not an error: callers
+    render "not configured" rather than guessing, because guessing here means
+    cutting power to the wrong uplink.
+    """
+
+    def __init__(self, path=None, data=None):
+        self.path = path or DEFAULT_SOCKET_MAP
+        if data is None:
+            data = self._load(self.path)
+        self.sockets = {}
+        for label, pairs in (data.get("sockets") or {}).items():
+            self.sockets[str(label)] = [(str(h), int(n)) for h, n in pairs]
+        self.wan = {str(k): str(v) for k, v in (data.get("wan") or {}).items()}
+        self.note = data.get("note", "")
+        self._hubs = {}
+
+    @staticmethod
+    def _load(path):
+        try:
+            with open(path) as handle:
+                return json.load(handle)
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise HubError(f"socket map {path}: {exc}") from exc
+
+    def __bool__(self):
+        return bool(self.sockets)
+
+    @property
+    def labels(self):
+        """Sorted numerically where the labels are numeric, else as text."""
+        return sorted(self.sockets, key=lambda k: (not k.isdigit(), k.zfill(4)))
+
+    def _hub(self, name):
+        if name not in self._hubs:
+            self._hubs[name] = HubPorts(name)
+        return self._hubs[name]
+
+    def states(self):
+        """
+        Per-socket state, merged across identities.
+
+        "enabled" is AND across identities: a socket with either half disabled
+        cannot carry a device of that speed, so reporting it as on would be a
+        lie for half the devices that could go in it.
+        """
+        out = {}
+        for label in self.labels:
+            identities = []
+            for hub_name, port in self.sockets[label]:
+                try:
+                    identities.append(dict(self._hub(hub_name).states()[port],
+                                           hub=hub_name))
+                except (HubError, KeyError) as exc:
+                    identities.append({"hub": hub_name, "port": port,
+                                       "error": str(exc), "enabled": False,
+                                       "device_present": False})
+            present = [i for i in identities if i.get("device_present")]
+            device = present[0] if present else {}
+            out[label] = {
+                "socket": label,
+                "wan": self.wan.get(label, ""),
+                "enabled": all(i.get("enabled") for i in identities) if identities else False,
+                "device_present": bool(present),
+                "product": device.get("product", ""),
+                "vid_pid": device.get("vid_pid", ""),
+                "max_power": device.get("max_power", ""),
+                "speed": device.get("speed", ""),
+                "identities": identities,
+            }
+        return out
+
+    # -- control (root) ---------------------------------------------------
+    def set_socket(self, label, on):
+        """Act on every identity of one socket. Partial failure is reported,
+        not swallowed: half a socket switched is worth knowing about."""
+        if label not in self.sockets:
+            raise HubError(f"no socket {label!r} in {self.path}")
+        errors = []
+        for hub_name, port in self.sockets[label]:
+            try:
+                self._hub(hub_name).set_port(port, on)
+            except HubError as exc:
+                errors.append(f"{hub_name}:{port}: {exc}")
+        if errors:
+            raise HubError("; ".join(errors))
+        return self.states()[label]
+
+    def set_exclusive(self, label):
+        """
+        Power exactly one socket, across both trees and both chips.
+
+        Others go off BEFORE the target comes on, so the hub is never briefly
+        feeding two uplinks -- the whole point of routing WAN selection through
+        here rather than letting the UI toggle sockets one at a time. Pass None
+        to leave everything off.
+        """
+        if label is not None and label not in self.sockets:
+            raise HubError(f"no socket {label!r} in {self.path}")
+        results = {}
+        for other in self.labels:
+            if other != label:
+                results[other] = self.set_socket(other, False)
+        if label is not None:
+            results[label] = self.set_socket(label, True)
+        return results
+
+    def all_off(self):
+        return {label: self.set_socket(label, False) for label in self.labels}
+
+
+def socket_report(path=None):
+    """Human-readable socket view, or why there isn't one."""
+    smap = SocketMap(path)
+    if not smap:
+        return (f"No socket map at {smap.path}.\n"
+                "Run map_sockets.py to build one -- physical socket numbers\n"
+                "cannot be derived from sysfs, they have to be observed.")
+    lines = [f"socket map: {smap.path}"]
+    if smap.note:
+        lines.append(f"  note: {smap.note}")
+    for label, state in smap.states().items():
+        mark = "on " if state["enabled"] else "OFF"
+        dev = (f"{state['product'][:24]} [{state['vid_pid']}] {state['max_power']}"
+               if state["device_present"] else "(empty)")
+        ident = ",".join(f"{i['hub']}:{i['port']}" for i in state["identities"])
+        wan = f"  wan={state['wan']}" if state["wan"] else ""
+        lines.append(f"  socket {label:<4} {mark}  {dev:<42} [{ident}]{wan}")
+    return "\n".join(lines)
+
+
 def probe_report(as_json=False):
     """
     What is on this machine's USB tree and what can actually be controlled.
@@ -355,10 +550,42 @@ if __name__ == "__main__":
     parser.add_argument("--hub", help="hub to act on, e.g. 1-2")
     parser.add_argument("--on", type=int, metavar="PORT", help="enable one port")
     parser.add_argument("--off", type=int, metavar="PORT", help="disable one port")
-    parser.add_argument("--only", type=int, metavar="PORT",
-                        help="enable this port and disable every other")
+    parser.add_argument("--only", type=int, nargs="?", const=-1, metavar="PORT",
+                        help="enable this port and disable every other; with "
+                             "--socket takes no value")
     parser.add_argument("--all-off", action="store_true")
+    parser.add_argument("--sockets", action="store_true",
+                        help="show the physical socket map instead of raw ports")
+    parser.add_argument("--socket", metavar="LABEL",
+                        help="act on a physical socket (with --on/--off/--only)")
+    parser.add_argument("--socket-map", metavar="PATH", default=None,
+                        help=f"socket map file (default {DEFAULT_SOCKET_MAP})")
     args = parser.parse_args()
+
+    if args.sockets and not args.socket:
+        print(socket_report(args.socket_map))
+        raise SystemExit(0)
+
+    # Socket mode acts on every identity of the socket -- see SocketMap. The
+    # flags are shared with port mode, so --only means "this one and no other"
+    # in both, just over a different set.
+    if args.socket:
+        smap = SocketMap(args.socket_map)
+        try:
+            if args.all_off:
+                smap.all_off()
+            elif args.only is not None:
+                smap.set_exclusive(args.socket)
+            elif args.on is not None:
+                smap.set_socket(args.socket, True)
+            elif args.off is not None:
+                smap.set_socket(args.socket, False)
+            else:
+                raise SystemExit("--socket needs one of --on/--off/--only/--all-off")
+        except HubError as exc:
+            raise SystemExit(f"error: {exc}")
+        print(socket_report(args.socket_map))
+        raise SystemExit(0)
 
     action = any([args.on, args.off, args.only, args.all_off])
     if not action:
