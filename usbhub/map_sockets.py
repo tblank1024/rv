@@ -99,6 +99,37 @@ def wait_for_plug(pairs, baseline):
         time.sleep(POLL_SECONDS)
 
 
+def tree_of(hub):
+    """
+    Which speed tree a hub name belongs to: "3-1.3" -> "3", "usb4" -> "4".
+
+    The USB 2 and USB 3 halves of one socket are on different buses, so this is
+    what tells a second pass apart from the first.
+    """
+    return hub.split("-")[0].replace("usb", "")
+
+
+def sorted_labels(sockets):
+    return sorted(sockets, key=lambda k: (not k.isdigit(), k.zfill(4)))
+
+
+def next_label(sockets, hub):
+    """
+    The label to offer for a port not already in the map.
+
+    On a second pass -- same sockets, a device of the other speed -- the right
+    answer is the first socket with no identity on this tree yet, because the
+    pass walks the same physical order. Without this the default would be a new
+    number every time and every label would have to be typed by hand. Falls
+    back to a new number when nothing is left to fill, i.e. the first pass.
+    """
+    tree = tree_of(hub)
+    for label in sorted_labels(sockets):
+        if not any(tree_of(h) == tree for h, _ in sockets[label]):
+            return label
+    return str(len(sockets) + 1)
+
+
 def load_existing(path):
     try:
         with open(path) as handle:
@@ -150,7 +181,7 @@ def main():
             tag = f"  (already socket {known[0]})" if known else ""
             print(f"detected  {hub}:{port}  {describe(hub, port)}{tag}")
 
-            default = known[0] if known else str(len(sockets) + 1)
+            default = known[0] if known else next_label(sockets, hub)
             label = input(f"  socket label [{default}]: ").strip() or default
             ids = sockets.setdefault(label, [])
             if (hub, port) not in ids:
@@ -188,7 +219,7 @@ def main():
                          "re-run with sudo or --out.")
 
     print(f"Wrote {args.out}:")
-    for label in sorted(sockets, key=lambda k: (not k.isdigit(), k.zfill(4))):
+    for label in sorted_labels(sockets):
         ident = ", ".join(f"{h}:{p}" for h, p in sockets[label])
         role = f"  wan={wan[label]}" if label in wan else ""
         print(f"  socket {label:<4} {ident}{role}")
