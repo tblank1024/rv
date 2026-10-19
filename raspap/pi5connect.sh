@@ -18,7 +18,12 @@
 #      it has no default route of its own (this script deletes all but one) and
 #      SO_BINDTODEVICE confines lookup to routes on the device, so the probe
 #      failed for every healthy standby. Found by a live failover test.
-#   4. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
+#   4. A WAN PREFERENCE ORDER (wired > wifi > starlink > cellular). A healthy
+#      incumbent is displaced only by a strictly more preferred candidate, so
+#      wired reclaims the route when it returns instead of leaving the RV on
+#      metered cellular. Roles come from the hub socket map, not interface
+#      names, which drift. Failover tries candidates in this order too.
+#   5. is_ap_side excludes virtual interfaces by shape (br-*, veth*, can*,
 #      tun*, any bridge), not just by the five hardcoded names. The broader
 #      failover search would otherwise probe docker's per-network bridges.
 #
@@ -68,6 +73,90 @@ PROBE_HTTP_TIMEOUT=6
 
 # Interfaces that are never WAN
 AP_SIDE=("lo" "eth0" "wlan0" "br0" "docker0")
+
+# --- WAN preference, best first --------------------------------------------
+# A healthy incumbent is displaced only by a candidate that ranks STRICTLY
+# higher. Without this, "never preempt a healthy incumbent" meant a transient
+# wired glitch stranded the RV on metered cellular indefinitely: the 2026-10-19
+# failover test switched to cellular in 3s and then kept it after wired came
+# back -- exactly as designed, and exactly wrong for the bill.
+#
+# The order is also the power order, and that is not a coincidence: the two
+# cheapest uplinks to leave running are the two most preferred.
+WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
+SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
+
+# The WAN role of an interface, resolved through the hub socket its device is
+# plugged into. Deliberately NOT keyed on the interface name: names here are
+# driver-dependent and drift -- the wired adapter was eth1 and then eth2 inside
+# one day, and cellular took over eth1.
+#
+# Falls back to the socket's display NAME when it has no role, because socket 1
+# (the WiFi adapter) is named "Wifi" but deliberately carries no WAN role: a
+# role would put it in the exclusive group and a WAN switch would cut it. For
+# ranking the name is the right answer; for switching, the absent role is.
+iface_role() {
+    local iface="$1" devdir dev hub port
+    devdir="$(readlink -f "/sys/class/net/$iface/device" 2>/dev/null)"
+    [[ -z "$devdir" ]] && return 0
+    dev="${devdir##*/}"               # 1-2.3.2:1.0
+    dev="${dev%%:*}"                  # 1-2.3.2
+    [[ "$dev" == *.* ]] || return 0    # on a root port, so not on the hub
+    hub="${dev%.*}"                   # 1-2.3
+    port="${dev##*.}"                 # 2
+    [[ -r "$SOCKET_MAP" ]] || return 0
+    python3 -I -c '
+import json, sys
+path, hub, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+roles = data.get("wan") or {}
+names = data.get("names") or {}
+for label, ids in (data.get("sockets") or {}).items():
+    for h, p in ids:
+        if h == hub and int(p) == port:
+            print((roles.get(label) or names.get(label) or "").lower())
+            sys.exit(0)
+' "$SOCKET_MAP" "$hub" "$port"
+}
+
+# Role spellings differ between the socket map and ordinary speech: the map
+# says "cell", the preference list says "cellular". Normalise before ranking.
+# Found on the first test of this code -- "cell" matched nothing and cellular
+# silently fell to unknown-rank, which only LOOKED correct because unknown
+# sorts last anyway. A second unclassified uplink would have exposed it.
+normalise_role() {
+    case "$1" in
+        cell|cellular|lte|4g|5g)      echo cellular ;;
+        wired|ethernet|eth|lan)       echo wired ;;
+        wifi|wlan|wireless)           echo wifi ;;
+        starlink|sat|satellite)       echo starlink ;;
+        *)                            echo "$1" ;;
+    esac
+}
+
+# Rank of a role; lower is better. An unknown role ranks worst, so an
+# unclassified interface can never displace a classified one.
+iface_rank() {
+    local role i=0 p
+    role="$(normalise_role "$1")"
+    for p in "${WAN_PREFERENCE[@]}"; do
+        [[ "$role" == "$p" ]] && { echo "$i"; return 0; }
+        i=$((i + 1))
+    done
+    echo 99
+}
+
+# Interfaces from $* reordered best-preference first. A stable sort, so
+# same-rank interfaces keep the order they came in.
+rank_sort() {
+    local i
+    for i in "$@"; do
+        [[ -n "$i" ]] && echo "$(iface_rank "$(iface_role "$i")") $i"
+    done | sort -k1,1n -s | awk '{print $2}'
+}
 
 is_ap_side() {
     local iface="$1"
@@ -221,7 +310,9 @@ candidate_ifaces() {
             plain="$plain $iface"
         fi
     done
-    echo $routed $plain
+    # Preference order within each group, so a failover reaches for wired
+    # before cellular rather than taking whatever enumerated first.
+    echo $(rank_sort $routed) $(rank_sort $plain)
 }
 
 # Can we reach the internet via the current default route? (post-commit check)
@@ -314,12 +405,24 @@ LIVE_DEV=$(ip route show default | awk '/^default via/ {print $5; exit}')
 # --- Guard: do not preempt a working incumbent with an untested candidate ---
 if [[ -n "$PREV_WAN" && "$PREV_WAN" != "$ACTIVE_IFACE" && "$PI5_FORCE" != "1" ]]; then
     if iface_has_ip "$PREV_WAN" && probe_default; then
-        echo "[$(date)] Keeping WAN=$PREV_WAN (healthy); ignoring candidate $ACTIVE_IFACE."
-        echo "[$(date)] Set PI5_FORCE=1 to switch deliberately."
-        ensure_dns_input
-        exit 0
+        CAND_ROLE="$(iface_role "$ACTIVE_IFACE")"
+        PREV_ROLE="$(iface_role "$PREV_WAN")"
+        CAND_RANK="$(iface_rank "$CAND_ROLE")"
+        PREV_RANK="$(iface_rank "$PREV_ROLE")"
+        if (( CAND_RANK < PREV_RANK )); then
+            # Promotion. The candidate still has to pass its own pre-commit
+            # probe below, and the commit still rolls back on failure, so a
+            # flaky preferred uplink cannot ping-pong the default route.
+            echo "[$(date)] Promoting $ACTIVE_IFACE (${CAND_ROLE:-unknown}) over healthy $PREV_WAN (${PREV_ROLE:-unknown})"
+        else
+            echo "[$(date)] Keeping WAN=$PREV_WAN (healthy, ${PREV_ROLE:-unknown}); ignoring $ACTIVE_IFACE (${CAND_ROLE:-unknown}, not preferred)."
+            echo "[$(date)] Set PI5_FORCE=1 to switch deliberately."
+            ensure_dns_input
+            exit 0
+        fi
+    else
+        echo "[$(date)] Incumbent WAN=$PREV_WAN is not healthy; evaluating $ACTIVE_IFACE."
     fi
-    echo "[$(date)] Incumbent WAN=$PREV_WAN is not healthy; evaluating $ACTIVE_IFACE."
 fi
 
 echo "[$(date)] Evaluating $ACTIVE_IFACE as WAN."
