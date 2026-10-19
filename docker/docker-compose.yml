@@ -269,6 +269,11 @@ services:
       # loopback reaches the host service. Port 12346 either way.
       - WIFI_BRIDGE_HOST=127.0.0.1
       - WIFI_BRIDGE_API_PORT=12346
+      # usbhub-api.service on the host: per-port power for the Plugable hub.
+      # This container cannot do it itself -- /sys/devices is mounted read-only
+      # here, so writing a port attribute fails with EACCES even privileged.
+      - USBHUB_API_HOST=127.0.0.1
+      - USBHUB_API_PORT=12347
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     volumes:
       # Live view of host /dev (a bind of devtmpfs tracks hotplug); the

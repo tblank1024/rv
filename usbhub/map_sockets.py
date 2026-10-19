@@ -168,7 +168,40 @@ def main():
                         help=f"where to write the map (default {DEFAULT_SOCKET_MAP})")
     parser.add_argument("--fresh", action="store_true",
                         help="start a new map instead of merging into --out")
+    parser.add_argument("--set-role", action="append", metavar="SOCKET=ROLE",
+                        default=[],
+                        help="assign a WAN role without re-walking the hub, "
+                             "e.g. --set-role 1=wifi. ROLE empty clears it. "
+                             "Repeatable; exits without watching anything.")
     args = parser.parse_args()
+
+    # Roles are the one part of the map that is a decision rather than a
+    # measurement, so they can be changed without plugging anything in.
+    if args.set_role:
+        existing = load_existing(args.out)
+        if not existing.get("sockets"):
+            raise SystemExit(f"no map at {args.out} to assign roles in")
+        sockets = {k: [tuple(x) for x in v]
+                   for k, v in existing["sockets"].items()}
+        wan = dict(existing.get("wan") or {})
+        for item in args.set_role:
+            label, _, role = item.partition("=")
+            label, role = label.strip(), role.strip()
+            if label not in sockets:
+                raise SystemExit(f"no socket {label!r} in {args.out}")
+            if role:
+                wan[label] = role
+            else:
+                wan.pop(label, None)
+        try:
+            save(args.out, build_data(existing, sockets, wan))
+        except OSError as exc:
+            raise SystemExit(f"could not write {args.out}: {exc}")
+        for label in sorted_labels(sockets):
+            ident = ", ".join(f"{h}:{p}" for h, p in sockets[label])
+            print(f"  socket {label:<4} {ident}"
+                  f"{'  wan=' + wan[label] if label in wan else ''}")
+        raise SystemExit(0)
 
     names = [n.strip() for n in args.hubs.split(",")] if args.hubs else []
     try:

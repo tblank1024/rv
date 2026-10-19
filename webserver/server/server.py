@@ -49,7 +49,7 @@ except ImportError as e:
     print("Will attempt MQTT communication with alarm container")
 from rvglue import MQTTClient
 import rvglue
-from typing import Annotated
+from typing import Annotated, Optional
 from kasa_power_strip import KasaPowerStrip, KasaPowerStripError
 from usb_modem_manager import usb_modem_manager
 
@@ -787,6 +787,226 @@ def forget_wifi(data: Annotated[WifiForgetData, Body()]) -> dict:  # Removed asy
         "success": True,
         "message": f"Forgot {deleted.get('name') or data.uuid or data.ssid}",
         "deleted": deleted,
+    }
+
+
+# ---------------------------------------------------------------------------
+# USB hub port power (the Plugable), proxied to usbhub-api.service
+#
+# Why a proxy and not direct control, as with the Coolgear: a plain powered hub
+# has no control chip, so port power goes through the kernel -- and this
+# container's /sys/devices is mounted read-only, so writing a port attribute
+# fails with EACCES even though the container is privileged and uid 0 (verified
+# 2026-10-18). The Coolgear escaped that only because its path is a character
+# device bind-mounted from the host.
+#
+# These endpoints are additive. The Coolgear endpoints above still drive the
+# live WAN switch and are untouched; nothing here moves the WAN.
+#
+# Two levels, deliberately:
+#   /api/hub/sockets, /api/hub/socket     independent per-socket control, any
+#                                         number on at once -- for the debug page
+#   /api/hub/socket/exclusive             powers exactly one socket, the others
+#                                         off first -- for the Internet page
+#
+# A "socket" is a physical socket on the hub's shell, which is not a port
+# number: a USB 3 hub is two hub chips, so a socket has a USB 2 identity and a
+# USB 3 identity on different buses, and a device appears under only the one
+# matching its own speed. The root service owns that mapping
+# (/etc/usbhub/sockets.json, built by map_sockets.py) and switches every
+# identity. See rv/usbhub/README.md.
+#
+# No caching here. The root service already caches the expensive part -- reading
+# a port's state is a USB control transfer that wakes a suspended hub, 75-220 ms
+# per port -- and a second cache would add a second staleness window.
+
+USBHUB_API_HOST = os.environ.get('USBHUB_API_HOST', '127.0.0.1')
+USBHUB_API_PORT = os.environ.get('USBHUB_API_PORT', '12347')
+
+
+class UsbHubError(Exception):
+    """Base for failures talking to the USB hub API."""
+    error_code = "usbhub_error"
+
+    def __init__(self, message, error_code=None, status=None):
+        super().__init__(message)
+        self.status = status
+        if error_code:
+            self.error_code = error_code
+
+
+class UsbHubUnreachable(UsbHubError):
+    error_code = "usbhub_unreachable"
+
+
+class UsbHubTimeout(UsbHubError):
+    error_code = "usbhub_timeout"
+
+
+class UsbHubBadResponse(UsbHubError):
+    error_code = "usbhub_bad_response"
+
+
+class UsbHubRejected(UsbHubError):
+    """The service answered with an error status and a JSON error body --
+    a protected port, an unknown socket, or no socket map."""
+    error_code = "usbhub_rejected"
+
+
+# Same reason as _wifi_opener: the default opener honours http_proxy from the
+# environment, and an unrelated proxy variable would break calls to loopback.
+_usbhub_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _usbhub_api(path, method="GET", payload=None, timeout=15):
+    """Calls usbhub-api.service and returns the decoded JSON."""
+    url = f"http://{USBHUB_API_HOST}:{USBHUB_API_PORT}{path}"
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with _usbhub_opener.open(request, timeout=timeout) as response:
+            raw = response.read(262144)
+    except urllib.error.HTTPError as exc:
+        # HTTPError is the response. Read the service's JSON body before
+        # classifying, or its specific message -- which port is protected, which
+        # socket is unknown -- is lost.
+        body = {}
+        try:
+            body = json.loads(exc.read(65536))
+        except Exception:
+            pass
+        raise UsbHubRejected(
+            body.get("message") or f"the USB hub API returned HTTP {exc.code}",
+            body.get("error"), exc.code) from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, socket.timeout):
+            raise UsbHubTimeout(
+                f"no answer from the USB hub API within {timeout}s") from exc
+        raise UsbHubUnreachable(
+            f"cannot reach the USB hub API at {USBHUB_API_HOST}:"
+            f"{USBHUB_API_PORT} ({reason}). Is usbhub-api.service running?"
+        ) from exc
+    except socket.timeout as exc:
+        raise UsbHubTimeout(
+            f"no answer from the USB hub API within {timeout}s") from exc
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise UsbHubBadResponse(
+            "the USB hub API returned a response that was not JSON") from exc
+
+
+def _usbhub_failure(exc, **empties):
+    """Failure payload in the shape this file uses: HTTP 200, success False."""
+    payload = {"success": False, "error": exc.error_code, "message": str(exc)}
+    payload.update(empties)
+    return payload
+
+
+class HubSocketData(BaseModel):
+    socket: str
+    on: bool
+
+
+class HubExclusiveData(BaseModel):
+    # None means "leave every socket off", which the service accepts and which
+    # the Internet page needs for an explicit no-uplink state.
+    socket: Optional[str] = None
+
+
+@app.get("/api/hub/sockets")
+def get_hub_sockets() -> dict:
+    """
+    Every physical socket on the Plugable, its power state and what is in it.
+
+    configured=False with an empty sockets dict is a normal state, not an
+    error: it means no socket map has been built yet. The UI should say so
+    rather than render an empty hub, because a map is the only thing that
+    relates a socket to a port.
+    """
+    try:
+        data = _usbhub_api("/api/sockets", timeout=10)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, configured=False, sockets={}, wan={})
+    return {
+        "success": True,
+        "message": "" if data.get("configured") else
+                   "No socket map yet -- run rv/usbhub/map_sockets.py",
+        "configured": bool(data.get("configured")),
+        "sockets": data.get("sockets", {}),
+        "wan": data.get("wan", {}),
+        "protected": data.get("protected", []),
+        "map_path": data.get("map_path", ""),
+    }
+
+
+@app.post("/api/hub/socket")
+def set_hub_socket(data: Annotated[HubSocketData, Body()]) -> dict:
+    """
+    One socket on or off, the others untouched. Several may be on at once --
+    that is the point of this endpoint, and what the debug page needs.
+
+    The timeout is generous because a write is slow: each identity is a USB
+    control transfer, and a suspended hub is woken first.
+    """
+    try:
+        result = _usbhub_api("/api/socket", method="POST",
+                             payload={"socket": data.socket, "on": data.on},
+                             timeout=30)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, sockets={})
+    return {
+        "success": True,
+        "message": f"Socket {data.socket} turned {'on' if data.on else 'off'}",
+        "socket": result.get("socket", {}),
+        "sockets": result.get("sockets", {}),
+    }
+
+
+@app.post("/api/hub/socket/exclusive")
+def set_hub_socket_exclusive(data: Annotated[HubExclusiveData, Body()]) -> dict:
+    """
+    Power exactly one socket, or none at all.
+
+    The others are switched off BEFORE the target comes on, so the hub is never
+    briefly feeding two uplinks. This is the RV's normal policy: several WAN
+    options may be considered, only one is left drawing current.
+    """
+    try:
+        result = _usbhub_api("/api/socket/exclusive", method="POST",
+                             payload={"socket": data.socket}, timeout=60)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, sockets={})
+    return {
+        "success": True,
+        "message": (f"Socket {data.socket} is now the only one powered"
+                    if data.socket else "All sockets off"),
+        "changed": result.get("changed", {}),
+        "sockets": result.get("sockets", {}),
+    }
+
+
+@app.get("/api/hub/hubs")
+def get_hub_raw() -> dict:
+    """
+    The raw USB tree: every hub, its ports, what is attached, and whether it
+    claims per-port power switching. Diagnostic -- the socket view above is
+    what callers should normally use.
+    """
+    try:
+        data = _usbhub_api("/api/hubs", timeout=20)
+    except UsbHubError as exc:
+        return _usbhub_failure(exc, hubs=[])
+    return {
+        "success": True,
+        "message": "",
+        "hubs": data.get("hubs", []),
+        "uhubctl_note": data.get("uhubctl_note", ""),
     }
 
 

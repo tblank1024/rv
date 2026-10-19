@@ -7,6 +7,11 @@ console.log("Debug component loaded");
 function Debug() {
   const [usbPorts, setUsbPorts] = useState({});
   const [usbConnected, setUsbConnected] = useState(null);
+  const [hubSockets, setHubSockets] = useState({});
+  const [hubConfigured, setHubConfigured] = useState(null);
+  const [hubConnected, setHubConnected] = useState(null);
+  const [hubMessage, setHubMessage] = useState('');
+  const [hubBusy, setHubBusy] = useState({});
   const [kasaOutlets, setKasaOutlets] = useState({});
   const [kasaConnected, setKasaConnected] = useState(null);
   const [watcherEntries, setWatcherEntries] = useState([]);
@@ -225,6 +230,69 @@ function Debug() {
     }
   };
 
+  // Fetch the Plugable hub's physical sockets.
+  //
+  // Separate from the Coolgear above, not a replacement: that hub is a serial
+  // device with a one-port-on protocol, this one is kernel per-port power.
+  // Both exist while the WAN is still on the Coolgear.
+  const getHubSockets = async () => {
+    try {
+      const response = await fetch(`${getServerUrl()}/api/hub/sockets`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      const data = await response.json();
+      if (data.success) {
+        setHubSockets(data.sockets || {});
+        setHubConfigured(!!data.configured);
+        setHubConnected(true);
+        setHubMessage(data.message || '');
+      } else {
+        setHubSockets({});
+        setHubConfigured(false);
+        setHubConnected(false);
+        setHubMessage(data.message || 'Failed to read hub sockets');
+      }
+      return data;
+    } catch (error) {
+      console.error('Error fetching hub sockets:', error);
+      setHubSockets({});
+      setHubConnected(false);
+      setHubMessage('Failed to reach the hub API: ' + error.message);
+      return { success: false };
+    }
+  };
+
+  // One socket on or off, the others untouched -- several may be on at once,
+  // which is the whole point of this control and why it is a checkbox rather
+  // than the Coolgear's radio group. The Internet page uses the exclusive
+  // endpoint instead.
+  const controlHubSocket = async (label, on) => {
+    setHubBusy(prev => ({ ...prev, [label]: true }));
+    // No optimistic update here. A write is a USB control transfer per
+    // identity and can take seconds; showing the new state before the kernel
+    // confirms it is how a port gets reported on while it is off.
+    try {
+      const response = await fetch(`${getServerUrl()}/api/hub/socket`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ socket: String(label), on }),
+      });
+      const result = await response.json();
+      setHubMessage(result.message || '');
+      if (result.sockets && Object.keys(result.sockets).length) {
+        setHubSockets(result.sockets);
+      } else {
+        await getHubSockets();
+      }
+    } catch (error) {
+      console.error('Error controlling hub socket:', error);
+      setHubMessage(`Error switching socket ${label}: ${error.message}`);
+      await getHubSockets();
+    } finally {
+      setHubBusy(prev => ({ ...prev, [label]: false }));
+    }
+  };
+
     // Control Kasa outlet
   const controlKasaOutlet = async (outletId, action) => {
     try {
@@ -359,7 +427,8 @@ function Debug() {
       try {
         // Load both USB and Kasa status in parallel - timeout is handled in each function
         console.log('useEffect: Calling getUsbStatus and getKasaStatus...');
-        await Promise.allSettled([getUsbStatus(), getKasaStatus(), controlSynology('status')]);
+        await Promise.allSettled([getUsbStatus(), getKasaStatus(), getHubSockets(),
+                                  controlSynology('status')]);
         console.log('useEffect: Data loading completed');
         setMessage('Data loaded successfully');
       } catch (error) {
@@ -382,7 +451,7 @@ function Debug() {
   const refreshData = async () => {
     setLoading(true);
     setMessage('Refreshing data...');
-    await Promise.all([getUsbStatus(), getKasaStatus()]);
+    await Promise.all([getUsbStatus(), getKasaStatus(), getHubSockets()]);
     setLoading(false);
     setLastUpdate(new Date());
     setMessage('Data refreshed successfully');
@@ -483,6 +552,64 @@ function Debug() {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Plugable hub: physical sockets, independent power */}
+        <div className="debug-section">
+          <h2>USB Hub Socket Power{commBadge(hubConnected)}</h2>
+          <div style={{marginBottom: '10px', fontSize: '12px', color: '#666'}}>
+            Independent per-socket power on the powered hub. Several may be on
+            at once &mdash; this is a diagnostic. The Internet page powers only
+            one WAN source at a time.
+          </div>
+          {hubConfigured === false && (
+            <div className="error-text" style={{marginBottom: '10px'}}>
+              {hubMessage || 'No socket map. Build one with rv/usbhub/map_sockets.py.'}
+            </div>
+          )}
+          <div className="control-grid">
+            {Object.entries(hubSockets).map(([label, sock]) => {
+              const busy = !!hubBusy[label];
+              const ident = (sock.identities || [])
+                .map(i => `${i.hub}:${i.port}`).join(' + ');
+              return (
+                <div key={label} className="control-item">
+                  <h3>
+                    Socket {label}
+                    {sock.wan ? ` \u2014 ${sock.wan}` : ''}
+                  </h3>
+                  <div className="control-buttons">
+                    <label className="radio-control">
+                      <input
+                        type="checkbox"
+                        checked={!!sock.enabled}
+                        disabled={busy}
+                        onChange={() => controlHubSocket(label, !sock.enabled)}
+                      />
+                      <span className={`radio-label ${sock.enabled ? 'active' : ''}`}>
+                        {busy ? 'WAIT' : (sock.enabled ? 'ON' : 'OFF')}
+                      </span>
+                    </label>
+                  </div>
+                  <div style={{fontSize: '12px', color: '#666', marginTop: '4px'}}>
+                    {sock.device_present
+                      ? `${sock.product || 'device'}${sock.max_power ? ' ' + sock.max_power : ''}`
+                      : 'empty'}
+                  </div>
+                  {/* Both sysfs identities: a USB 3 hub is two hub chips, so a
+                      socket has one port number per speed. Shown because it is
+                      what the journal and uhubctl name. */}
+                  <div style={{fontSize: '11px', color: '#999'}}>{ident}</div>
+                  {sock.error && <div className="error-text">{sock.error}</div>}
+                </div>
+              );
+            })}
+          </div>
+          {hubMessage && hubConfigured !== false && (
+            <div style={{marginTop: '10px', fontSize: '12px', color: '#666'}}>
+              {hubMessage}
+            </div>
+          )}
         </div>
 
         {/* Kasa Power Strip Section */}
