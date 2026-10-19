@@ -23,15 +23,63 @@ MQTT_HOST = os.environ.get('MQTT_HOST', 'localhost')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', '1883'))
 DEBUG = int(os.environ.get('DEBUG_LEVEL', '0'))
 
+# Liveness. gatttool can stay alive while publishing nothing at all: the queue
+# just goes quiet and poll() still returns None, so the read loop spins forever
+# with no data, no error and no log line. That froze this service on 2026-10-18
+# and again on 2026-10-19, both times when the dongle re-enumerated underneath
+# it, and both times it was noticed by hand hours later. Two thresholds --
+# reconnect first, exit only as a last resort.
+HEARTBEAT_FILE = os.environ.get('HEARTBEAT_FILE', '/tmp/bat2mqtt.alive')
+STALE_RECONNECT_SECONDS = int(os.environ.get('BAT_STALE_RECONNECT', '90'))
+STALE_EXIT_SECONDS = int(os.environ.get('BAT_STALE_EXIT', '420'))
+
 # Global state
 running = True
 mqtt_client = None
 message_queue = queue.Queue()
+_last_publish_ts = time.time()
 
 def log(message):
     """Simple logging with timestamp"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     print(f"[{timestamp}] {message}", flush=True)
+
+def _beat():
+    """Record a successful publish, for the staleness checks and healthcheck.
+
+    The container healthcheck stats HEARTBEAT_FILE. Note that a failed Docker
+    healthcheck does NOT restart a container -- it only marks it unhealthy --
+    so liveness_watchdog() exiting the process is what actually recovers us,
+    via `restart: unless-stopped`.
+    """
+    global _last_publish_ts
+    _last_publish_ts = time.time()
+    try:
+        with open(HEARTBEAT_FILE, 'w') as handle:
+            handle.write(str(int(_last_publish_ts)))
+    except OSError:
+        pass        # a read-only or full /tmp must not take the service down
+
+
+def liveness_watchdog():
+    """Exit if publishing has stopped for good, so Docker restarts us.
+
+    A daemon thread rather than a check inside the read loop, because the loop
+    can also block inside gatttool, in which case an in-loop check never runs.
+    os._exit is deliberate: no exception handler can swallow it and no atexit
+    hook can stall it.
+    """
+    while True:
+        time.sleep(15)
+        if not running:
+            return
+        silent_for = time.time() - _last_publish_ts
+        if silent_for > STALE_EXIT_SECONDS:
+            log(f"FATAL: no battery data for {int(silent_for)}s "
+                f"(limit {STALE_EXIT_SECONDS}s); exiting so Docker restarts us")
+            sys.stdout.flush()
+            os._exit(1)
+
 
 def signal_handler(signum, frame):
     """Handle shutdown signals"""
@@ -103,6 +151,7 @@ def publish_battery_data(voltage, current, temperature, charge, status):
         
         topic = "RVC/BATTERY_STATUS/1"
         result = mqtt_client.publish(topic, json.dumps(data))
+        _beat()
         
         if DEBUG > 1:
             log(f"Published: V={voltage:.2f}, A={current}, SOC={charge}%")
@@ -286,6 +335,12 @@ def main():
     
     # Setup MQTT
     setup_mqtt()
+
+    # Deliberately NOT seeding the heartbeat here. The file appears on the
+    # first real publish, so "started but never published" reads as unhealthy
+    # rather than healthy-until-the-window-expires. Seeding it hid exactly that
+    # state in tirelinc on 2026-10-19, where the service had never once worked.
+    threading.Thread(target=liveness_watchdog, daemon=True).start()
     
     log("Starting persistent gatttool process...")
 
@@ -358,6 +413,14 @@ def main():
                 except queue.Empty:
                     if gatttool_process and gatttool_process.poll() is not None:
                         log(f"gatttool process died, reconnecting in {_RECONNECT_DELAY}s...")
+                        break
+                    # Alive but silent: poll() is None, so without this the
+                    # loop spins here forever. Breaking runs the existing
+                    # reconnect path, which re-detects the adapter by MAC.
+                    silent_for = time.time() - _last_publish_ts
+                    if silent_for > STALE_RECONNECT_SECONDS:
+                        log(f"No battery data for {int(silent_for)}s; "
+                            f"reconnecting in {_RECONNECT_DELAY}s...")
                         break
                     continue
 

@@ -109,6 +109,27 @@ services:
       - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
+      # Which of the three BT adapters to use, by its own BD address: the
+      # Edimax dongle. hciN renumbers whenever the dongles re-enumerate (seen
+      # hci1 -> hci2 -> hci1 on 2026-10-19), so the MAC is the stable handle.
+      # Was a hardcoded default in bat2mqtt.py; here it survives a dongle swap
+      # without editing and rebuilding the image.
+      - BT_ADAPTER_MAC=08:BE:AC:35:8E:5E
+      # The battery monitor itself (the BLE peripheral we connect to).
+      - BAT_DEV_MAC=F8:33:31:56:ED:16
+    # gatttool can stay alive and simply stop notifying, which froze this
+    # service twice in two days with no error at all. The process now exits on
+    # its own after BAT_STALE_EXIT so restart: unless-stopped recovers it; this
+    # healthcheck is what makes the failure *visible* (docker ps, dashboard).
+    # Note Docker does not restart an unhealthy container -- the exit does.
+    healthcheck:
+      # A missing file counts as unhealthy: it means nothing has been
+      # published yet, which is a real failure, not a warm-up.
+      test: ["CMD-SHELL", "python3 -c \"import os,sys,time; p='/tmp/bat2mqtt.alive'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 180 else 1)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     depends_on:
       mqtt:
         condition: service_healthy
@@ -175,6 +196,22 @@ services:
       - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
+      # The BT500 dongle, by BD address -- deliberately a different adapter
+      # from the battery monitor's, so two GATT sessions never share one.
+      - BT_ADAPTER_MAC=C8:7F:54:97:71:1B
+      # The TireLinc repeater (the BLE peripheral we connect to).
+      - TIRELINC_MAC=F4:CF:A2:85:D0:62
+    # Tires can legitimately be quiet for a few minutes, so the window is much
+    # wider than the battery's. TIRE_STALE_MINUTES (15) still warns over MQTT;
+    # TIRE_STALE_EXIT_MINUTES (45) exits so Docker restarts us.
+    healthcheck:
+      # A missing file counts as unhealthy: it means nothing has been
+      # published yet, which is a real failure, not a warm-up.
+      test: ["CMD-SHELL", "python3 -c \"import os,sys,time; p='/tmp/tirelinc.alive'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 1800 else 1)\""]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
 
   # Victron Solar Monitoring (ve.direct)
   solar:

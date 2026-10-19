@@ -1,0 +1,22 @@
+# Names whatever USB-ethernet adapter sits in Plugable socket 3 "wan-cell".
+#
+# Matched by PATH, not MAC, because the role belongs to the socket and the
+# adapter is interchangeable -- an AX88179B was swapped for an RTL8152 on
+# 2026-10-19 and the socket kept its meaning.
+#
+# The trailing * drops the USB configuration number, which is not stable
+# across that kind of swap: the AX88179B presented :2.0 (cdc_ncm, config 2)
+# and the RTL8152 presents :1.0 (r8152, config 1).
+#
+# "0:2" is the Pi's own USB port, so re-capture these if the hub ever moves to
+# a different one. Nothing breaks if you forget -- the interface just falls
+# back to a kernel-assigned eth* name. Re-capture with:
+#   udevadm info /sys/class/net/<iface> | grep ID_PATH=
+#
+# A custom name rather than eth1: a .link Name= that could collide with the
+# kernel's own eth* numbering is a race.
+[Match]
+Path=platform-xhci-hcd.0-usb-0:2.3.1*
+
+[Link]
+Name=wan-cell

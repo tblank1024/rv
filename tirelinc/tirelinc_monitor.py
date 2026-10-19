@@ -43,6 +43,11 @@ MQTT_PORT       = int(os.environ.get('MQTT_PORT',   '1883'))
 DEBUG           = int(os.environ.get('DEBUG_LEVEL', '0'))
 RECONNECT_DELAY = int(os.environ.get('RECONNECT_DELAY', '45'))  # seconds between reconnect attempts
 STALE_MINUTES   = int(os.environ.get('TIRE_STALE_MINUTES', '15'))  # warn when no tire data this long
+# A failed Docker healthcheck does NOT restart a container, it only marks it
+# unhealthy, so the process has to exit for `restart: unless-stopped` to act.
+# This is the hard limit at which we give up reconnecting and do that.
+STALE_EXIT_MIN  = int(os.environ.get('TIRE_STALE_EXIT_MINUTES', '45'))
+HEARTBEAT_FILE  = os.environ.get('HEARTBEAT_FILE', '/tmp/tirelinc.alive')
 
 # Adapter selection: pin by MAC (default), or explicit hci name override
 ADAPTER         = os.environ.get('ADAPTER', '').strip()
@@ -405,8 +410,7 @@ async def connect_and_monitor(adapter: str):
 
             # Subscribe to tire data characteristic — retry once on InProgress
             def notification_handler(sender, data: bytearray):
-                global _last_data_ts
-                _last_data_ts = time.time()
+                _beat()
                 decode_packet(bytes(data))
 
             for _attempt in range(2):
@@ -449,12 +453,30 @@ async def connect_and_monitor(adapter: str):
 # ---------------------------------------------------------------------------
 _last_data_ts = time.time()
 
+
+def _beat():
+    """Record tire data arriving, for the staleness checks and healthcheck."""
+    global _last_data_ts
+    _last_data_ts = time.time()
+    try:
+        with open(HEARTBEAT_FILE, 'w') as handle:
+            handle.write(str(int(_last_data_ts)))
+    except OSError:
+        pass        # a read-only or full /tmp must not take the service down
+
+
 async def staleness_watchdog():
     stale_secs = STALE_MINUTES * 60
+    exit_secs = STALE_EXIT_MIN * 60
     warned_at = 0.0
     while True:
         await asyncio.sleep(60)
         silent_for = time.time() - _last_data_ts
+        if silent_for > exit_secs:
+            log(f"FATAL: no tire data for {int(silent_for // 60)} min "
+                f"(limit {STALE_EXIT_MIN} min); exiting so Docker restarts us")
+            sys.stdout.flush()
+            os._exit(1)
         if silent_for > stale_secs:
             # Re-warn at most once per stale interval, not every minute
             if time.time() - warned_at > stale_secs:
@@ -500,6 +522,10 @@ async def main():
     log("")
 
     setup_mqtt()
+    # No startup seed: the heartbeat file appears only when tire data actually
+    # arrives, so a service that never connects reads as unhealthy. Seeding it
+    # would have masked the org.bluez.Error.NotReady failure found on
+    # 2026-10-19, which had been silently dead with 0 publishes.
     asyncio.create_task(staleness_watchdog())
 
     attempt = 0
