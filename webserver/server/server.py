@@ -1245,31 +1245,77 @@ def read_kasa_feature_outlets():
         clear_kasa_cache()
         return None
 
+def _normalise_wan_role(label):
+    """Map a socket map role/name onto the connection names the UI uses."""
+    label = (label or "").strip().lower()
+    return {"cell": "cellular", "cellular": "cellular", "lte": "cellular",
+            "wired": "wired", "ethernet": "wired",
+            "wifi": "wifi", "wlan": "wifi",
+            "starlink": "starlink"}.get(label, "")
+
+
+def _wan_role_of_interface(iface):
+    """
+    Which of the five uplinks carries this interface: wired, wifi, starlink or
+    cellular. Resolved through the hub socket the interface's USB device is
+    plugged into (the socket map is the source of truth, because interface
+    names drift), the same way pi5connect.sh does it. An interface that is not
+    on the hub falls back to its shape: a wlan* device is the WiFi adapter.
+    Returns "" when it cannot be classified.
+    """
+    if not iface:
+        return ""
+    try:
+        devdir = os.path.realpath(f"/sys/class/net/{iface}/device")
+        usb_id = os.path.basename(devdir).split(":")[0]       # 1-2.3.2
+        if "." in usb_id:
+            hub, port = usb_id.rsplit(".", 1)                 # 1-2.3 / 2
+            sockets = _usbhub_api("/api/sockets", timeout=10).get("sockets") or {}
+            for sock in sockets.values():
+                for ident in sock.get("identities") or []:
+                    if ident.get("hub") == hub and str(ident.get("port")) == port:
+                        role = (_normalise_wan_role(sock.get("wan"))
+                                or _normalise_wan_role(sock.get("name")))
+                        if role:
+                            return role
+    except Exception as e:
+        print(f"WARNING: Could not resolve the uplink role of {iface}: {e}")
+    return "wifi" if iface.startswith("wlan") else ""
+
+
 def detect_current_internet_connection():
     """
-    Infer the uplink accessory state from the Kasa power strip: the Starlink
-    supply (outlet 6) and the cellular signal amplifier (outlet 1). Which USB
-    socket is powered, and which interface routes, are reported by /api/hub/wan
-    and default_route_interface(); this only distinguishes the two accessories.
-    Updates the global current_internet_connection variable.
+    Which of the five uplinks the RV is actually routing over:
+    wired, wifi, starlink, cellular, or cellular-amp.
+
+    The role comes from the default route's interface (see
+    _wan_role_of_interface). The Kasa strip cannot say whether wired or WiFi is
+    in use; it only matters for cellular, where the amplifier outlet (outlet 1)
+    being on makes it cellular-amp. Starlink needs its own Kasa supply but that
+    is a precondition of the uplink, not what identifies it.
+    "none" means no default route. If the role cannot be determined the last
+    known value is kept. Updates the global current_internet_connection.
     """
     global current_internet_connection
 
-    kasa = read_kasa_feature_outlets()
-    amp_on, starlink_on = kasa if kasa else (None, None)
+    wan_interface = default_route_interface()
+    if not wan_interface:
+        detected = "none"
+    else:
+        detected = _wan_role_of_interface(wan_interface) or None
+        if detected == "cellular":
+            kasa = read_kasa_feature_outlets()
+            amp_on = kasa[0] if kasa else (current_internet_connection == "cellular-amp")
+            if amp_on:
+                detected = "cellular-amp"
 
-    detected = None
-    if kasa:
-        if starlink_on:
-            detected = "starlink"
-        elif amp_on:
-            detected = "cellular-amp"
     if detected is None:
-        print(f"INFO: No Kasa accessory outlet on, keeping last known: {current_internet_connection}")
+        print(f"WARNING: Could not classify the uplink on {wan_interface}, "
+              f"keeping last known: {current_internet_connection}")
     else:
         current_internet_connection = detected
         _save_internet_state(detected)
-        print(f"INFO: Detected internet accessory: {detected} (kasa amp/starlink {amp_on}/{starlink_on})")
+        print(f"INFO: Detected internet connection: {detected} (default route via {wan_interface or 'none'})")
 
     return current_internet_connection
 
