@@ -9,7 +9,7 @@ plan recommended — see "Measured on hardware".
 
 ## Goal
 
-Replace the Pi Zero 2W WiFi bridge (uplink option 3, "RP2", on the CoolGear USB hub) with a dual-band 2x2 USB WiFi
+Replace the Pi Zero 2W WiFi bridge (uplink option 3, "RP2", on the USB hub) with a dual-band 2x2 USB WiFi
 adapter plugged into the same hub port, with external antennas mounted outside the RV. Sophie (RP5) joins the
 campground WiFi directly as `wlan1`; RaspAP keeps serving the RV on the onboard `wlan0`.
 
@@ -182,7 +182,7 @@ WiFi gets the portal page and logs in (the portal authorizes the Alfa's MAC, so 
 Keep the MAC stable for this: `nmcli con modify <profile> 802-11-wireless.cloned-mac-address permanent`.
 
 ### 5. USB hub port switching = hot-plug
-Selecting the WiFi WAN on the CoolGear hub powers the port on; the adapter enumerates, loads firmware, and NM
+Selecting the WiFi WAN on the Plugable hub powers the port on; the adapter enumerates, loads firmware, and NM
 reconnects (several seconds to ~20 s). Switching away removes `wlan1` entirely.
 
 Approach:
@@ -192,7 +192,7 @@ Approach:
 
 ### 6. Power
 Spec USB 2.0 port = 500 mA; adapters can exceed it while transmitting, worse at the end of a long cable.
-Approach: confirm the CoolGear hub is externally powered; use an active (repeater) USB extension. Check `dmesg`
+Approach: confirm the Plugable hub is externally powered (it has a 60 W supply); use an active (repeater) USB extension. Check `dmesg`
 for disconnect/reset messages under load (`iperf3`).
 
 ### 7. First-plug quirks
@@ -384,7 +384,7 @@ The Pi 5 caps **total** USB current at 600 mA unless `usb_max_current_enable=1` 
 |---|---|
 | Edimax Bluetooth | 500 mA |
 | ASUS BT500 | 500 mA |
-| CoolGear hub | 100 mA |
+| Plugable hub | 100 mA |
 | Alfa (when added) | ~450-500 mA |
 
 `bMaxPower` is a declared ceiling, not actual draw, and Linux does not enforce the Pi's limit at the descriptor
@@ -399,7 +399,7 @@ has a 60 W supply, so the Alfa draws from the hub rather than the Pi.
 
 - **Security:** Sophie sits directly on untrusted networks (issue 12). Required fix, not optional.
 - **Fault isolation:** an adapter driver/firmware hang or USB reset now happens on the box that runs everything and
-  can disturb other devices on the hub (BLE dongles). Mitigation: power-cycle the hub port via the CoolGear.
+  can disturb other devices on the hub (BLE dongles). Mitigation: power-cycle the hub port via the Plugable.
 - **Complexity on Sophie:** two radios, name pinning, NM vs hostapd ownership. A RaspAP/Pi OS update can now break
   uplink and AP together.
 - **Rework:** the Zero's WiFi API and the picker were just built; moving the API to the RP5 is mostly config but
@@ -426,8 +426,8 @@ has a 60 W supply, so the Alfa draws from the hub rather than the Pi.
 6. ~~Apply issue 10 (WiFi API on the RP5 host)~~ DONE 2026-10-18 — `wifi-api-rp5.service`,
    `WIFI_BRIDGE_HOST=127.0.0.1`. End-to-end picker test: see Verification below.
 7. Move the adapter to its outside mount on the hub port the Zero used; run the `nmap` check from
-   the park WiFi, then re-run the speed tests and compare with the baseline. Note the Coolgear hub
-   is being replaced by a Plugable 7-port powered hub, which also settles issue 6 (the Pi 5's
+   the park WiFi, then re-run the speed tests and compare with the baseline. Note the Plugable 7-port
+   powered hub (it replaced a Coolgear switch whose USB control chip proved unstable) also settles issue 6 (the Pi 5's
    600 mA total USB cap) by powering the adapter from the hub.
 8. ~~Update `rv/CLAUDE.md` (uplink option 3) and `rv/raspap/README.txt`~~ DONE 2026-10-18. Retire or
    archive the Zero setup once proven — its installed files were deliberately left in place.
@@ -524,8 +524,7 @@ at metric 500, so even a successful join to a captive-portal network could not h
 ## The Plugable hub goes in — measured 2026-10-18
 
 Installed into the free blue USB3 port, the Alfa moved to the other blue port.
-The Coolgear and the live WAN (`eth1`, Coolgear port 3) were not touched, so the
-session was never at risk. Driver and service: `usbhub/`, and its README now
+The live WAN (`eth1`) was not touched, so the session was never at risk. Driver and service: `usbhub/`, and its README now
 carries the detail.
 
 **The `.link` MAC pinning held across a physical port move.** The Alfa went from

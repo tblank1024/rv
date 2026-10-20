@@ -17,7 +17,7 @@ Sophie (RP5) has two sides:
 
 - **Trusted:** `br0` (the RV LAN: onboard WiFi AP + `eth0`), `lo`, and Docker's own bridges.
 - **Untrusted:** whichever uplink is active: the Alfa USB WiFi adapter (`wlan1`, live since 2026-10-18, on a
-  direct RP5 port), plus Starlink, direct Ethernet and the cellular modem on the CoolGear USB hub. Names vary
+  direct RP5 port), plus Starlink, direct Ethernet and the cellular modem on the Plugable USB hub. Names vary
   (`eth1`, `eth2`, `wwan0`, `wlan1`, ...). Historically also the Zero 2W bridge on `usb0` (`10.10.0.x`), now
   disconnected. Note `enx*` never appears on this host — see `WifitoHostBridge/CLAUDE.md`.
 

@@ -26,7 +26,7 @@ Applications running on a Raspberry Pi 5 (RP5) inside "Sophie" the RV. The compa
 RASPAp bridges `eth0` to the onboard Wi-Fi (`wlan0`) as `br0` 10.0.0.1/24, creating the RV's
 internal network. **`eth0` is a LAN port, not an uplink** — it is a `br0` slave.
 
-The uplink arrives through a USB-attached switch (the Plugable hub; it replaced the Coolgear). Four options, of which only
+The uplink arrives through a USB-attached switch (the Plugable 7-port powered hub; it replaced a Coolgear switch whose USB control chip proved unstable). Four options, of which only
 one is normally enumerated, so **the interface name does not identify the uplink type** — don't
 key policy on it:
 
