@@ -107,7 +107,22 @@ E: ID_NET_NAME=wlan1
 Also answered: Pi OS would otherwise have called it `wlan1` anyway (`ID_NET_NAME_MAC` is
 `wlx00c0cabe2962`, but the `NamePolicy=mac` that would use it is masked — see the `enx*` trap in
 `WiFitoHostBridge/CLAUDE.md`). The pinning still matters for *which* radio gets which name.
-**[USER]** still to verify: names stable across a reboot and across a hub port off/on.
+Verified 2026-10-20: after a reboot `wlan0` = onboard (`2c:cf:67:ab:1b:94`, AP "Sophie") and `wlan1` = Alfa
+(`00:c0:ca:be:29:62`). After unbinding/rebinding the Alfa's USB device (`1-2.3.3`, behind the hub; it was
+`4-1` before the reboot, so look the path up with `basename $(readlink -f /sys/class/net/wlan1/device/..)`),
+`wlan1` came back under the same name and NM rejoined `alfa-Decher-5g` within 25 s; the AP stayed up.
+
+Also done the same day: both Alfa profiles set to `autoconnect yes`, `cloned-mac-address permanent`,
+`powersave 2`, `ipv6.method disabled`.
+
+**Forced-failover finding (2026-10-20, home LAN, `eth1` and `wlan1` both on 192.168.2.0/24):**
+`PI5_FORCE=1 pi5connect.sh wlan1 up` switched cleanly (probe OK, route and MASQUERADE moved, internet OK).
+It deletes every default route, including the old WAN's. Forcing back to `eth1` then failed its own probe
+("guessing gateway ... Reject eth1") because `eth1` no longer had a default route on its device, and
+`wlan1` stayed WAN until `nmcli con up "Wired connection 1"` re-created `eth1`'s route. Normal hub-port
+switching re-plugs the device so NM re-creates the route; this only bites a forced switch back to an
+uplink that stayed up. Candidate fix: add a temporary high-metric default route for the candidate before
+probing, removed if the probe fails. Not done.
 
 ### 2. Which network manager owns which interface — DONE 2026-10-18
 Sophie has traces of NetworkManager, systemd-networkd (`raspap/*.network`), and dhcpcd
