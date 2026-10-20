@@ -22,6 +22,19 @@ Before: Roku -- wlan0/br0 [RP5] -- USB hub port -- [Zero 2W] ~~2.4 GHz~~ campgro
 After:  Roku -- wlan0/br0 [RP5] -- USB hub port -- [Alfa adapter, outside] ~~2.4/5 GHz~~ campground AP
 ```
 
+## WAN strategy as implemented (pi5connect v2.2)
+
+- **One uplink at a time, chosen by type.** Preference is wired > WiFi > Starlink > cellular. The type is read
+  from the hub socket the adapter is plugged into (`/etc/usbhub/sockets.json`), not from the interface name,
+  because names drift.
+- **Test first, then switch.** Before moving the default route, `pi5connect.sh` pings out of the candidate
+  interface (temporary `/32` routes make this work for standbys). If that fails nothing changes; if the new
+  route then has no internet, it rolls back.
+- **Only a better uplink takes over.** A healthy current WAN stays unless a strictly higher-ranked one appears
+  (wired reclaims the route from WiFi with no manual step). `PI5_FORCE=1` overrides.
+- **Failover.** When the current WAN goes down it tries the other connected uplinks in rank order; if none
+  works, `wan_scan.sh` powers each unpowered hub port in turn to find one (cold cellular costs ~60-90 s).
+
 ## Adapter choice
 
 Both: MediaTek chipset, in-kernel Linux driver (no DKMS), 2x2 MIMO, 2.4 + 5 GHz, detachable RP-SMA antennas.
