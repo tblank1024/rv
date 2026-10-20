@@ -266,6 +266,8 @@ const Internet = () => {
             <Card.Meta>
               One socket powered at a time. Sockets with no WAN role are left
               alone, so switching here cannot cut Bluetooth or the WiFi adapter.
+              A source marked &ldquo;powered on demand&rdquo; is gated: it draws
+              nothing until selected, which is why it shows no device.
             </Card.Meta>
             {wanConfigured === false ? (
               <Message warning size="small" style={{ marginTop: '10px' }}>
@@ -280,7 +282,9 @@ const Internet = () => {
                         `${candidateName(cand)} — socket ${cand.socket}` +
                         (cand.present
                           ? ` (${cand.product || 'device'}${cand.max_power ? ', ' + cand.max_power : ''})`
-                          : ' — empty socket')
+                          : cand.gated
+                            ? ' — powered on demand, select to switch it on'
+                            : ' — empty socket')
                       }
                       name="hubWanRole"
                       value={cand.role}
@@ -288,8 +292,13 @@ const Internet = () => {
                       onChange={() => selectHubWan(cand.role)}
                       /* An empty socket is not selectable: powering one
                          enumerates nothing, which is exactly how "Wired"
-                         appeared broken for weeks on the old hub. */
-                      disabled={wanBusy || !cand.present}
+                         appeared broken for weeks on the old hub.
+                         A GATED socket is a different thing entirely -- it
+                         reports present=false only because it is powered
+                         down on purpose, and selecting it is what powers it
+                         up. Treating the two alike made cellular
+                         unselectable the moment gating was switched on. */
+                      disabled={wanBusy || (!cand.present && !cand.gated)}
                     />
                   </Form.Field>
                 ))}
