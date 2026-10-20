@@ -216,6 +216,7 @@ socket_iface() {
 CUR_IFACE="$(cut -d' ' -f1 "$STATE_FILE" 2>/dev/null)"
 CUR_ROLE=""
 CUR_RANK=99
+CUR_LABEL=""
 
 # --- restore on any exit --------------------------------------------------
 TURNED_ON=()
@@ -265,6 +266,7 @@ if [[ -n "$CUR_IFACE" ]]; then
         if [[ "$(socket_iface "${IDENTS[$label]}" 2>/dev/null)" == "$CUR_IFACE" ]]; then
             CUR_ROLE="$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")"
             CUR_RANK="$(rank_of "$CUR_ROLE")"
+            CUR_LABEL="$label"
             break
         fi
     done
@@ -395,6 +397,23 @@ if [[ -n "$WINNER" ]]; then
     echo "ok $WINNER $WINNER_LABEL $(date +%s)" > "$RESULT_FILE"
     log "===== wan_scan done: WAN=$WINNER socket=$WINNER_LABEL ====="
     exit 0
+fi
+
+# Enforce gating even when nothing changed. In "better" mode the walk stops
+# at the first role that is not an improvement, which when the WAN is already
+# the best uplink means the settle step below is never reached -- so a gated
+# socket powered up by an earlier failover stayed powered indefinitely.
+# Measured 2026-10-20: after a failover down to cellular and back to wired,
+# the modem was still drawing power because the next scan short-circuited.
+if [[ -n "$CUR_LABEL" ]]; then
+    for label in "${ORDERED[@]}"; do
+        [[ "$label" == "$CUR_LABEL" ]] && continue
+        [[ -z "${ROLES[$label]}" ]] && continue
+        [[ -z "${GATED[$label]:-}" ]] && continue
+        socket_is_on "${IDENTS[$label]}" || continue
+        log "enforcing gating: socket $label off (current WAN is socket $CUR_LABEL)"
+        socket_power "$label" off "${IDENTS[$label]}"
+    done
 fi
 
 log "no better uplink found; leaving WAN=${CUR_IFACE:-none} as it was"

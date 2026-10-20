@@ -22,7 +22,9 @@
 #      incumbent is displaced only by a strictly more preferred candidate, so
 #      wired reclaims the route when it returns instead of leaving the RV on
 #      metered cellular. Roles come from the hub socket map, not interface
-#      names, which drift. Failover tries candidates in this order too.
+#      names, which drift. Failover tries candidates in this order too, and
+#      hands off to wan_scan.sh when no POWERED candidate works, since a
+#      gated socket has no interface for the loop to find.
 #      Verified live 2026-10-19: forced onto cellular, then a wired "up"
 #      logged "Promoting eth2 (wired) over healthy eth1 (cell)" and switched
 #      in ~2s; cellular and wifi each offering themselves against healthy
@@ -379,19 +381,40 @@ if [[ "$TRIGGERED_STATUS" == "down" ]]; then
     if [[ "$WAS_WAN" == "1" || -z "$(ip route show default)" ]]; then
         FAILOVER_CANDIDATES="$(candidate_ifaces "$TRIGGERED_IFACE")"
         if [[ -z "${FAILOVER_CANDIDATES// /}" ]]; then
+            # NO early exit here. Zero powered candidates is precisely the
+            # case gating creates -- the gated modem has no interface to find
+            # -- and it is the case that needs wan_scan most. An "exit 0" here
+            # skipped the handoff below and left the RV dark: measured
+            # 2026-10-20, wired powered off with WiFi disconnected produced
+            # "Failover: no other interface is up with an address" and nothing
+            # further for 150s.
             echo "[$(date)] Failover: no other interface is up with an address."
-            exit 0
+        else
+            echo "[$(date)] Failover: candidates after $TRIGGERED_IFACE:$FAILOVER_CANDIDATES"
+            for cand in $FAILOVER_CANDIDATES; do
+                echo "[$(date)] Failover: trying $cand"
+                if PI5_FAILOVER=1 "$0" "$cand" up; then
+                    echo "[$(date)] Failover: $cand accepted as WAN"
+                    exit 0
+                fi
+                echo "[$(date)] Failover: $cand rejected"
+            done
+            echo "[$(date)] Failover: no powered candidate passed."
         fi
-        echo "[$(date)] Failover: candidates after $TRIGGERED_IFACE:$FAILOVER_CANDIDATES"
-        for cand in $FAILOVER_CANDIDATES; do
-            echo "[$(date)] Failover: trying $cand"
-            if PI5_FAILOVER=1 "$0" "$cand" up; then
-                echo "[$(date)] Failover: $cand accepted as WAN"
-                exit 0
-            fi
-            echo "[$(date)] Failover: $cand rejected"
-        done
-        echo "[$(date)] Failover: no candidate passed; the RV has no WAN."
+        # Gated sockets have NO interface while powered down, so the loop
+        # above cannot have tried them -- it only ever sees what is already
+        # enumerated. Since cellular is gated (0.4W adapters stay powered,
+        # the ~1W modem does not), an automatic failover would otherwise be
+        # unable to reach the one uplink that is almost always available.
+        # wan_scan powers each role in turn and tests it. No recursion: it
+        # calls this script with "up", which never reaches this block.
+        if [[ -x /usr/local/sbin/wan_scan.sh ]]; then
+            echo "[$(date)] Failover: handing off to wan_scan --on-loss (it can power gated sockets)"
+            /usr/local/sbin/wan_scan.sh --on-loss
+            echo "[$(date)] Failover: wan_scan finished, WAN=$(cut -d' ' -f1 "$STATE_FILE" 2>/dev/null || echo none)"
+        else
+            echo "[$(date)] Failover: no wan_scan.sh, so gated sockets cannot be reached. The RV has no WAN."
+        fi
     else
         echo "[$(date)] $TRIGGERED_IFACE was not the WAN; nothing to promote."
     fi
