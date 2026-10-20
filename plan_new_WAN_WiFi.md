@@ -115,14 +115,16 @@ Verified 2026-10-20: after a reboot `wlan0` = onboard (`2c:cf:67:ab:1b:94`, AP "
 Also done the same day: both Alfa profiles set to `autoconnect yes`, `cloned-mac-address permanent`,
 `powersave 2`, `ipv6.method disabled`.
 
-**Forced-failover finding (2026-10-20, home LAN, `eth1` and `wlan1` both on 192.168.2.0/24):**
-`PI5_FORCE=1 pi5connect.sh wlan1 up` switched cleanly (probe OK, route and MASQUERADE moved, internet OK).
-It deletes every default route, including the old WAN's. Forcing back to `eth1` then failed its own probe
-("guessing gateway ... Reject eth1") because `eth1` no longer had a default route on its device, and
-`wlan1` stayed WAN until `nmcli con up "Wired connection 1"` re-created `eth1`'s route. Normal hub-port
-switching re-plugs the device so NM re-creates the route; this only bites a forced switch back to an
-uplink that stayed up. Candidate fix: add a temporary high-metric default route for the candidate before
-probing, removed if the probe fails. Not done.
+**Forced eth1 -> wlan1 -> eth1 swap on pi5connect v2.2 (2026-10-20, home LAN, both on 192.168.2.0/24): PASS.**
+An earlier run on v2.1 failed the way back: the forced switch deleted `eth1`'s default route, so the
+return probe ("guessing gateway") rejected `eth1` and `wlan1` stayed WAN until `nmcli con up` restored the
+route. v2.2's temporary `/32` probe routes fix exactly that. Rerun:
+- `PI5_FORCE=1 pi5connect.sh wlan1 up`: probe OK via temporary routes, default route and MASQUERADE moved to
+  `wlan1`, internet OK.
+- `pi5connect.sh eth1 up`, **not forced**: logged "Promoting eth1 (wired) over healthy wlan1 (wifi)", probed
+  `eth1` even though its gateway was guessed (the `/32` routes made that work), switched back in ~3 s
+  with no manual `nmcli` step. Wired outranks wifi in `WAN_PREFERENCE`.
+Not covered: separate subnets (both uplinks shared one here), and a real park network.
 
 ### 2. Which network manager owns which interface — DONE 2026-10-18
 Sophie has traces of NetworkManager, systemd-networkd (`raspap/*.network`), and dhcpcd
