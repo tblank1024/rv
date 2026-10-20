@@ -1,0 +1,20 @@
+[Unit]
+# Runs once after boot: confirms the RV has an uplink and applies socket
+# gating, which hub sockets do not do by themselves (they power up ON).
+# wan_revert.sh cannot cover this -- it arms a transient unit that dies with
+# the reboot -- so without this nothing watched the boot path at all.
+Description=WAN boot check: ensure an uplink and apply socket gating
+After=network-online.target bridge-setup.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Give NetworkManager time to bring interfaces up and DHCP to land. The
+# cellular modem alone needs ~52s from cold, though at boot its socket is
+# already powered, so it should have leased well before this fires.
+ExecStartPre=/bin/sleep 75
+ExecStart=/usr/local/sbin/wan_boot_check.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
