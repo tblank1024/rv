@@ -1,26 +1,20 @@
 # usbhub — USB port power control
 
-Two generations of hardware live here, and they are controlled in completely
-different ways.
+Per-port power control for the **Plugable** 7-in-1 powered hub, which selects the
+RV's active uplink. (It replaced a Coolgear serial-controlled switch whose USB
+control chip proved unstable.)
 
-| File | Hub | Mechanism | Status |
-|---|---|---|---|
-| `usbhub_ports.py` | any hub, incl. the **Plugable** 7-in-1 | kernel per-port power (sysfs / `uhubctl`) | new, 2026-10-18 |
-| `usbhub_api.py` + `usbhub-api.service` | same | root HTTP/JSON on `127.0.0.1:12347` | new, 2026-10-18 |
-| `setup_usbhub_api.sh` | — | installs both into `/usr/local/sbin` | new |
-| `../webserver/usbhub_ascii.py` | **Coolgear** 4-port switch | FT232R serial ASCII, `/dev/coolgear-hub` | **live** — what runs today |
-| `usbhub_ctl.py`, `usbhub_ctl_pi.py` | Coolgear | serial, v16.0 @115200 and v20.0 @9600 | **stale duplicates** of the above at v20.1 |
+| File | Role |
+|---|---|
+| `usbhub_ports.py` | kernel per-port power (sysfs / `uhubctl`) |
+| `usbhub_api.py` + `usbhub-api.service` | root HTTP/JSON on `127.0.0.1:12347` |
+| `setup_usbhub_api.sh` | installs both into `/usr/local/sbin` |
+| `map_sockets.py` | observes which physical socket is which (see below) |
 
-Three copies of `CoolGearUSBHub` now exist. Only `webserver/usbhub_ascii.py`
-is wired into the server. The two here are older protocol experiments kept from
-the baud-rate investigation; diff before trusting either.
+## Why a root service
 
-## Why the new hub needs a root service
-
-The Coolgear is steered from inside the webserver container because its control
-path is a **character device** (`/dev/coolgear-hub`), bind-mounted from the
-host. A plain powered hub has no control chip, so port power goes through the
-kernel — and that is closed to the container:
+A plain powered hub has no control chip, so port power goes through the kernel,
+and that is closed to the webserver container:
 
 ```
 $ docker exec webserver grep ' /sys' /proc/mounts
@@ -30,11 +24,11 @@ sysfs /sys/devices  ro        <- port attributes live under here
 
 `/sys/bus/usb/devices/*` are symlinks into that read-only tree, so writing
 `<hub>:1.0/<hub>-portN/disable` fails with `EACCES` even though the container is
-privileged and uid 0 (verified 2026-10-18). Hence `usbhub-api.service`, which
-is the same pattern as `wifi-api-rp5.service`: root, loopback, stdlib only,
-with the bind address as the only access control. The alternative — making
-`/sys/devices` writable in the container — runs against the direction the
-compose file already sets ("privileged … document/trim in Phase 4 hardening").
+privileged and uid 0 (verified 2026-10-18). Hence `usbhub-api.service`, the same
+pattern as `wifi-api-rp5.service`: root, loopback, stdlib only, with the bind
+address as the only access control. The alternative — making `/sys/devices`
+writable in the container — runs against the direction the compose file already
+sets ("privileged … document/trim in Phase 4 hardening").
 
 ## What "off" actually means
 
@@ -48,11 +42,9 @@ which is not the same as "no".
 **If the point is saving power, confirm with a current measurement at the port.**
 A device disappearing from `lsusb` is not evidence that it stopped drawing.
 
-## Exclusivity is now policy, not protocol
+## Exclusivity is policy
 
-The Coolgear's ASCII commands are a bitmask that turns exactly one port on, so
-only one WAN could ever be powered. A plain hub has no such constraint, which is
-why the two endpoints differ:
+A plain hub does not limit how many ports are on, so the two endpoints differ:
 
 - `POST /api/hub/<hub>/port` — one port, others untouched, several may be on.
   For the **debug page**, where powering two at once is a diagnostic.
@@ -62,22 +54,12 @@ why the two endpoints differ:
   but only one is left drawing current.
 
 `USBHUB_PROTECTED` ("hub:port", comma separated) refuses to switch a port off at
-all. It defaults to `1-2:4`, the Coolgear's own FT232R — cutting that is a loss
-of *control*, not of internet, and the hub cannot then be steered back — plus
-`1-2:3`, the adapter carrying the live WAN, which is listed only while the
-Coolgear is still the WAN switch (that path is steered over serial, not through
-this service, so protecting it here costs nothing).
+all. It is set in `usbhub-api.service`; see the comment there for what each
+entry protects (the TPMS Bluetooth adapter and the hub's internal cascade).
 
 **Ports carrying another hub are protected automatically**, so cascades never
-have to be listed by hand. On this machine that finds five:
-
-```
-usb1:2   the Coolgear's upstream   <- cutting it kills the live WAN
-usb3:1   the Plugable's upstream, USB 2 side
-usb4:1   the Plugable's upstream, USB 3 side
-3-1:3    the Plugable's internal cascade, USB 2 side
-4-1:3    the Plugable's internal cascade, USB 3 side
-```
+have to be listed by hand: each hub's upstream port, and the Plugable's internal
+cascade on both the USB 2 and USB 3 sides (`3-1:3`/`4-1:3` at last measurement).
 
 ## One socket, two sysfs ports
 
@@ -143,35 +125,17 @@ sudo uhubctl                              # per-port power switching support
 curl -s http://127.0.0.1:12347/api/hubs   # same data as JSON
 ```
 
-Measured 2026-10-18 **after** the Plugable went in (one blue port, the Alfa
-moved to the other):
-
-```
-usb1  port 1  (empty)                               <- Edimax BT was here
-usb1  port 2  USB2.1 Hub (Coolgear)      100mA
-1-2   port 3  USB 10/100 LAN             100mA      <- the live WAN
-1-2   port 4  FT232R USB UART             90mA      <- Coolgear control chip
-usb2  port 1  Wireless (Alfa MT7612U)    400mA      <- moved here, still wlan1
-usb3  port 1  USB2.0 Hub (Plugable)        0mA      <- 3-1, then 3-1.3
-usb3  port 2  ASUS USB-BT500             500mA
-usb4  port 1  USB3.0 Hub (Plugable)        0mA      <- 4-1, then 4-1.3
-```
-
-All four Plugable chips report `ppps` (per-port power switching) to `uhubctl`,
+The Plugable's four chips report `ppps` (per-port power switching) to `uhubctl`,
 which is the capability claim — not proof VBUS drops. See the warning above.
 
-The Pi 5's two blue ports each carry both speeds on one connector: blue A is
-`usb2:1` (SS) + `usb1:1` (HS), blue B is `usb4:1` + `usb3:1`. That is why the
-Alfa's move from blue B to blue A **displaced the Edimax Bluetooth adapter**,
-which shared blue A's USB 2 half. The `.link` MAC pinning held across the move —
-the Alfa came back as `wlan1` on a different bus — but `hci1` is gone, and
-`bat2mqtt` pins that adapter by MAC (`08:BE:AC:35:8E:5E`), so battery monitoring
-stopped silently at 14:01:56. Plug the Edimax into the Plugable.
+The Pi 5's two blue ports each carry both speeds on one connector, so a USB 2
+device and a USB 3 device on the same blue port share one connector. Moving
+a device between ports can displace its neighbour: `bat2mqtt` pins its Bluetooth
+adapter by MAC and does not recover when it disappears (`docker restart battery`).
 
-~1690 mA of *declared* draw against the 600 mA budget the Pi is running
-(`usb_max_current_enable=0`, raise to 1.6 A with a 27 W PSU). `bMaxPower` is a
-declared ceiling, not consumption, and `throttled=0x0` shows no undervoltage so
-far — but note the two Bluetooth adapters claim more between them than the Alfa.
+Declared draw (`bMaxPower`) across the Pi's own ports can exceed the 600 mA
+budget when `usb_max_current_enable=0` (raise to 1.6 A with a 27 W PSU).
+`bMaxPower` is a declared ceiling, not consumption; watch `vcgencmd get_throttled`.
 
 ## The map, measured 2026-10-18
 
@@ -253,86 +217,11 @@ Untested: whether disabling a port actually removes VBUS. `ppps` is a claim.
 Measure the current, or watch an LED-bearing device die, before relying on it
 for power saving.
 
-## Rewiring runbook
+## Interface names
 
-Written 2026-10-18 for the move off the Coolgear. The ordering is the point:
-**make WiFi carry the WAN before the Coolgear is unplugged**, because the live
-uplink (`eth1`, Coolgear port 3) is also the agent's only route out.
-
-Arm the auto-revert watchdog first — `rv/raspap/wan_revert.sh`, documented in
-`rv/raspap/README.txt`. It restores *some* uplink if a step leaves the RV dark,
-and it outlives the SSH session that armed it.
-
-```bash
-cd rv/usbhub   && sudo ./setup_usbhub_api.sh          # 0.2.1 -> 0.3.0 FIRST:
-                                                      # 0.3.0 carries the fix that
-                                                      # stops a WAN switch cutting
-                                                      # socket 7 (Bluetooth)
-cd ../raspap   && sudo ./wan_revert.sh arm 120
-```
-
-1. **Edimax Bluetooth out of blue A, into the free black port.** Blue A is a
-   SuperSpeed connector holding a 12 Mbit/s device; the Alfa wants it. Check
-   `hciconfig` still lists `08:BE:AC:35:8E:5E` and
-   `docker restart battery` if `bat2mqtt` went quiet — it binds one adapter by
-   MAC with `gatttool` and does not recover from a disappearance on its own.
-2. **Alfa from hub socket 1 into blue A.** Verify `wlan1` appears and the
-   driver bound: `dmesg | tail` must show `ASIC revision` *and* a `phy`
-   registration, not `failed with error -110`.
-3. **Prove WiFi works as an uplink without committing to it:**
-   `nmcli connection up alfa-Decher-5g ifname wlan1` then
-   `curl -4 --interface wlan1 -s -o /dev/null -w '%{http_code}\n' http://1.1.1.1/`.
-   Interface-bound on purpose — `pi5connect.sh` v2.1 keeps the healthy `eth1`
-   incumbent, so this tests the fallback without taking the route away.
-   **Do not continue until this passes.**
-4. **Unplug the Coolgear.** `eth1` disappears and pi5connect fails over to
-   `wlan1` (it did exactly this, in reverse, at 18:18 on 2026-10-18). Confirm
-   with `cat /run/pi5connect-wan`.
-5. **Wired adapter into socket 2, then cellular into 3, then Starlink into 4** —
-   one at a time, confirming each enumerates before the next:
-   `curl -s 127.0.0.1:12347/api/sockets | python3 -m json.tool`.
-6. **Record the roles** (socket 1 is cleared: WiFi is no longer on the hub):
-   ```bash
-   sudo ./map_sockets.py --set-role 1= --set-role 2=wired \
-                         --set-role 3=cell --set-role 4=starlink
-   ```
-7. **Protect the Alfa's new port.** Put `usb2:1` in `USBHUB_PROTECTED` in
-   `usbhub-api.service` and re-run the installer. It is *not* auto-protected:
-   cascade detection only fires on ports with a hub behind them, and the whole
-   point of moving the Alfa off the hub is that nothing here can cut it. The
-   old `1-2:3,1-2:4` entries become dead paths and can go.
-8. `cd ../docker && docker compose up -d --build webserver`
-9. `sudo ./wan_revert.sh disarm`
-
-Two things to expect afterwards:
-
-- **Interface names.** With several sockets powered at once, the three
-  USB-ethernet adapters enumerate together and take `eth1`/`eth2`/`eth3` in
-  arrival order — there is no `enx*` naming on this host (the policy is masked
-  by symlinks to `/dev/null`). `Wired connection 1` is pinned to
-  `connection.interface-name=eth1`, not to a MAC, so an adapter landing on
-  `eth2` has no profile and NM must auto-create one. Once each adapter's MAC is
-  known, pin them with `.link` files the way `11-wlan-wan.link` pins the Alfa.
-  Exclusive WAN selection mostly hides this by powering one at a time.
-- **The Alfa can no longer be power-gated by the hub**, so it draws its 400 mA
-  whenever the Pi is on. `ip link set wlan1 down` on a WAN switch turns the
-  radio off while keeping the device enumerated, which is the version of power
-  saving that does not cost the fallback. Disabling `usb2:1` would also work
-  and is exactly what step 7 forbids.
-
-## Not yet done
-
-- `server.py` still drives the Coolgear directly for the live path and assumes
-  a single active port (`get_current_active_port()` returns one number). The
-  proxy endpoints are written (`/api/hub/sockets`, `/api/hub/socket`,
-  `/api/hub/socket/exclusive`, `/api/hub/wan`, `/api/hub/hubs`) and the debug
-  and Internet pages use them, but the Coolgear selector is still the live one.
-- Its `EXTENDED_CONNECTION_MAPPING` has `starlink` and `wired` both on
-  Coolgear port 3, so one of them is wrong. Measured 2026-10-18: port 3 holds
-  the `r8152` serving `192.168.2.197` from the house LAN — i.e. wired. The
-  2026-10-17 sweep found Starlink (`206.214.239.194`, `192.168.100.1`) on that
-  same port and recorded no MAC, so either the adapter or the cable moved
-  between the two dates. Not resolvable from sysfs; the table dies with the
-  Coolgear anyway, and `/api/hub/wan` selects by role.
-- Roles are still unset (`"wan": {}` in the map) until step 6 above runs.
-- The WAN devices are all still on the Coolgear, which is still the switch.
+With several sockets powered at once, USB-ethernet adapters enumerate together
+and take `eth1`/`eth2`/`eth3` in arrival order — there is no `enx*` naming on
+this host (the policy is masked by symlinks to `/dev/null`). Pin each adapter
+with a `.link` file by MAC the way `11-wlan-wan.link` pins the Alfa. Exclusive
+WAN selection mostly hides this by powering one at a time. `pi5connect.sh`
+ranks uplinks by socket role (`/etc/usbhub/sockets.json`), not by interface name.

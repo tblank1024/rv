@@ -65,8 +65,6 @@ RUN SITE=$(python3 -c "import site; print(site.getsitepackages()[0])") && \
     echo "import kasa_hs300_patches; kasa_hs300_patches.apply()" > $SITE/kasa_hs300_patches.pth
 # Copy USB modem manager for cellular modem handling
 COPY server/usb_modem_manager.py server/.
-# Copy USB hub controller module
-COPY usbhub_ascii.py server/.
 #COPY server/mqttclient.py server/.
 #COPY server/dgn_variables.json server/.
 

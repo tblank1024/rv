@@ -21,16 +21,8 @@
  * "Connection Status" card reports the route the system actually chose, which
  * can legitimately differ from the socket selected above.
  *
- * === WHAT WAS REMOVED ===
- * The Coolgear USB switch selector. That hub was physically removed on
- * 2026-10-19; /dev/coolgear-hub no longer exists and the endpoints behind it
- * return "USB hub controller not available". Its radio group, its per-type
- * initialisation delays, its countdown and its connect/abort state machine are
- * all gone. Git history has them if the hub ever returns.
- *
  * === KASA ACCESSORIES ===
- * Still real hardware, and they lost their only UI when the Coolgear card went:
- * outlet 1 is the cellular signal amplifier, outlet 6 the Starlink power
+ * Outlet 1 is the cellular signal amplifier, outlet 6 the Starlink power
  * supply. Both are plain switched outlets, unrelated to which USB socket is
  * powered, so they get their own card with live wattage.
  *

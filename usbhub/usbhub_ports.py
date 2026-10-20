@@ -2,14 +2,11 @@
 """
 Per-port control for a plain powered USB hub, through the kernel.
 
-Written for the Plugable 7-in-1 powered hub that replaces the Coolgear switch.
-The difference that matters: the Coolgear has an FT232R control chip and an
-ASCII serial protocol whose commands are a bitmask that turns exactly one port
-on (see webserver/usbhub_ascii.py -- PORT_ON_CMDS "already ensures only one
-port is on"). A plain hub has no control chip, so port control goes through the
-kernel's own per-port power switching instead, and nothing enforces
-exclusivity. Exclusivity becomes policy here rather than a property of the
-wire protocol.
+Written for the Plugable 7-in-1 powered hub (it replaced a Coolgear serial-controlled
+switch whose USB control chip proved unstable). A plain hub has no control chip,
+so port control goes through the kernel's own per-port power switching, and
+nothing enforces exclusivity. Exclusivity is policy here rather than a property
+of a wire protocol.
 
 Two mechanisms, in preference order:
 
@@ -314,8 +311,8 @@ class HubPorts:
         return {port: self.port_state(port) for port in self.ports}
 
     def active_ports(self):
-        """Ports currently enabled. The plural is the point: unlike the
-        Coolgear, this hub can have several on at once."""
+        """Ports currently enabled. The plural is the point: this hub can
+        have several on at once."""
         return [p for p, s in self.states().items() if s["enabled"]]
 
     def cascade_ports(self):
@@ -328,18 +325,6 @@ class HubPorts:
         port's own attributes says so. Returned so callers can refuse.
         """
         return [p for p, s in self.states().items() if s["is_hub"]]
-
-    def get_current_active_port(self):
-        """
-        Compatibility shim for the Coolgear-shaped callers in server.py, which
-        assume a single active port. Returns that port when exactly one is on,
-        0 when none, and -1 when several -- which those callers read as
-        "unknown" rather than silently picking one.
-        """
-        active = self.active_ports()
-        if not active:
-            return 0
-        return active[0] if len(active) == 1 else -1
 
     # -- control (root) ---------------------------------------------------
     def set_port(self, port, on):
@@ -370,8 +355,7 @@ class HubPorts:
         but only one should be drawing current.
 
         Others are switched off BEFORE the target goes on, so the hub is never
-        briefly feeding two WAN devices at once. The Coolgear got this for free
-        because its command was a bitmask; here it is explicit.
+        briefly feeding two WAN devices at once.
         """
         results = {}
         enabled = {p: s["enabled"] for p, s in self.states().items()}

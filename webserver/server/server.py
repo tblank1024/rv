@@ -226,9 +226,6 @@ def _save_internet_state(state):
         print(f"WARNING: Could not save internet connection state: {e}")
 
 current_internet_connection = _load_internet_state()  # Tracks current connection: "none", "cellular", "wifi", "starlink", "wired"
-usb_hub_failures = 0  # Consecutive failed hub status queries; the serial link drops replies intermittently
-USB_HUB_FAILURES_BEFORE_UNREACHABLE = 3
-
 # Synology scheduled shutdown management
 scheduled_shutdown_timestamp = None
 shutdown_timer = None
@@ -793,15 +790,11 @@ def forget_wifi(data: Annotated[WifiForgetData, Body()]) -> dict:  # Removed asy
 # ---------------------------------------------------------------------------
 # USB hub port power (the Plugable), proxied to usbhub-api.service
 #
-# Why a proxy and not direct control, as with the Coolgear: a plain powered hub
+# Why a proxy and not direct control: a plain powered hub
 # has no control chip, so port power goes through the kernel -- and this
 # container's /sys/devices is mounted read-only, so writing a port attribute
 # fails with EACCES even though the container is privileged and uid 0 (verified
-# 2026-10-18). The Coolgear escaped that only because its path is a character
-# device bind-mounted from the host.
-#
-# These endpoints are additive. The Coolgear endpoints above still drive the
-# live WAN switch and are untouched; nothing here moves the WAN.
+# 2026-10-18).
 #
 # Two levels, deliberately:
 #   /api/hub/sockets, /api/hub/socket     independent per-socket control, any
@@ -1221,22 +1214,9 @@ def get_hub_raw() -> dict:
 
 # Internet Control Models and Endpoints
 
-# USB Hub Port Control Time Delay Constants (seconds)
-USB_HUB_PORT_DELAY_ALL_OFF = 0.5      # Delay after turning all ports off
-USB_HUB_PORT_DELAY_BETWEEN_COMMANDS = 0.2  # Delay between individual port commands
-USB_HUB_PORT_DELAY_AFTER_ON = 1.0     # Delay after turning a port on (allow device to initialize)
-USB_HUB_PORT_DELAY_CONNECTION_SETTLE = 2.0  # Delay to allow connection to settle before testing
+USB_HUB_PORT_DELAY_CONNECTION_SETTLE = 2.0  # Fallback settle delay before connectivity testing
 
-# Connection-Type-Specific Initialization Delays (seconds)
-# These delays allow each internet connection type to properly initialize after power-on
-CONNECTION_INIT_DELAYS = {
-    'cellular': 5.0,    # Cellular modem initialization delay
-    'wifi': 10.0,       # WiFi adapter initialization delay  
-    'starlink': 20.0,   # Starlink terminal initialization delay
-    'wired': 3.0        # Wired ethernet adapter initialization delay
-}
-
-# Connection-Type-Specific Settling Delays for Testing (seconds)  
+# Connection-Type-Specific Settling Delays for Testing (seconds)
 # Additional time to wait before connectivity testing after initialization
 CONNECTION_SETTLE_DELAYS = {
     'cellular': 8.0,    # Extra time for cellular network registration
@@ -1244,58 +1224,6 @@ CONNECTION_SETTLE_DELAYS = {
     'starlink': 15.0,   # Extra time for Starlink satellite acquisition
     'wired': 2.0        # Minimal extra time for ethernet link negotiation
 }
-
-# Port to Connection Type Mapping
-# Maps USB hub port numbers to their corresponding connection types
-# Verified against the hardware 2026-10-17 by sweeping each USB switch port and
-# recording what enumerated (see Results_WiFi_testing.md):
-#   port 1 -> hub 1-2.1, cdc_ether, 192.168.0.163/24 gw 192.168.0.1, domain "lan",
-#             ICMP blocked but TCP works  => cellular router. Label correct.
-#   port 2 -> hub 1-2.2, the Pi Zero USB gadget                     => wifi. Correct.
-#   port 3 -> hub 1-2.3, r8152, 206.214.239.194/24, and 192.168.100.1
-#             answers (Starlink dish mgmt)                          => starlink. Correct.
-#   port 4 -> NOTHING ATTACHED. Hub port 4 holds the FT232R that controls the
-#             switch itself and is always powered; there is no adapter there.
-# So 'wired' was never reachable on this hub: selecting it powered an empty
-# port, which is why the wired uplink appeared not to work.
-#
-# CORRECTED 2026-10-18 by the user: Starlink and wired are TWO separate
-# adapters on TWO separate USB ports. The sweep inferred one shared adapter
-# from finding nothing on port 4 -- but port 4 is the FT232R, so "empty" said
-# nothing about how many adapters exist; the wired adapter simply was not on
-# this hub that day. Don't re-derive the shared-adapter conclusion from this
-# table.
-#
-# This table is the Coolgear path and is transitional. On the Plugable each WAN
-# source has its own socket with its own role, which is what /api/hub/wan uses
-# (roles live in /etc/usbhub/sockets.json). Prefer that.
-PORT_TO_CONNECTION_TYPE = {
-    1: 'cellular',
-    2: 'wifi',
-    3: 'starlink',
-    4: 'unused'      # no device on hub port 4 (FT232R control chip lives there)
-}
-
-# Extended mapping for cellular-amp (same USB port, different Kasa requirements)
-EXTENDED_CONNECTION_MAPPING = {
-    'cellular': {'usb_port': 1, 'kasa_port': None},
-    'cellular-amp': {'usb_port': 1, 'kasa_port': 1},
-    'wifi': {'usb_port': 2, 'kasa_port': None},
-    'starlink': {'usb_port': 3, 'kasa_port': 6},
-    # UNCONFIRMED. Wired has its own adapter on its own port (corrected
-    # 2026-10-18), so usb_port 3 here is Starlink's adapter and is wrong --
-    # kept only because it is what the live Coolgear path has always done, and
-    # changing it blind would select a different device. usb_port 4 was also
-    # wrong: that is the FT232R. Fix with the real Coolgear port number, or let
-    # it die with the Coolgear once both adapters are on the Plugable and
-    # /api/hub/wan drives selection by role.
-    'wired': {'usb_port': 3, 'kasa_port': None, 'unconfirmed': True}
-}
-
-def get_connection_init_delay(port_number):
-    """Get the initialization delay for a specific port/connection type."""
-    connection_type = PORT_TO_CONNECTION_TYPE.get(port_number, 'wired')
-    return CONNECTION_INIT_DELAYS.get(connection_type, USB_HUB_PORT_DELAY_AFTER_ON)
 
 def get_connection_settle_delay(connection_type):
     """Get the settling delay for a specific connection type."""
@@ -1319,74 +1247,31 @@ def read_kasa_feature_outlets():
 
 def detect_current_internet_connection():
     """
-    Detect the current internet connection state from the USB hub (which port
-    is powered) and the Kasa power strip (amp / Starlink outlets).
+    Infer the uplink accessory state from the Kasa power strip: the Starlink
+    supply (outlet 6) and the cellular signal amplifier (outlet 1). Which USB
+    socket is powered, and which interface routes, are reported by /api/hub/wan
+    and default_route_interface(); this only distinguishes the two accessories.
     Updates the global current_internet_connection variable.
-    Returns the detected connection type.
     """
-    global current_internet_connection, usb_hub_failures
-
-    active_port = -1
-    try:
-        hub = get_usb_hub_controller()
-        if hub:
-            active_port = hub.get_current_active_port()
-        else:
-            print("WARNING: Could not connect to USB hub for state detection")
-        usb_hub_failures = usb_hub_failures + 1 if active_port == -1 else 0
-    except Exception as e:
-        print(f"ERROR: Failed to query USB hub state: {e}")
-        usb_hub_failures += 1
+    global current_internet_connection
 
     kasa = read_kasa_feature_outlets()
     amp_on, starlink_on = kasa if kasa else (None, None)
 
     detected = None
-    if active_port == 0:
-        detected = "none"
-    elif active_port == 1:
-        # Same USB port either way; the amp outlet distinguishes the two.
-        # If the strip is unreadable, keep a persisted cellular-amp.
-        if amp_on is None:
-            amp_on = current_internet_connection == "cellular-amp"
-        detected = "cellular-amp" if amp_on else "cellular"
-    elif 2 <= active_port <= 4:
-        detected = PORT_TO_CONNECTION_TYPE[active_port]
-    elif kasa:
-        # Hub unreadable: infer from the outlets that only one option powers.
+    if kasa:
         if starlink_on:
             detected = "starlink"
         elif amp_on:
             detected = "cellular-amp"
-        else:
-            print(f"WARNING: Hub unreadable and Kasa outlets off, keeping last known: {current_internet_connection}")
-
     if detected is None:
-        print(f"WARNING: Could not determine connection state, keeping last known: {current_internet_connection}")
+        print(f"INFO: No Kasa accessory outlet on, keeping last known: {current_internet_connection}")
     else:
         current_internet_connection = detected
         _save_internet_state(detected)
-        print(f"INFO: Detected internet connection: {detected} (hub port {active_port}, kasa amp/starlink {amp_on}/{starlink_on})")
+        print(f"INFO: Detected internet accessory: {detected} (kasa amp/starlink {amp_on}/{starlink_on})")
 
     return current_internet_connection
-
-def update_current_internet_connection(port, action, connection_type=None):
-    """Update the current internet connection state based on port control actions."""
-    global current_internet_connection
-    
-    if port == 0 or action.lower() == 'off':
-        current_internet_connection = "none"
-    elif 1 <= port <= 4 and action.lower() == 'on':
-        current_internet_connection = connection_type or PORT_TO_CONNECTION_TYPE.get(port, "none")
-    
-    _save_internet_state(current_internet_connection)
-    print(f"INFO: Current internet connection updated to: {current_internet_connection}")
-
-class InternetPowerData(BaseModel):
-    port: int  # 1-4 for specific ports, 0 for all ports off
-    action: str  # 'on' or 'off'
-    kasaPort: int = None  # Optional Kasa power strip port
-    connection_type: str = None  # Optional connection type for enhanced logic
 
 class InternetTestData(BaseModel):
     connection_type: str  # 'cellular', 'wifi', 'starlink', 'wired'
@@ -1403,9 +1288,6 @@ _kasa_cache_time = 0
 _kasa_cache_duration = 300  # Cache for 5 minutes
 _kasa_last_failure_time = 0
 _kasa_failure_cache_duration = 15  # Reduced to 15 seconds for faster recovery when device comes back online
-
-# Global USB hub cache - reuse the same serial connection across calls
-_usb_hub_cache = None
 
 def get_kasa_power_strip():
     """Get Kasa Power Strip Controller instance. Returns None if not available."""
@@ -1469,63 +1351,6 @@ def clear_kasa_cache():
     _kasa_strip_cache = None
     _kasa_cache_time = 0
     print("INFO: Kasa connection cache cleared")
-
-USB_HUB_STABLE_PATH = '/host-dev/coolgear-hub'
-
-def get_usb_hub_controller():
-    """Get USB Hub Controller instance. Returns None if not available.
-    Caches the instance and reuses it; reconnects automatically if the serial port drops."""
-    global _usb_hub_cache
-
-    # Return cached instance if still connected
-    if _usb_hub_cache is not None:
-        if _usb_hub_cache.ser and _usb_hub_cache.ser.is_open:
-            return _usb_hub_cache
-        # A raw ttyUSBn path goes stale when the FTDI chip re-enumerates, so
-        # only the stable symlink is worth reopening; otherwise rescan.
-        if _usb_hub_cache.port == USB_HUB_STABLE_PATH:
-            print("INFO: Cached USB hub serial port closed, reconnecting...")
-            if _usb_hub_cache._reconnect():
-                return _usb_hub_cache
-        _usb_hub_cache = None
-
-    try:
-        import sys
-        import os
-
-        # Use the local usbhub_ascii.py module
-        local_path = os.path.dirname(os.path.abspath(__file__))
-        parent_path = os.path.dirname(local_path)  # Go up one directory to RVSecurity root
-        if parent_path not in sys.path:
-            sys.path.append(parent_path)
-
-        from usbhub_ascii import CoolGearUSBHub
-
-        # Stable live symlink first; raw paths are a fallback for running
-        # outside Docker or before the udev rule is installed.
-        possible_ports = [USB_HUB_STABLE_PATH, '/dev/coolgear-hub', '/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
-
-        for port in possible_ports:
-            if os.path.exists(port):
-                try:
-                    hub = CoolGearUSBHub(port)
-                    if hub.ser and hub.ser.is_open:
-                        print(f"Successfully connected to USB hub on {port}")
-                        _usb_hub_cache = hub
-                        return hub
-                except Exception as e:
-                    print(f"Failed to connect to USB hub on {port}: {e}")
-                    continue
-
-        print("No USB hub found on any of the standard ports")
-        return None
-
-    except ImportError as e:
-        print(f"USB hub controller not available: {e}")
-        return None
-    except Exception as e:
-        print(f"Error initializing USB hub: {e}")
-        return None
 
 def test_internet_connectivity(connection_type="generic", timeout=5):
     """Test internet connectivity using multiple methods for Docker compatibility."""
@@ -1671,22 +1496,15 @@ def get_internet_status() -> dict:  # Removed async
     global current_internet_connection
 
     try:
-        # Detect current connection from USB hub
         detected_connection = detect_current_internet_connection()
         wan_interface = default_route_interface()
 
         return {
             "current_connection": detected_connection,
-            # Whether the RV has internet is NOT the same question as which
-            # Coolgear port is selected. Since the move to the Plugable the
-            # live WAN is not a Coolgear port at all, so deriving this from
-            # the switch reported "disconnected" while the RV was routing
-            # happily over wired (2026-10-19). Report the real default route.
+            # Whether the RV has internet is the real default route, not which
+            # hub socket is powered.
             "status": "connected" if wan_interface else "disconnected",
-            # Kept separate so a caller can still see the switch's own idea.
-            "switch_selection": detected_connection,
             "wan_interface": wan_interface,
-            "hub_reachable": usb_hub_failures < USB_HUB_FAILURES_BEFORE_UNREACHABLE,
             "message": (f"WAN via {wan_interface}" if wan_interface
                         else "No default route"),
         }
@@ -1697,160 +1515,6 @@ def get_internet_status() -> dict:  # Removed async
             "status": "error", 
             "message": f"Error detecting connection: {str(e)}"
         }
-
-@app.post("/api/internet/power")
-def internet_power_control(data: Annotated[InternetPowerData, Body()]) -> InternetResponse:  # Removed async
-    """Control USB hub ports and Kasa power strip for internet connections."""
-    try:
-        hub = get_usb_hub_controller()
-        if not hub:
-            return InternetResponse(
-                success=False,
-                message="USB hub controller not available. Check USB hub connection.",
-                port=data.port
-            )
-        
-        # Handle mutual exclusion logic for Kasa power control
-        kasa_success = True
-        kasa_message = ""
-        kasa_strip = None
-        
-        # Get Kasa strip if we need to do any Kasa operations
-        try:
-            kasa_strip = get_kasa_power_strip()
-        except Exception as e:
-            print(f"WARNING: Failed to get Kasa power strip: {e}")
-        
-        # Simple Kasa power control logic based on connection_type
-        if kasa_strip:
-            try:
-                # Always manage both Kasa ports based on connection_type
-                connection_type = data.connection_type or "none"
-                
-                # Kasa Port 1 (Cellular Amp): Only ON when cellular-amp is selected
-                if connection_type == 'cellular-amp':
-                    result1 = kasa_strip.turn_on_outlet(0)  # Convert to 0-based indexing (port 1 -> index 0)
-                    print(f"INFO: Kasa port 1 (cellular amp) turned ON for cellular-amp")
-                else:
-                    result1 = kasa_strip.turn_off_outlet(0)
-                    print(f"INFO: Kasa port 1 (cellular amp) turned OFF (connection: {connection_type})")
-                
-                # Kasa Port 6 (Starlink): Only ON when starlink is selected
-                if connection_type == 'starlink':
-                    result6 = kasa_strip.turn_on_outlet(5)  # Convert to 0-based indexing (port 6 -> index 5)
-                    print(f"INFO: Kasa port 6 (starlink) turned ON for starlink")
-                else:
-                    result6 = kasa_strip.turn_off_outlet(5)
-                    print(f"INFO: Kasa port 6 (starlink) turned OFF (connection: {connection_type})")
-                
-                # Build status message
-                if connection_type == 'cellular-amp':
-                    kasa_message = ", Kasa: port 1 ON, port 6 OFF"
-                elif connection_type == 'starlink':
-                    kasa_message = ", Kasa: port 1 OFF, port 6 ON"
-                else:
-                    kasa_message = ", Kasa: both ports OFF"
-                    
-            except Exception as e:
-                print(f"WARNING: Kasa power strip operation failed: {e}")
-                clear_kasa_cache()
-                kasa_success = False
-                kasa_message = f", Kasa control failed: {str(e)}"
-        
-        # USB Hub Control Logic
-        if data.port == 0:  # All ports off
-            result = hub.all_off()
-            if result:
-                time.sleep(USB_HUB_PORT_DELAY_ALL_OFF)  # Allow time for all ports to turn off
-                update_current_internet_connection(0, "off")  # Update state
-                
-                success_msg = "All USB ports powered off"
-                if not kasa_success:
-                    success_msg += kasa_message
-                
-                return InternetResponse(
-                    success=True,
-                    message=success_msg,
-                    port=0
-                )
-            else:
-                return InternetResponse(
-                    success=False,
-                    message="Failed to power off all USB ports" + kasa_message,
-                    port=0
-                )
-        
-        elif 1 <= data.port <= 4:  # Specific port control
-            # Use the connection_type from the request data, or fallback to port mapping
-            connection_type = data.connection_type or PORT_TO_CONNECTION_TYPE.get(data.port, 'wired')
-            init_delay = get_connection_init_delay(data.port)
-            
-            if data.action.lower() == 'on':
-                # Use atomic single-port control to avoid multi-port transitions
-                print(f"Setting ONLY port {data.port} ON ({connection_type}) - all others OFF")
-                result = hub.set_single_port_on(data.port)
-                if result:
-                    print(f"Applying {connection_type} initialization delay: {init_delay} seconds")
-                    time.sleep(init_delay)  # Use connection-specific initialization delay
-                    
-                    # Special handling for cellular modem (port 1)
-                    if data.port == 1 and connection_type == 'cellular':
-                        print("Performing cellular modem setup sequence...")
-                        try:
-                            modem_success, modem_message = usb_modem_manager.prepare_cellular_modem()
-                            if modem_success:
-                                action_msg = f"powered on ({connection_type}) - modem configured"
-                                print(f"Cellular modem setup successful: {modem_message}")
-                            else:
-                                action_msg = f"powered on ({connection_type}) - modem setup failed: {modem_message}"
-                                print(f"Cellular modem setup failed: {modem_message}")
-                        except Exception as e:
-                            action_msg = f"powered on ({connection_type}) - modem setup error: {str(e)}"
-                            print(f"Cellular modem setup error: {e}")
-                    else:
-                        action_msg = f"powered on ({connection_type})"
-                else:
-                    action_msg = f"failed to power on ({connection_type})"
-            else:
-                result = hub.port_off(data.port)
-                if result:
-                    time.sleep(USB_HUB_PORT_DELAY_BETWEEN_COMMANDS)  # Brief pause
-                action_msg = f"powered off ({connection_type})"
-            
-            if result:
-                update_current_internet_connection(data.port, data.action, connection_type)  # Update state
-                
-                success_msg = f"USB port {data.port} {action_msg} successfully"
-                if kasa_success and data.kasaPort:
-                    success_msg += kasa_message
-                elif not kasa_success and data.kasaPort:
-                    success_msg += kasa_message
-                
-                return InternetResponse(
-                    success=True,
-                    message=success_msg,
-                    port=data.port
-                )
-            else:
-                return InternetResponse(
-                    success=False,
-                    message=f"Failed to {data.action} USB port {data.port}" + kasa_message,
-                    port=data.port
-                )
-        
-        else:
-            return InternetResponse(
-                success=False,
-                message=f"Invalid port number: {data.port}. Use 1-4 for specific ports, 0 for all off.",
-                port=data.port
-            )
-    
-    except Exception as e:
-        return InternetResponse(
-            success=False,
-            message=f"USB hub control error: {str(e)}",
-            port=data.port
-        )
 
 @app.post("/api/internet/cellular-test")
 def test_cellular_modem_setup() -> InternetResponse:
@@ -2030,116 +1694,6 @@ def data_home()-> DataResponse:  # Removed async
         tire_rr_out_temp=  _tire_temp('RR_out'),
         shore_power_active= (ShorePower > 0 or GenPower > 0),
     )
-
-# Debug API endpoints
-@app.get("/api/debug/usb/status")
-def get_usb_debug_status() -> dict:
-    """Get current status of all USB ports for debug interface."""
-    try:
-        hub = get_usb_hub_controller()
-        if not hub:
-            return {
-                "success": False,
-                "message": "USB hub controller not available",
-                "ports": {}
-            }
-        
-        # Query the hub ONCE. This used to call get_current_active_port() inside
-        # the per-port loop: 4 serial round-trips (each retrying up to 3x, so up
-        # to 12 transactions) to answer one question. The rapid-fire queries
-        # clipped each other's replies -- observed as
-        # "Invalid hub status response length: FFFFF" -- and any truncated read
-        # returns -1, which rendered EVERY port as enabled:false while port 2 was
-        # demonstrably powered. Verified 2026-10-17.
-        try:
-            active_port = hub.get_current_active_port()
-            query_error = None
-        except Exception as e:
-            active_port = -1
-            query_error = str(e)
-
-        ports = {}
-        for port_num in range(1, 5):  # USB ports 1-4
-            connection_type = PORT_TO_CONNECTION_TYPE.get(port_num, 'unknown')
-            entry = {
-                "enabled": active_port == port_num,
-                "connection_type": connection_type,
-                "name": f"USB Port {port_num} ({connection_type.title()})"
-            }
-            # -1 means the query failed; do not report that as "all ports off",
-            # which is indistinguishable from a real all-off state.
-            if active_port == -1:
-                entry["enabled"] = None
-                entry["unknown"] = True
-                if query_error:
-                    entry["error"] = query_error
-            ports[port_num] = entry
-
-        return {
-            "success": True,
-            "message": ("USB ports status retrieved" if active_port != -1
-                        else "USB hub status unavailable (serial query failed)"),
-            "active_port": active_port,
-            "ports": ports
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error getting USB status: {str(e)}",
-            "ports": {}
-        }
-
-@app.post("/api/debug/usb/{port_num}")
-def control_usb_port_debug(port_num: int, data: Annotated[dict, Body()]) -> dict:
-    """Control individual USB port for debug interface."""
-    try:
-        if port_num < 1 or port_num > 4:
-            return {
-                "success": False,
-                "message": f"Invalid port number: {port_num}. Must be 1-4."
-            }
-        
-        action = data.get('action', '').lower()
-        if action not in ['on', 'off']:
-            return {
-                "success": False,
-                "message": f"Invalid action: {action}. Must be 'on' or 'off'."
-            }
-        
-        hub = get_usb_hub_controller()
-        if not hub:
-            return {
-                "success": False,
-                "message": "USB hub controller not available"
-            }
-        
-        # Control the specific port
-        if action == 'on':
-            result = hub.port_on(port_num)
-        else:
-            result = hub.port_off(port_num)
-        
-        if result:
-            connection_type = PORT_TO_CONNECTION_TYPE.get(port_num, 'unknown')
-            return {
-                "success": True,
-                "message": f"USB port {port_num} ({connection_type}) turned {action}",
-                "port": port_num,
-                "action": action
-            }
-        else:
-            return {
-                "success": False,
-                "message": f"Failed to turn {action} USB port {port_num}",
-                "port": port_num,
-                "action": action
-            }
-    except Exception as e:
-        return {
-            "success": False,
-            "message": f"Error controlling USB port {port_num}: {str(e)}",
-            "port": port_num
-        }
 
 @app.get("/api/debug/kasa/status")
 def get_kasa_debug_status() -> dict:
@@ -2785,7 +2339,7 @@ if __name__ == "__main__":
     _start_mqtt_bus()
     print("Tire TPMS MQTT subscriber started")
 
-    # Initialize internet connection state from USB hub
+    # Initialize internet accessory state from the Kasa strip
     print("Detecting current internet connection state...")
     detected_connection = detect_current_internet_connection()
     print(f"Server startup: Current internet connection is '{detected_connection}'")

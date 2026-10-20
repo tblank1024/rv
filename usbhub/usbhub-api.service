@@ -2,10 +2,9 @@
 #
 # The webserver container cannot do this itself: Docker mounts its
 # /sys/devices read-only, so writing <hub>:1.0/<hub>-portN/disable fails with
-# EACCES even though the container is privileged (verified 2026-10-18). The
-# Coolgear hub was controllable from the container only because its path is a
-# character device, /dev/coolgear-hub. A plain powered hub has no control chip,
-# so the kernel is the only way in -- hence this service.
+# EACCES even though the container is privileged (verified 2026-10-18). A
+# plain powered hub has no control chip, so the kernel is the only way in --
+# hence this service.
 #
 # Same shape as wifi-api-rp5.service: stdlib only, loopback, no auth because
 # the bind address IS the access control.
@@ -39,23 +38,13 @@ Environment=USBHUB_API_ALLOWED_NET=127.0.0.0/8
 # listed: a hub's upstream port, and the internal cascade that fronts four of
 # the seven sockets. Cutting one takes out everything behind it.
 #
-# CAUTION, and the reason this comment was rewritten on 2026-10-19: both
-# values below were inherited from the Coolgear era and happen to still be
-# exactly the right ports to protect, but what they MEAN changed completely
-# when the Plugable took over the Pi's USB port 2.
-#
-#   1-2:4  was  the Coolgear's own FT232R control chip.
-#          is   Plugable socket 7 -- the ASUS BT500, which carries TPMS.
-#               Cutting it stops tire monitoring with no error anywhere.
-#   1-2:3  was  the USB-ethernet adapter carrying the live WAN.
-#          is   the Plugable's internal cascade to its downstream chip.
-#               Disabling it would cut sockets 1-4 at once. Redundant, since
-#               cascade ports are auto-detected, but harmless and explicit.
-#
-# The old note here said to remove 1-2:3 "once the WAN devices move to the
-# Plugable". They have, and removing it would now unprotect the cascade
-# instead. Do not act on interface or port numbers in old comments without
-# re-measuring: the "1-2" prefix is the Pi's USB port 2, nothing about the hub.
+# Protected here:
+#   1-2:4  Plugable socket 7 -- the ASUS BT500, which carries TPMS.
+#          Cutting it stops tire monitoring with no error anywhere.
+#   1-2:3  the Plugable's internal cascade to its downstream chip. Disabling it
+#          would cut sockets 1-4 at once. Redundant, since cascade ports are
+#          auto-detected, but harmless and explicit.
+# The "1-2" prefix is the Pi's USB port 2; re-measure if the hub moves.
 Environment=USBHUB_PROTECTED=1-2:4,1-2:3
 
 # Where the physical-socket map lives. Built by map_sockets.py -- socket

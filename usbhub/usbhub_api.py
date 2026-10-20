@@ -5,10 +5,8 @@ Root HTTP/JSON service for USB hub port power. Loopback only.
 Why a service rather than doing this in the webserver container: the container
 is privileged, but Docker mounts its /sys/devices read-only, so writing
 <hub>:1.0/<hub>-portN/disable fails there with EACCES even as uid 0 (verified
-2026-10-18). The Coolgear hub escaped this only because its control path is a
-character device, /dev/coolgear-hub, which is bind-mounted from the host. A
-plain powered hub like the Plugable has no control chip, so the kernel is the
-only way in and that means host-side root.
+2026-10-18). A plain powered hub like the Plugable has no control chip, so the
+kernel is the only way in and that means host-side root.
 
 Same shape as wifi-api-rp5.service deliberately: stdlib only, bound to
 127.0.0.1, no authentication because the bind address is the access control.
@@ -69,8 +67,7 @@ ALLOWED_NET = os.environ.get("USBHUB_API_ALLOWED_NET", "127.0.0.0/8")
 
 # Ports that must never be switched off, as "hub:port", comma separated. Set
 # this for anything whose loss would cost control rather than just internet --
-# the FT232R that drives the Coolgear is the obvious candidate, since without
-# it the old hub cannot be steered at all.
+# a Bluetooth adapter carrying TPMS is the obvious candidate.
 PROTECTED = {
     entry.strip() for entry in os.environ.get("USBHUB_PROTECTED", "").split(",")
     if entry.strip()

@@ -315,7 +315,7 @@ services:
     volumes:
       # Live view of host /dev (a bind of devtmpfs tracks hotplug); the
       # container's own /dev is a snapshot taken at start, so a re-enumerated
-      # CoolGear hub (ttyUSB0 -> ttyUSB1) is only visible here. Mounted
+      # device is only visible here. Mounted
       # beside /dev, not over it, so the gpiochip4 mapping below survives.
       - /dev:/host-dev:rw
       - /sys/class/net:/sys/class/net:ro
@@ -333,8 +333,8 @@ services:
     # Container-side path must stay gpiochip4: gpiozero.LGPIOFactory
     # auto-detects the Pi revision and opens chip 4 for Pi 5 boards.
     # Because this service is privileged, Docker silently skips a devices:
-    # entry whose host path is missing, and symlink sources (coolgear-hub)
-    # never appear -- serial ports are reached via /host-dev instead.
+    # entry whose host path is missing; other host devices are reached via
+    # /host-dev instead.
     devices:
       - /dev/gpiochip-rp1:/dev/gpiochip4
     healthcheck:

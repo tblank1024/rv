@@ -162,11 +162,7 @@ function Debug() {
 
   // Control USB port
 
-  // Fetch the Plugable hub's physical sockets.
-  //
-  // Separate from the Coolgear above, not a replacement: that hub is a serial
-  // device with a one-port-on protocol, this one is kernel per-port power.
-  // Both exist while the WAN is still on the Coolgear.
+  // Fetch the Plugable hub's physical sockets (kernel per-port power).
   const getHubSockets = async () => {
     try {
       const response = await fetch(`${getServerUrl()}/api/hub/sockets`, {
@@ -196,8 +192,7 @@ function Debug() {
 
   // One socket on or off, the others untouched -- several may be on at once,
   // which is the whole point of this control and why it is a checkbox rather
-  // than the Coolgear's radio group. The Internet page uses the exclusive
-  // endpoint instead.
+  // than a radio group. The Internet page uses the exclusive endpoint instead.
   // Moved here from the Home page: a reboot drops every WiFi client on the
   // RV and takes the dashboard down with it, so it belongs behind the
   // diagnostics rather than one tap from the status screen.
