@@ -47,9 +47,9 @@ route and rewrites the NAT/FORWARD rules on every interface or connectivity chan
 choice in `/run/pi5connect-wan`. It overwrites the rules at runtime, which is why
 `/etc/iptables/rules.v4` is stale and does not matter.
 
-**No host firewall yet** — `INPUT`/`FORWARD` are open, so on a direct park-network uplink Sophie's
-own services are exposed. `plan_firewall.md` covers it; deploy that before joining an untrusted
-network.
+**Host firewall:** default-deny by interface (`firewall/sophie-firewall.sh`, units `sophie-firewall*.service`,
+chains `SOPHIE-IN`/`SOPHIE-FWD`); trusted: `lo`, `br0`, `docker0`, `br-+`. `plan_firewall.md` has the design and
+the revert procedure (`sophie-firewall.sh revert`).
 
 ## Remote Desktop
 

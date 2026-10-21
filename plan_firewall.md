@@ -1,7 +1,8 @@
 # plan_firewall.md — Host firewall for Sophie (all uplinks)
 
-STATUS: proposal, nothing deployed. Deferred by the user on 2026-10-18 ("I'm on a home safe lan so the
-firewall isn't important at this time") — revisit before the next trip, when an untrusted park network is live.
+STATUS: Sophie half deployed 2026-10-21 (script, systemd units enabled; LAN-side checks passed: dashboard,
+MQTT, SSH/VNC, client internet; Docker restart keeps the DOCKER-USER hook). Still to do: reboot test, outside
+nmap from another home-WiFi device, review `SOPHIE-IN drop:` logs, phase 2 hardening.
 Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
 
 Written 2026-10-12, when the uplink was the Zero 2W bridge. **The Zero was physically disconnected on
