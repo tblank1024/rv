@@ -32,6 +32,13 @@ After:  Roku -- wlan0/br0 [RP5] -- USB hub port -- [Alfa adapter, outside] ~~2.4
   route then has no internet, it rolls back.
 - **Only a better uplink takes over.** A healthy current WAN stays unless a strictly higher-ranked one appears
   (wired reclaims the route from WiFi with no manual step). `PI5_FORCE=1` overrides.
+- **Nightly cheaper-WAN scan.** `wan-scan-nightly.timer` runs `wan_scan.sh --cheap` at 02:00 (system local
+  time). `--cheap` considers only wired and WiFi, so it never powers Starlink or cellular. If the RV is on
+  cellular (or Starlink) it powers the wired socket, and WiFi if its adapter is associated, and hands any
+  working one to `pi5connect`, which probes it and commits (wired > WiFi > Starlink > cellular), then powers
+  the gated cellular socket back off. On wired it does nothing. Not persistent: a Pi that was off at 02:00
+  does not catch up at boot. Tested 2026-10-20 at home: forced onto cellular, ran the service, it came back
+  on wired in ~10 s (wired re-enumerated as `eth2`) and cut the modem.
 - **Failover.** When the current WAN goes down it tries the other connected uplinks in rank order; if none
   works, `wan_scan.sh` powers each unpowered hub port in turn to find one (cold cellular costs ~60-90 s).
 

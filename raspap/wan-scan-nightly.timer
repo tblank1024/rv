@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly cheaper-WAN scan at 02:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+# If the Pi was off at 02:00, do not run late at boot: pi5connect and
+# wan-boot-check already choose a WAN at boot.
+Persistent=false
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -33,6 +33,11 @@
 # Usage:
 #   wan_scan.sh                 look for an uplink BETTER than the current one
 #   wan_scan.sh --on-loss       consider every role (use when there is no WAN)
+#   wan_scan.sh --cheap         like the default, but only wired and WiFi are
+#                               considered: never powers Starlink or cellular.
+#                               This is what the 2AM timer runs, so a RV that
+#                               travels on cellular moves to a free uplink on
+#                               arriving home without ever waking the dish.
 #   wan_scan.sh --dry-run       log the walk, change nothing
 #
 # SAFETY
@@ -75,9 +80,11 @@ SETTLE=2
 
 MODE="better"
 DRYRUN=0
+CHEAP=0
 for arg in "$@"; do
     case "$arg" in
         --on-loss) MODE="all" ;;
+        --cheap) CHEAP=1 ;;
         --dry-run) DRYRUN=1 ;;
         -h|--help) sed -n '3,40p' "$0"; exit 0 ;;
         *) echo "[$(date)] unknown argument: $arg"; exit 2 ;;
@@ -233,7 +240,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "===== wan_scan start (mode=$MODE dryrun=$DRYRUN current=${CUR_IFACE:-none}) ====="
+log "===== wan_scan start (mode=$MODE cheap=$CHEAP dryrun=$DRYRUN current=${CUR_IFACE:-none}) ====="
 
 if [[ ! -r "$SOCKET_MAP" ]]; then
     log "ERROR: no socket map at $SOCKET_MAP; nothing to scan"
@@ -287,6 +294,13 @@ for label in "${ORDERED[@]}"; do
     idents="${IDENTS[$label]}"
     switchable=0
     [[ -n "${ROLES[$label]}" ]] && switchable=1
+
+    # --cheap: wired and WiFi only. Checked before anything is powered, so a
+    # skipped role costs nothing (no dish wake-up, no modem boot).
+    if [[ "$CHEAP" == "1" && "$role" != "wired" && "$role" != "wifi" ]]; then
+        log "socket $label ($role): skipped (--cheap considers only wired and wifi)"
+        continue
+    fi
 
     if [[ "$MODE" == "better" ]] && (( rank >= CUR_RANK )); then
         log "socket $label ($role): not better than current ($CUR_ROLE); stopping here"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly look for a cheaper WAN (wired or WiFi) than the current one
+Documentation=https://github.com/tblank1024/rv
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# --cheap: only wired and WiFi are considered. Starlink and cellular are never
+# powered by this job. Does nothing when the current WAN is already wired.
+ExecStart=/usr/local/sbin/wan_scan.sh --cheap
+# A cold wired/WiFi test is well under this; the bound just stops a hung scan
+# from sitting on the hub forever.
+TimeoutStartSec=300
