@@ -1,0 +1,14 @@
+[Unit]
+Description=Sophie host firewall (default-deny on uplinks)
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sophie-firewall.sh apply
+
+[Install]
+WantedBy=multi-user.target

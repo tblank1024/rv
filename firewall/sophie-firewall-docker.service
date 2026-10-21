@@ -1,0 +1,12 @@
+[Unit]
+Description=Sophie firewall hook into DOCKER-USER
+After=docker.service sophie-firewall.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sophie-firewall.sh docker
+
+[Install]
+WantedBy=docker.service
