@@ -76,6 +76,23 @@ nmap -Pn -p- <Sophie's uplink IPv4>          # expect: all filtered
 nmap -6 -Pn -p 22,80,1883,5900,8000,9001 <addr>   # if a global v6 address exists
 ```
 
+"Filtered" alone does not prove the firewall did it -- a scan of a dead address reads the same. Confirm from
+on-box that the packets actually arrived and were dropped: watch `SOPHIE-IN`'s drop counter climb, and check
+the arrival interface in the log, which is the part that is easy to get wrong:
+
+```bash
+sudo journalctl -k --since -5min | grep "SOPHIE-IN drop" | grep "SRC=<scanner IP>"
+```
+
+The `IN=` field must name the uplink you aimed at. A plain `journalctl -k` as a non-root user exits 0 and
+prints nothing, so use `sudo`.
+
+If two of Sophie's interfaces hold addresses on the same subnet -- routine at home, where the Realtek is in
+the house LAN and the Alfa is on the house WiFi -- ARP flux will send your scan in through whichever NIC
+answered, and you will test the wrong interface without noticing. `raspap/90-arp-multihome.conf`
+(`arp_ignore=1`, `arp_announce=2`) prevents that; verify from the scanning host that the two addresses resolve
+to two *different* MACs before trusting a per-interface result.
+
 ## Traps
 
 **`netfilter-persistent` races this at boot and wins.** Its `iptables-restore` flushes the

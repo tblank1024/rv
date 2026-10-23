@@ -2,6 +2,7 @@
 
 STATUS: Armed on Sophie as of 2026-10-23 (INPUT hook at position 1 for IPv4 and IPv6, FORWARD and DOCKER-USER
 hooked, `FORWARD` policy DROP; dashboard, MQTT, client internet and all 9 containers healthy).
+Verified from outside on both home-LAN uplinks, `eth1` and `wlan1`, each confirmed on its own interface.
 Operator's view: `firewall/README.md`.
 
 **Proven at boot 2026-10-23 11:44.** The `After=netfilter-persistent.service` fix works: the journal shows
@@ -16,20 +17,28 @@ landed, and Sophie sat fully exposed on `eth1`/`wlan1` for two days while `syste
 ordering, a `verify()` that checks the hooks and fails the unit, and a Host Firewall card on the dashboard's
 Debug page so this is visible without reading chains by hand.
 
-**Verified from outside 2026-10-23, with one gap.** From a laptop on the home LAN (`192.168.2.218`, nmap
-7.80): all 65535 TCP ports filtered on `192.168.2.197`, all 65535 filtered on `192.168.2.107`, and all 7 of
-22/80/443/1883/5900/8000/9001 filtered over IPv6 on the eth1 ULA.
-**`wlan1` was not exercised as an interface.** Both uplinks sit on the same `192.168.2.0/24` here, and with the
-default `arp_ignore=0` Sophie answers ARP for either address on either NIC (classic ARP flux: the laptop saw
-`.197` and `.107` resolve to the ALFA and Realtek MACs and then both to the Realtek two minutes later). Every
-logged scan packet arrived `IN=eth1` -- 135 to `.197` and all 127 to `.107` -- and none on `wlan1`. The address
-was scanned; the Alfa's receive path was not.
-That does not change the verdict, for a reason worth stating: `SOPHIE-IN`'s only ACCEPTs are `-i lo`, `-i br0`,
-`-i docker0`, `-i br-+` and conntrack, no rule in `INPUT` mentions `wlan1` at all, and the chain ends in DROP,
-so it is terminal for anything from an untrusted interface. `wlan1` cannot be accepted by any rule that exists.
-A clean per-interface test needs the scanner to pin the Alfa's MAC (`arp -s` on the laptop), or
-`net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2` on Sophie -- the latter is the real fix for two NICs on one
-subnet, and is worth doing on its own merits. Checked from on-box too rather than trusting the scanner's verdict: `SOPHIE-IN` jumped from 971 to
+**Verified from outside 2026-10-23, both uplinks, no gap.** From a laptop on the home LAN
+(`192.168.2.218`, nmap 7.80): all 65535 TCP ports filtered on `192.168.2.197`, all 65535 filtered on
+`192.168.2.107`, and all 7 of 22/80/443/1883/5900/8000/9001 filtered over IPv6 on the eth1 ULA.
+
+The first pass left `wlan1` unexercised **as an interface**, and closing that took a host change worth
+recording. Both uplinks sit on the same `192.168.2.0/24` here, and with the default `arp_ignore=0` Sophie
+answers ARP for either address on either NIC -- classic ARP flux. Every logged packet of that first scan
+arrived `IN=eth1`, 135 to `.197` and all 127 to `.107`, none on `wlan1`: the address was scanned, the Alfa's
+receive path was not. Fixed with `net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2`
+(`raspap/90-arp-multihome.conf`, which has the full reasoning), after which a second scan at 15:49 gave 7/7
+filtered on `.107` with the SYN logged where it belongs:
+
+```
+SOPHIE-IN drop: IN=wlan1 OUT= MAC=00:c0:ca:be:29:62:08:3a:88:55:27:80:08:00
+  SRC=192.168.2.218 DST=192.168.2.107 PROTO=TCP SPT=62490 DPT=5900 SYN
+```
+
+Dest MAC the Alfa, source MAC the laptop: the frame was addressed to the Alfa, arrived on the Alfa, and was
+dropped. No `IN=eth1 DST=192.168.2.107` lines since the sysctl went in. Note that the verdict never depended
+on this -- `SOPHIE-IN`'s only ACCEPTs are `-i lo`, `-i br0`, `-i docker0`, `-i br-+` and conntrack, no rule in
+`INPUT` mentions `wlan1` at all, and the chain ends in DROP, so no rule that exists could have accepted it.
+The ARP fix bought *observability*, not protection. Checked from on-box too rather than trusting the scanner's verdict: `SOPHIE-IN` jumped from 971 to
 401,126 v4 drops with logged SYNs from that address to both targets, which distinguishes "dropped" from
 "nothing was there". The rate-limited LOG only samples a sweep that size -- read the counters, not the log, for
 volume. Also caught an unsolicited SYN from `52.87.61.255` to `.197`: unsolicited inbound from off-network does

@@ -3,6 +3,19 @@
 Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
 (`plan_firewall.md`, `firewall/README.md`).
 
+## Check at the next reboot
+
+```bash
+sudo sophie-firewall.sh status | tail -1              # expect: == ARMED
+sysctl net.ipv4.conf.all.arp_ignore \
+       net.ipv4.conf.all.arp_announce                 # expect: 1 and 2
+arp -a | grep -E '192\.168\.2\.(197|107)'            # from the laptop: two DIFFERENT MACs
+```
+
+Neither the firewall's boot ordering nor the ARP settings have been exercised across a
+USB-uplink switch (Starlink or cellular in place of the current pair). First time one of
+those comes up, re-run the three checks above and the per-uplink `nmap` below.
+
 ## Firewall — finish the deployment
 
 - [x] ~~**Reboot and confirm `ARMED`.**~~ Done 2026-10-23 11:44. The ordering fix holds on
@@ -19,10 +32,14 @@ Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
       from 971 to 401,126 v4 drops, with logged SYNs from the scanner to both addresses, so
       the packets arrived and were dropped (a scan of a dead address also reads "filtered").
       A v6 SYN to port 8000 against the eth1 ULA was dropped too.
-      Caveat: `wlan1` was scanned by address but not exercised as an interface — every
-      logged packet arrived `IN=eth1`, because both uplinks share `192.168.2.0/24` and
-      `arp_ignore=0` lets either NIC answer for either address. Harmless (nothing in
-      `INPUT` mentions `wlan1`, and `SOPHIE-IN` ends in DROP), but unobserved.
+      `wlan1` confirmed as an interface on the **second** pass, 2026-10-23 15:49, after
+      `arp_ignore=1` closed the ARP flux: scanner `192.168.2.218` saw 7/7 ports filtered on
+      `192.168.2.107`, and the SYN logged on-box was
+      `IN=wlan1 ... MAC=00:c0:ca:be:29:62:08:3a:88:55:27:80:08:00 DST=192.168.2.107 DPT=5900`
+      — dest MAC the Alfa, source MAC the laptop, so the frame was addressed to the Alfa,
+      arrived on the Alfa and was dropped. No `IN=eth1 DST=192.168.2.107` lines since.
+      (The first pass had the reverse: all 127 probes aimed at `wlan1`'s address landed
+      `IN=eth1`, which is what made it ambiguous.)
       Still to repeat **per uplink type on first use** — Starlink and cellular have not been
       scanned. Table in `plan_firewall.md` §"Verification per uplink".
       ```bash
@@ -79,14 +96,22 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
 
 ## Consider
 
-- [ ] **`net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2`.** Sophie has two uplink NICs on
-      the same `192.168.2.0/24` at home (eth1 and wlan1), and with the defaults she answers
-      ARP for either address on either NIC. That is ARP flux: peers cache whichever MAC
-      replied first, traffic for the Alfa's address can arrive on the Realtek, and
-      per-interface testing becomes impossible (it is why the 2026-10-23 scan never touched
-      `wlan1`). These two sysctls are the standard fix. Check the interaction with
-      `pi5connect.sh`'s WAN selection and the nightly cheaper-WAN scan before enabling, and
-      prefer `/etc/sysctl.d/` over a live `sysctl -w` so it survives a reboot.
+- [x] ~~**`net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2`.**~~ Done 2026-10-23.
+      Sophie has two uplink NICs on the same `192.168.2.0/24` at home (eth1 and wlan1), and
+      with the defaults she answered ARP for either address on either NIC. That is ARP flux:
+      peers cache whichever MAC replied first, traffic for the Alfa's address can arrive on
+      the Realtek, and per-interface testing becomes impossible (it is why the first
+      2026-10-23 scan never touched `wlan1`). Second motive: `pi5connect`'s `probe_iface()`
+      binds with `SO_BINDTODEVICE`, which filters *inbound* packets by arrival device too, so
+      a reply landing on the wrong NIC is discarded and a healthy uplink can be rejected as
+      dead — reasoned from the mechanism, not yet measured.
+      Applied live 15:48, persisted and loaded 15:54:
+      `raspap/90-arp-multihome.conf` → `/etc/sysctl.d/90-arp-multihome.conf`, `sysctl --system`.
+      Per-interface values stay 0; effective is `max(all, iface)`, so nothing overrides `all`.
+      Verified after loading: both uplinks reach the gateway, internet up, a `br0` client
+      answers, firewall `== ARMED`, `ip_forward` still 1.
+      **Not yet proven across a reboot or a USB-uplink switch** — see
+      §"Check at the next reboot" at the top of this file.
 
 ## Small / unrelated
 
