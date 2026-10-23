@@ -5,18 +5,13 @@ Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
 
 ## Firewall — finish the deployment
 
-- [ ] **Reboot and confirm `ARMED`.** The live rules were applied by hand on 2026-10-21;
-      `uptime -s` is still that same boot, so the `After=netfilter-persistent.service`
-      ordering fix has never run on the boot path. Until this passes, a reboot could
-      silently leave Sophie exposed exactly as it did on 2026-10-21.
-      ```bash
-      sudo reboot
-      # after it comes back:
-      sudo sophie-firewall.sh status | tail -1      # expect: == ARMED
-      ```
-      Or just open the dashboard's Debug page — the Host Firewall card says `Armed` or
-      `EXPOSED`. Specifically confirm `-A INPUT -j SOPHIE-IN` at **position 1** for both
-      families; that is the rule that went missing the first time.
+- [x] ~~**Reboot and confirm `ARMED`.**~~ Done 2026-10-23 11:44. The ordering fix holds on
+      the boot path: `netfilter-persistent` *finished* at 11:44:35 before `sophie-firewall`
+      *started*, no `Chain 'SOPHIE-IN' does not exist` errors, `status` reports `== ARMED`,
+      and both families have `-A INPUT -j SOPHIE-IN` at position 1 with `FORWARD` and
+      `DOCKER-USER` hooked and policy DROP.
+      Re-check after any reboot with `sudo sophie-firewall.sh status | tail -1`, or the
+      dashboard's Host Firewall card.
 
 - [ ] **Outside `nmap`**, from a laptop on the home WiFi (not on Sophie's AP). The only
       check that cannot be done from on-box, and the last item in the plan's rollout.

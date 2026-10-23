@@ -4,10 +4,10 @@ STATUS: Armed on Sophie as of 2026-10-23 (INPUT hook at position 1 for IPv4 and 
 hooked, `FORWARD` policy DROP; dashboard, MQTT, client internet and all 9 containers healthy).
 Operator's view: `firewall/README.md`.
 
-**Armed by hand, not yet proven at boot.** The live rules were applied with `sophie-firewall.sh apply` on
-2026-10-21; the machine has not rebooted since (`uptime -s` = 2026-10-21 07:38, the same boot that failed
-below). The `After=netfilter-persistent.service` fix is therefore untested on the boot path -- a reboot and a
-`status` check is the next step, and is what closes item 4.
+**Proven at boot 2026-10-23 11:44.** The `After=netfilter-persistent.service` fix works: the journal shows
+`netfilter-persistent` *finished* at 11:44:35 before `sophie-firewall` *started*, with none of the
+`Chain 'SOPHIE-IN' does not exist` errors from the failed attempt, and `status` reports `== ARMED` with the
+INPUT hook at position 1 for both families. Item 4 is closed.
 
 The 2026-10-21 reboot test **failed and the failure was silent** -- see item 4 below. `netfilter-persistent`
 raced this plan's unit at boot, its `iptables-restore` deleted `SOPHIE-IN` mid-build, the INPUT hook never
@@ -16,8 +16,7 @@ landed, and Sophie sat fully exposed on `eth1`/`wlan1` for two days while `syste
 ordering, a `verify()` that checks the hooks and fails the unit, and a Host Firewall card on the dashboard's
 Debug page so this is visible without reading chains by hand.
 
-Still to do: **reboot and re-check `status`** (proves the ordering fix), **outside `nmap` from a home-WiFi
-device** (the one check that cannot be done from on-box), disable `netfilter-persistent`, review
+Still to do: **outside `nmap` from a home-WiFi device** (the one check that cannot be done from on-box), disable `netfilter-persistent`, review
 `SOPHIE-IN drop:` logs over a few days parked at home, phase 2 hardening.
 Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
 
