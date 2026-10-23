@@ -6,15 +6,31 @@ Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
 ## Check at the next reboot
 
 ```bash
-sudo sophie-firewall.sh status | tail -1              # expect: == ARMED
-sysctl net.ipv4.conf.all.arp_ignore \
-       net.ipv4.conf.all.arp_announce                 # expect: 1 and 2
-arp -a | grep -E '192\.168\.2\.(197|107)'            # from the laptop: two DIFFERENT MACs
+sudo /usr/local/sbin/sophie-firewall.sh status | tail -1   # expect: == ARMED
+/usr/sbin/sysctl net.ipv4.conf.all.arp_ignore \
+                 net.ipv4.conf.all.arp_announce            # expect: 1 and 2
+arp -a | grep -E '192\.168\.2\.(197|107)'                 # from the laptop: two DIFFERENT MACs
 ```
 
-Neither the firewall's boot ordering nor the ARP settings have been exercised across a
-USB-uplink switch (Starlink or cellular in place of the current pair). First time one of
-those comes up, re-run the three checks above and the per-uplink `nmap` below.
+Full paths on purpose. A `systemd --user` unit does not inherit a login shell's `PATH`, so
+in the RV-Manager session started by `rv-manager.service` a bare `sysctl`, `iptables` or
+`nft` is "command not found" -- that is how this was found, answering the stage-1 checks on
+2026-10-23. The unit's `Environment=PATH=` now includes `/usr/sbin:/sbin`, effective from
+the *next* boot, but the full paths work either way.
+
+**Passed 2026-10-23 16:08 (stage 1, both uplinks still connected).** Boot 16:08:52;
+`netfilter-persistent` *finished* 16:08:55 before `sophie-firewall` *started*, no
+`Chain 'SOPHIE-IN' does not exist`, `== ARMED`, `-A INPUT -j SOPHIE-IN` at position 1 for
+both families, `arp_ignore`/`arp_announce` 1/2 from `/etc/sysctl.d/`, and the laptop saw two
+distinct MACs with 7/7 ports filtered on both addresses. `rv-manager.service` went active
+7 s after boot and resumed the right conversation.
+
+Still **not** exercised across a USB-uplink switch (Starlink or cellular in place of the
+current pair) -- stage 2. First time one comes up, re-run the three checks above and the
+per-uplink `nmap` below, and check two things that only a WAN change can break: that
+`SOPHIE-IN` still holds the `INPUT` hook after `pi5connect` rewrites the NAT/FORWARD rules
+for the new WAN, and that the new interface (`wwan0`) is closed with **no new rule** --
+it should be untrusted by default rather than by name.
 
 ## Firewall — finish the deployment
 
