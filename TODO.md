@@ -13,15 +13,17 @@ Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
       Re-check after any reboot with `sudo sophie-firewall.sh status | tail -1`, or the
       dashboard's Host Firewall card.
 
-- [ ] **Outside `nmap`**, from a laptop on the home WiFi (not on Sophie's AP). The only
-      check that cannot be done from on-box, and the last item in the plan's rollout.
+- [x] ~~**Outside `nmap`**~~ PASSED 2026-10-23, home LAN, scanner `192.168.2.218`: all 65535
+      TCP ports **filtered** on `192.168.2.197` (eth1), and `192.168.2.107` (wlan1) scanned
+      the same way. Corroborated from on-box rather than taken on trust — `SOPHIE-IN` went
+      from 971 to 401,126 v4 drops, with logged SYNs from the scanner to both addresses, so
+      the packets arrived and were dropped (a scan of a dead address also reads "filtered").
+      A v6 SYN to port 8000 against the eth1 ULA was dropped too.
+      Still to repeat **per uplink type on first use** — Starlink and cellular have not been
+      scanned. Table in `plan_firewall.md` §"Verification per uplink".
       ```bash
-      nmap -Pn -p- 192.168.2.197        # eth1, active uplink
-      nmap -Pn -p- 192.168.2.107        # wlan1, the Alfa
-      nmap -6 -Pn -p 22,80,1883,5900,8000,9001 <eth1 fd69:… address>
+      nmap -Pn -p- <Sophie's uplink IPv4>     # expect: all filtered
       ```
-      Expect every port filtered. Repeat per uplink type on first use (Starlink,
-      cellular) — table in `plan_firewall.md` §"Verification per uplink".
 
 - [ ] **Disable `netfilter-persistent`.** `systemctl disable netfilter-persistent`. Its
       `iptables-restore` flushes the whole filter table and was the cause of the

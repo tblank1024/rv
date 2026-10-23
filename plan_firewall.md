@@ -16,8 +16,16 @@ landed, and Sophie sat fully exposed on `eth1`/`wlan1` for two days while `syste
 ordering, a `verify()` that checks the hooks and fails the unit, and a Host Firewall card on the dashboard's
 Debug page so this is visible without reading chains by hand.
 
-Still to do: **outside `nmap` from a home-WiFi device** (the one check that cannot be done from on-box), disable `netfilter-persistent`, review
-`SOPHIE-IN drop:` logs over a few days parked at home, phase 2 hardening.
+**Verified from outside 2026-10-23.** From a laptop on the home LAN (`192.168.2.218`): all 65535 TCP ports
+filtered on `192.168.2.197` (eth1), `192.168.2.107` (wlan1) likewise, and a v6 SYN to port 8000 on the eth1 ULA
+dropped. Checked from on-box too rather than trusting the scanner's verdict: `SOPHIE-IN` jumped from 971 to
+401,126 v4 drops with logged SYNs from that address to both targets, which distinguishes "dropped" from
+"nothing was there". The rate-limited LOG only samples a sweep that size -- read the counters, not the log, for
+volume. Also caught an unsolicited SYN from `52.87.61.255` to `.197`: unsolicited inbound from off-network does
+reach this uplink.
+
+Still to do: scan **Starlink and cellular** on first use (neither has been), disable `netfilter-persistent`,
+review `SOPHIE-IN drop:` logs over a few days parked at home, phase 2 hardening.
 Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
 
 Written 2026-10-12, when the uplink was the Zero 2W bridge. **The Zero was physically disconnected on
