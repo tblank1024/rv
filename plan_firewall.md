@@ -1,8 +1,24 @@
 # plan_firewall.md — Host firewall for Sophie (all uplinks)
 
-STATUS: Sophie half deployed 2026-10-21 (script, systemd units enabled; LAN-side checks passed: dashboard,
-MQTT, SSH/VNC, client internet; Docker restart keeps the DOCKER-USER hook). Still to do: reboot test, outside
-nmap from another home-WiFi device, review `SOPHIE-IN drop:` logs, phase 2 hardening.
+STATUS: Armed on Sophie as of 2026-10-23 (INPUT hook at position 1 for IPv4 and IPv6, FORWARD and DOCKER-USER
+hooked, `FORWARD` policy DROP; dashboard, MQTT, client internet and all 9 containers healthy).
+Operator's view: `firewall/README.md`.
+
+**Armed by hand, not yet proven at boot.** The live rules were applied with `sophie-firewall.sh apply` on
+2026-10-21; the machine has not rebooted since (`uptime -s` = 2026-10-21 07:38, the same boot that failed
+below). The `After=netfilter-persistent.service` fix is therefore untested on the boot path -- a reboot and a
+`status` check is the next step, and is what closes item 4.
+
+The 2026-10-21 reboot test **failed and the failure was silent** -- see item 4 below. `netfilter-persistent`
+raced this plan's unit at boot, its `iptables-restore` deleted `SOPHIE-IN` mid-build, the INPUT hook never
+landed, and Sophie sat fully exposed on `eth1`/`wlan1` for two days while `systemctl status` stayed green
+(`apply` had no `set -e` and exited 0 anyway). Fixed in commit e7c4d06: `After=netfilter-persistent.service`
+ordering, a `verify()` that checks the hooks and fails the unit, and a Host Firewall card on the dashboard's
+Debug page so this is visible without reading chains by hand.
+
+Still to do: **reboot and re-check `status`** (proves the ordering fix), **outside `nmap` from a home-WiFi
+device** (the one check that cannot be done from on-box), disable `netfilter-persistent`, review
+`SOPHIE-IN drop:` logs over a few days parked at home, phase 2 hardening.
 Supersedes issue 12 in `plan_new_WAN_WiFi.md`.
 
 Written 2026-10-12, when the uplink was the Zero 2W bridge. **The Zero was physically disconnected on
@@ -200,9 +216,18 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
 3. ~~**The Zero 2W link (`10.10.0.x`) is untrusted.**~~ Moot since 2026-10-18: no `usb0`, and TCP:12345 was
    retired with the socket path. The WiFi API is now `127.0.0.1:12346` on Sophie herself, reached over `lo`,
    which is in `TRUSTED`. Keep it off `br0`: a root API reachable there lets any RV guest reconfigure the uplink.
-4. **`netfilter-persistent`** loads the old permissive `rules.v4` at boot. It's harmless (our chains decide), but
-   confusing. After verifying `pi5connect.sh` provides MASQUERADE on its own, either disable it
-   (`systemctl disable netfilter-persistent`) or replace `rules.v4` with a NAT-only file.
+4. **`netfilter-persistent` races this unit at boot and wins.** *(Corrected 2026-10-23; this item previously
+   said "harmless (our chains decide)", which was wrong and cost two days of exposure.)* Its `iptables-restore`
+   **flushes the entire filter table**, deleting our chains and their hooks -- it does not merely add permissive
+   rules alongside them. On 2026-10-21 both units started in the same second; `SOPHIE-IN` was deleted while
+   `build_in` was still appending to it (journal: `Chain 'SOPHIE-IN' does not exist`, both families) and the
+   INPUT hook was lost. `SOPHIE-FWD`, built a moment later once the restore had finished, survived, so the
+   forward half looked healthy and hid the problem.
+   Fixed by `After=netfilter-persistent.service` on `sophie-firewall.service`, which holds whether or not
+   `netfilter-persistent` is enabled. `pi5connect.sh` installs the MASQUERADE rule itself on every WAN change
+   (confirmed: `nat POSTROUTING` carries `-o eth1 -j MASQUERADE` with no help from `rules.v4`), so
+   `systemctl disable netfilter-persistent` is the clean end state and `/etc/iptables/rules.v4` is dead weight.
+   The same hazard applies to anything else that rewrites the filter table: re-run `apply` after one.
 5. **IPv6 outbound keeps working** (replies are allowed). If preferred, also disable v6 per uplink profile
    (`nmcli con modify <profile> ipv6.method disabled`), as `plan_new_WAN_WiFi.md` suggests for `wlan1`.
 
@@ -228,6 +253,10 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
 6. If good: `sudo systemctl stop fw-autorevert.timer`, then `firewall/install.sh` (enable the units). Reboot once
    and repeat step 5; also `sudo systemctl restart docker` and confirm `iptables -S DOCKER-USER` still jumps to
    `SOPHIE-FWD`.
+   **After the reboot, check the hooks, not the unit.** `sophie-firewall.sh status` now ends in `ARMED` or
+   `NOT ARMED`, and the dashboard's Debug page has a Host Firewall card; a green `systemctl status` on its own
+   means nothing (item 4). Specifically confirm `-A INPUT -j SOPHIE-IN` exists **at position 1** for both
+   families -- that is the rule that went missing in the first attempt.
 7. If bad: wait for the auto-revert or run `revert`, then capture `journalctl -k | grep SOPHIE-` and fix.
 
 ## Verification per uplink
@@ -364,6 +393,9 @@ Defense in depth. Each item still protects Sophie if a firewall rule is ever wro
 
 ## Afterwards
 
-- Update `buildRP5RaspAP/install_raspap_bridge.sh` so a rebuild doesn't recreate the permissive `rules.v4`.
-- Add a "Firewall" line to `rv/CLAUDE.md` (trusted vs untrusted interfaces, where the rules live).
-- Mark this plan deployed (STATUS line).
+- Update `buildRP5RaspAP/install_raspap_bridge.sh` so a rebuild doesn't recreate the permissive `rules.v4`. **Open.**
+- ~~Add a "Firewall" line to `rv/CLAUDE.md`~~ done (`rv/CLAUDE.md`, "Host firewall").
+- ~~Mark this plan deployed (STATUS line).~~ done 2026-10-23.
+- `/etc/sudoers.d/sophie-firewall` grants NOPASSWD for the `status` verb only, via
+  `firewall/setup-passwordless-sudo.sh`. Never widen it to the bare script path: `revert` must stay
+  password-gated, or turning the firewall off becomes a passwordless one-liner.
