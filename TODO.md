@@ -19,6 +19,10 @@ Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
       from 971 to 401,126 v4 drops, with logged SYNs from the scanner to both addresses, so
       the packets arrived and were dropped (a scan of a dead address also reads "filtered").
       A v6 SYN to port 8000 against the eth1 ULA was dropped too.
+      Caveat: `wlan1` was scanned by address but not exercised as an interface — every
+      logged packet arrived `IN=eth1`, because both uplinks share `192.168.2.0/24` and
+      `arp_ignore=0` lets either NIC answer for either address. Harmless (nothing in
+      `INPUT` mentions `wlan1`, and `SOPHIE-IN` ends in DROP), but unobserved.
       Still to repeat **per uplink type on first use** — Starlink and cellular have not been
       scanned. Table in `plan_firewall.md` §"Verification per uplink".
       ```bash
@@ -72,6 +76,17 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
 - [ ] **Updates**: periodic `apt full-upgrade` and container image rebuilds.
 - [ ] `raspap` compose profile (inactive) sets `RASPAP_COUNTRY=GB`; set `US` if ever
       enabled (regulatory domain, `plan_new_WAN_WiFi.md` issue 8).
+
+## Consider
+
+- [ ] **`net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2`.** Sophie has two uplink NICs on
+      the same `192.168.2.0/24` at home (eth1 and wlan1), and with the defaults she answers
+      ARP for either address on either NIC. That is ARP flux: peers cache whichever MAC
+      replied first, traffic for the Alfa's address can arrive on the Realtek, and
+      per-interface testing becomes impossible (it is why the 2026-10-23 scan never touched
+      `wlan1`). These two sysctls are the standard fix. Check the interaction with
+      `pi5connect.sh`'s WAN selection and the nightly cheaper-WAN scan before enabling, and
+      prefer `/etc/sysctl.d/` over a live `sysctl -w` so it survives a reboot.
 
 ## Small / unrelated
 

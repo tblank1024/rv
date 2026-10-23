@@ -16,9 +16,20 @@ landed, and Sophie sat fully exposed on `eth1`/`wlan1` for two days while `syste
 ordering, a `verify()` that checks the hooks and fails the unit, and a Host Firewall card on the dashboard's
 Debug page so this is visible without reading chains by hand.
 
-**Verified from outside 2026-10-23.** From a laptop on the home LAN (`192.168.2.218`): all 65535 TCP ports
-filtered on `192.168.2.197` (eth1), `192.168.2.107` (wlan1) likewise, and a v6 SYN to port 8000 on the eth1 ULA
-dropped. Checked from on-box too rather than trusting the scanner's verdict: `SOPHIE-IN` jumped from 971 to
+**Verified from outside 2026-10-23, with one gap.** From a laptop on the home LAN (`192.168.2.218`, nmap
+7.80): all 65535 TCP ports filtered on `192.168.2.197`, all 65535 filtered on `192.168.2.107`, and all 7 of
+22/80/443/1883/5900/8000/9001 filtered over IPv6 on the eth1 ULA.
+**`wlan1` was not exercised as an interface.** Both uplinks sit on the same `192.168.2.0/24` here, and with the
+default `arp_ignore=0` Sophie answers ARP for either address on either NIC (classic ARP flux: the laptop saw
+`.197` and `.107` resolve to the ALFA and Realtek MACs and then both to the Realtek two minutes later). Every
+logged scan packet arrived `IN=eth1` -- 135 to `.197` and all 127 to `.107` -- and none on `wlan1`. The address
+was scanned; the Alfa's receive path was not.
+That does not change the verdict, for a reason worth stating: `SOPHIE-IN`'s only ACCEPTs are `-i lo`, `-i br0`,
+`-i docker0`, `-i br-+` and conntrack, no rule in `INPUT` mentions `wlan1` at all, and the chain ends in DROP,
+so it is terminal for anything from an untrusted interface. `wlan1` cannot be accepted by any rule that exists.
+A clean per-interface test needs the scanner to pin the Alfa's MAC (`arp -s` on the laptop), or
+`net.ipv4.conf.all.arp_ignore=1` + `arp_announce=2` on Sophie -- the latter is the real fix for two NICs on one
+subnet, and is worth doing on its own merits. Checked from on-box too rather than trusting the scanner's verdict: `SOPHIE-IN` jumped from 971 to
 401,126 v4 drops with logged SYNs from that address to both targets, which distinguishes "dropped" from
 "nothing was there". The rate-limited LOG only samples a sweep that size -- read the counters, not the log, for
 volume. Also caught an unsolicited SYN from `52.87.61.255` to `.197`: unsolicited inbound from off-network does
