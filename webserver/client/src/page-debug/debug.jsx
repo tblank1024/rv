@@ -28,12 +28,35 @@ function Debug() {
   const [watcherFilter, setWatcherFilter] = useState('');
   const [synologyStatus, setSynologyStatus] = useState(null);
   const [synologyMessage, setSynologyMessage] = useState('');
+  const [firewall, setFirewall] = useState(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
   const [lastUpdate, setLastUpdate] = useState(null);
   const [confirmReboot, setConfirmReboot] = useState(false);
   const [rebooting, setRebooting] = useState(false);
 
+
+    // Fetch host firewall status. Checks whether the SOPHIE-* chains are
+  // actually hooked, not whether the systemd unit is green -- `apply` exits 0
+  // even when individual iptables calls fail, which is exactly how Sophie came
+  // up unprotected on 2026-10-21 (see firewall/README.md "Traps").
+  const getFirewallStatus = async () => {
+    try {
+      const response = await fetch(`${getServerUrl()}/api/debug/firewall/status`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      setFirewall(data);
+      return data;
+    } catch (error) {
+      console.error('Error fetching firewall status:', error);
+      setFirewall({ success: false, healthy: false, message: 'Failed to read firewall status: ' + error.message });
+      return { success: false };
+    }
+  };
 
     // Fetch Kasa outlet status
   const getKasaStatus = async () => {
@@ -375,6 +398,7 @@ function Debug() {
         // Load both USB and Kasa status in parallel - timeout is handled in each function
         console.log('useEffect: Calling getKasaStatus and getHubSockets...');
         await Promise.allSettled([getKasaStatus(), getHubSockets(),
+                                  getFirewallStatus(),
                                   controlSynology('status')]);
         console.log('useEffect: Data loading completed');
         setMessage('Data loaded successfully');
@@ -398,7 +422,7 @@ function Debug() {
   const refreshData = async () => {
     setLoading(true);
     setMessage('Refreshing data...');
-    await Promise.all([getKasaStatus(), getHubSockets()]);
+    await Promise.all([getKasaStatus(), getHubSockets(), getFirewallStatus()]);
     setLoading(false);
     setLastUpdate(new Date());
     setMessage('Data refreshed successfully');
@@ -417,6 +441,33 @@ function Debug() {
       </span>
     );
   };
+
+  // Armed / exposed / unknown. "Exposed" is the case worth shouting about: no
+  // INPUT hook means every service on Sophie (dashboard on 8000 with no auth,
+  // MQTT, SSH, VNC) answers whoever is on the park or home network.
+  const firewallBadge = () => {
+    if (!firewall) return null;
+    const armed = !!firewall.healthy;
+    const exposed = firewall.success && !armed;
+    const label = armed ? 'Armed' : (exposed ? 'EXPOSED' : 'Unknown');
+    return (
+      <span style={{
+        marginLeft: '12px', fontSize: '13px', fontWeight: 'bold',
+        padding: '2px 8px', borderRadius: '10px',
+        backgroundColor: armed ? '#e8f5e9' : '#ffebee',
+        color: armed ? '#2e7d32' : '#c62828',
+      }}>
+        {label}
+      </span>
+    );
+  };
+
+  // One row of the check table: a tick per family, with optional detail text.
+  const fwCheck = (ok, detail) => (
+    <td className={ok ? 'fw-ok' : 'fw-bad'}>
+      {ok ? '\u2713' : '\u2717'}{detail ? ` ${detail}` : ''}
+    </td>
+  );
 
   if (loading) {
     return (
@@ -462,6 +513,55 @@ function Debug() {
       )}
 
       <div className="debug-sections">
+        {/* Host firewall: first because it is the one card that reports an
+            active security problem rather than a device state. */}
+        <div className="debug-section">
+          <h2>Host Firewall{firewallBadge()}</h2>
+          <div style={{marginBottom: '10px', fontSize: '12px', color: '#666'}}>
+            Default-deny inbound and forward on every interface except the RV LAN
+            side ({(firewall && firewall.trusted ? firewall.trusted : ['lo', 'br0', 'docker0', 'br-+']).join(', ')}).
+            Whichever uplink is live &mdash; park WiFi, Starlink, cellular &mdash; is untrusted.
+            Rules: <code>firewall/sophie-firewall.sh</code>.
+          </div>
+          {firewall && !firewall.healthy && firewall.message && (
+            <div className="error-text" style={{marginBottom: '10px'}}>{firewall.message}</div>
+          )}
+          {firewall && firewall.healthy && (
+            <div style={{marginBottom: '10px', fontSize: '12px', color: '#2e7d32'}}>{firewall.message}</div>
+          )}
+          {firewall && firewall.ipv4 && firewall.ipv6 ? (
+            <table className="fw-table">
+              <thead>
+                <tr><th>Check</th><th>IPv4</th><th>IPv6</th></tr>
+              </thead>
+              <tbody>
+                {[
+                  ['INPUT \u2192 SOPHIE-IN',
+                    (f) => fwCheck(f.input_hooked && f.input_position === 1,
+                      f.input_hooked ? `pos ${f.input_position}` : 'not hooked')],
+                  ['FORWARD \u2192 SOPHIE-FWD', (f) => fwCheck(f.forward_hooked, f.forward_hooked ? '' : 'not hooked')],
+                  ['DOCKER-USER \u2192 SOPHIE-FWD', (f) => fwCheck(f.docker_user_hooked, f.docker_user_hooked ? '' : 'not hooked')],
+                  ['FORWARD policy', (f) => fwCheck(f.forward_policy === 'DROP', f.forward_policy)],
+                  ['SOPHIE-IN chain', (f) => fwCheck(f.in_chain && f.in_chain.exists,
+                    f.in_chain && f.in_chain.exists ? `${f.in_chain.drop_packets} dropped` : 'missing')],
+                  ['SOPHIE-FWD chain', (f) => fwCheck(f.fwd_chain && f.fwd_chain.exists,
+                    f.fwd_chain && f.fwd_chain.exists ? `${f.fwd_chain.drop_packets} dropped` : 'missing')],
+                ].map(([label, cell]) => (
+                  <tr key={label}>
+                    <td>{label}</td>
+                    {cell(firewall.ipv4)}
+                    {cell(firewall.ipv6)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div style={{fontSize: '12px', color: '#666'}}>
+              {firewall ? (firewall.message || 'No firewall detail available.') : 'Checking...'}
+            </div>
+          )}
+        </div>
+
         {/* Plugable hub: physical sockets, independent power */}
         <div className="debug-section">
           <h2>USB Hub Socket Power{commBadge(hubConnected)}</h2>

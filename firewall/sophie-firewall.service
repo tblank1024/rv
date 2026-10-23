@@ -1,7 +1,9 @@
 [Unit]
 Description=Sophie host firewall (default-deny on uplinks)
 DefaultDependencies=no
-After=local-fs.target
+# netfilter-persistent's iptables-restore flushes the whole filter table, which
+# deletes our chains and hooks. It must finish before we build (README.md "Traps").
+After=local-fs.target netfilter-persistent.service
 Before=network-pre.target
 Wants=network-pre.target
 

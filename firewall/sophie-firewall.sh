@@ -40,9 +40,23 @@ build_fwd() {
     $T -P FORWARD DROP
 }
 
+verify() {   # the hooks, not the chains. A chain can exist with nothing jumping to it.
+    local T rc=0
+    for T in iptables ip6tables; do
+        $T -C INPUT -j SOPHIE-IN 2>/dev/null   || { echo "$T: INPUT not hooked to SOPHIE-IN" >&2; rc=1; }
+        $T -C FORWARD -j SOPHIE-FWD 2>/dev/null || { echo "$T: FORWARD not hooked to SOPHIE-FWD" >&2; rc=1; }
+    done
+    return $rc
+}
+
 case "${1:-}" in
   apply)
-    for T in iptables ip6tables; do build_in $T; build_fwd $T; done ;;
+    for T in iptables ip6tables; do build_in $T; build_fwd $T; done
+    # Exit non-zero if a rule did not land, so systemd shows a failed unit. Without
+    # this the script exits 0 regardless (no `set -e`), which is how Sophie booted
+    # unprotected on 2026-10-21: netfilter-persistent's restore deleted SOPHIE-IN
+    # mid-build and nothing said so. See README.md "Traps".
+    verify || { echo "apply failed: firewall is NOT armed" >&2; exit 1; } ;;
   docker)   # run after dockerd (re)starts: make sure Docker's first-evaluated chain sends us the traffic
     for T in iptables ip6tables; do
         $T -L DOCKER-USER -n >/dev/null 2>&1 && $T -L SOPHIE-FWD -n >/dev/null 2>&1 && hook $T DOCKER-USER SOPHIE-FWD
@@ -56,6 +70,7 @@ case "${1:-}" in
     iptables -P FORWARD ACCEPT ;;     # previous rules.v4 state; Docker may set DROP again on restart
   status)
     for T in iptables ip6tables; do echo "== $T"; $T -S INPUT | head -3; $T -S FORWARD | head -4
-        $T -S DOCKER-USER 2>/dev/null | head -3; $T -L SOPHIE-IN -v -n 2>/dev/null; $T -L SOPHIE-FWD -v -n 2>/dev/null; done ;;
+        $T -S DOCKER-USER 2>/dev/null | head -3; $T -L SOPHIE-IN -v -n 2>/dev/null; $T -L SOPHIE-FWD -v -n 2>/dev/null; done
+    if verify; then echo "== ARMED"; else echo "== NOT ARMED"; exit 1; fi ;;
   *) echo "usage: $0 apply|docker|revert|status" >&2; exit 2 ;;
 esac

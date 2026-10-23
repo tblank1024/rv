@@ -469,3 +469,43 @@
 .control-btn.danger:hover:not(:disabled) {
   background-color: #a5281b;
 }
+
+/* Host firewall card: a compact check-per-family table. Ticks carry the same
+   green/red as the comms badges elsewhere on this page. */
+.fw-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+}
+
+.fw-table th,
+.fw-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid #eee;
+}
+
+.fw-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #666;
+}
+
+.fw-table td:first-child {
+  font-family: monospace;
+  font-size: 13px;
+  color: #333;
+}
+
+.fw-ok {
+  color: #2e7d32;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.fw-bad {
+  color: #c62828;
+  font-weight: bold;
+  white-space: nowrap;
+}

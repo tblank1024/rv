@@ -1977,6 +1977,132 @@ def get_watcher_logs(lines: int = 200) -> dict:
             "whitelist": {}
         }
 
+# --- Host firewall status (see plan_firewall.md and firewall/README.md) -------
+# The SOPHIE-IN / SOPHIE-FWD chains live in the host's network namespace and
+# this image carries no iptables binary, so we borrow the host's through
+# nsenter -- the same mechanism /api/system/reboot uses, and for the same
+# reason (privileged + pid: host). Read-only: -S and -L only.
+
+FIREWALL_TRUSTED = ["lo", "br0", "docker0", "br-+"]
+
+
+def _host_iptables(binary: str, *args: str):
+    """Run one of the host's iptables binaries. Returns (ok, output)."""
+    try:
+        result = subprocess.run(
+            ['nsenter', '-t', '1', '-m', '-n', '--', f'/usr/sbin/{binary}', *args],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            return True, result.stdout.strip()
+        return False, result.stderr.strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def _chain_counters(binary: str, chain: str) -> dict:
+    """Packet counters for one SOPHIE-* chain, or exists=False if it is gone."""
+    ok, out = _host_iptables(binary, '-L', chain, '-vnx')
+    if not ok:
+        return {"exists": False, "accept_packets": 0, "drop_packets": 0}
+    accept = drop = 0
+    for line in out.splitlines()[2:]:          # skip "Chain ..." and the column header
+        cols = line.split()
+        if len(cols) < 3 or not cols[0].isdigit():
+            continue
+        if cols[2] == 'ACCEPT':
+            accept += int(cols[0])
+        elif cols[2] == 'DROP':
+            drop += int(cols[0])
+    return {"exists": True, "accept_packets": accept, "drop_packets": drop}
+
+
+def _firewall_family(binary: str) -> dict:
+    """The five things that make a family's ruleset healthy (firewall/README.md)."""
+    fam = {"reachable": True, "errors": []}
+
+    ok, input_rules = _host_iptables(binary, '-S', 'INPUT')
+    if not ok:
+        return {"reachable": False, "errors": [input_rules], "healthy": False}
+
+    # Position matters: SOPHIE-IN must decide before any later ACCEPT can let
+    # an uplink packet through. The script inserts it at 1.
+    appends = [ln for ln in input_rules.splitlines() if ln.startswith('-A INPUT')]
+    jump = [i for i, ln in enumerate(appends, 1) if ln.strip().endswith('-j SOPHIE-IN')]
+    fam["input_hooked"] = bool(jump)
+    fam["input_position"] = jump[0] if jump else None
+
+    ok, forward_rules = _host_iptables(binary, '-S', 'FORWARD')
+    fam["forward_hooked"] = ok and any(
+        ln.strip().endswith('-j SOPHIE-FWD') for ln in forward_rules.splitlines()
+    )
+    fam["forward_policy"] = next(
+        (ln.split()[-1] for ln in forward_rules.splitlines() if ln.startswith('-P FORWARD')),
+        'unknown'
+    ) if ok else 'unknown'
+
+    # DOCKER-USER is evaluated before Docker's own accepts, so this is the hook
+    # that still works once dockerd has reshuffled FORWARD.
+    ok, docker_rules = _host_iptables(binary, '-S', 'DOCKER-USER')
+    fam["docker_user_present"] = ok
+    fam["docker_user_hooked"] = ok and any(
+        ln.strip().endswith('-j SOPHIE-FWD') for ln in docker_rules.splitlines()
+    )
+
+    fam["in_chain"] = _chain_counters(binary, 'SOPHIE-IN')
+    fam["fwd_chain"] = _chain_counters(binary, 'SOPHIE-FWD')
+
+    fam["healthy"] = bool(
+        fam["input_hooked"] and fam["input_position"] == 1
+        and fam["forward_hooked"] and fam["docker_user_hooked"]
+        and fam["forward_policy"] == 'DROP'
+        and fam["in_chain"]["exists"] and fam["fwd_chain"]["exists"]
+    )
+    return fam
+
+
+@app.get("/api/debug/firewall/status")
+def get_firewall_status() -> dict:
+    """Is the host firewall actually armed?
+
+    Deliberately checks the hooks rather than the units: `sophie-firewall.sh
+    apply` exits 0 even when individual iptables calls fail, so a green
+    systemd unit proves nothing. On 2026-10-21 netfilter-persistent's
+    iptables-restore deleted SOPHIE-IN mid-build at boot and Sophie sat
+    exposed on her uplinks with the unit reporting success -- this endpoint
+    exists to make that visible on the dashboard.
+    """
+    try:
+        families = {"ipv4": _firewall_family('iptables'), "ipv6": _firewall_family('ip6tables')}
+        healthy = all(f.get("healthy") for f in families.values())
+        inbound_open = [name for name, f in families.items() if not f.get("input_hooked")]
+
+        if healthy:
+            message = "Armed: inbound and forward default-deny on all untrusted interfaces."
+        elif inbound_open:
+            message = ("EXPOSED: no INPUT hook for " + ", ".join(inbound_open)
+                       + " -- every service on Sophie is reachable from the active uplink. "
+                         "Re-run: sudo sophie-firewall.sh apply && sudo sophie-firewall.sh docker")
+        else:
+            message = ("Partially armed -- see the per-family detail. Re-run: "
+                       "sudo sophie-firewall.sh apply && sudo sophie-firewall.sh docker")
+
+        return {
+            "success": True,
+            "healthy": healthy,
+            "message": message,
+            "trusted": FIREWALL_TRUSTED,
+            **families,
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "healthy": False,
+            "message": f"Could not read the host firewall: {e}",
+            "trusted": FIREWALL_TRUSTED,
+        }
+
+
 # Synology scheduled shutdown endpoints (must come before generic handler)
 @app.get("/api/debug/synology/scheduled-time")
 async def get_scheduled_shutdown():

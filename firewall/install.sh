@@ -9,3 +9,4 @@ install -m 644 sophie-firewall.service sophie-firewall-docker.service /etc/syste
 systemctl daemon-reload
 systemctl enable sophie-firewall.service sophie-firewall-docker.service
 echo "installed and enabled (not started). Apply by hand: sophie-firewall.sh apply && sophie-firewall.sh docker"
+echo "Optional, as tblank: ./setup-passwordless-sudo.sh  (lets 'sudo sophie-firewall.sh status' skip the password)"
