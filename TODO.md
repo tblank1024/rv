@@ -29,8 +29,17 @@ Still **not** exercised across a USB-uplink switch (Starlink or cellular in plac
 current pair) -- stage 2. First time one comes up, re-run the three checks above and the
 per-uplink `nmap` below, and check two things that only a WAN change can break: that
 `SOPHIE-IN` still holds the `INPUT` hook after `pi5connect` rewrites the NAT/FORWARD rules
-for the new WAN, and that the new interface (`wwan0`) is closed with **no new rule** --
-it should be untrusted by default rather than by name.
+for the new WAN, and that the new cellular interface is closed with **no new rule** -- it
+should be untrusted by default rather than by name. Note the modem does *not* appear as
+`wwan0`: it is a `cdc_ether` dongle (TCL 1bbb:0646) and enumerates as a plain `eth*`,
+`eth2` on 2026-10-23, which is exactly why nothing keys policy on interface names.
+
+**Partly done 2026-10-23, 16:27-16:35.** WiFi and wired were pulled, cellular took over
+automatically (`wan_scan --on-loss` powered socket 3, +53 s cold to a lease), and all four
+firewall hooks stayed present in every 2 s sample across the whole transition -- no gap.
+`eth2` got no INPUT rule while it was the live uplink. What the run did *not* test is a
+sustained cellular session: the Alfa re-associated at 16:34:46 and pi5connect preferred it,
+as designed. Re-run with WiFi kept down.
 
 ## Firewall — finish the deployment
 

@@ -59,7 +59,7 @@
 # route on its device and therefore fails the probe, which is the intent.
 # Known limitation: a captive portal answers the probe and still looks healthy.
 
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"   # 2.3: enforces socket gating after a WAN commit
 LOGFILE="/var/log/pi5connect.log"
 exec >> $LOGFILE 2>&1
 echo "[$(date)] pi5connect.sh triggered: iface=${1:-unset} status=${2:-unset}"
@@ -219,6 +219,34 @@ ensure_dns_input() {
         iptables -A INPUT -i "$LAN_IFACE" -p udp --dport 53 -j ACCEPT
     iptables -C INPUT -i "$LAN_IFACE" -p tcp --dport 53 -j ACCEPT 2>/dev/null || \
         iptables -A INPUT -i "$LAN_IFACE" -p tcp --dport 53 -j ACCEPT
+}
+
+# Leave only the WAN we committed drawing power.
+#
+# This script decides the WAN but, until 2026-10-23, never touched hub power,
+# and only wan_scan.sh did. So a gated socket powered up by a failover stayed
+# powered until the next scan: measured that day, a failover down to cellular
+# followed by WiFi coming back left the ~1 W modem on, with the next scheduled
+# scan not due until 2 AM. wan_scan already knows how to settle power and owns
+# every hub call, so this hands the job back to it rather than re-deriving the
+# socket map here. --enforce-gating only switches sockets OFF -- it never
+# powers one on, never probes and never touches the routing table.
+WAN_SCAN="/usr/local/sbin/wan_scan.sh"
+SCAN_LOCK="/run/wan-scan-in-progress"
+enforce_gating() {
+    [[ -x "$WAN_SCAN" ]] || return 0
+    # A walk in flight has deliberately powered a socket up to test it. Cutting
+    # it mid-test is a real race, not a theoretical one: the usbhub README
+    # records the dashboard's exclusivity switch killing the modem mid-DHCP.
+    if [[ -e "$SCAN_LOCK" ]]; then
+        echo "[$(date)] Gating: wan_scan is walking; leaving socket power alone"
+        return 0
+    fi
+    # Bounded, and deliberately placed AFTER the route is committed and the
+    # state file written, so a slow hub call can never delay connectivity.
+    if ! timeout 30 "$WAN_SCAN" --enforce-gating; then
+        echo "[$(date)] Gating: $WAN_SCAN --enforce-gating failed (rc=$?); see /var/log/wan-scan.log"
+    fi
 }
 
 # Does $1 have carrier and an IPv4 address?
@@ -524,6 +552,7 @@ if [[ "$PI5_SKIP_PROBE" != "1" ]] && ! probe_default; then
         add_wan_rules "$PREV_WAN"
         echo "$PREV_WAN $PREV_GW" > "$STATE_FILE"
         ensure_dns_input
+        enforce_gating
         echo "[$(date)] pi5connect.sh rolled back v$SCRIPT_VERSION WAN=$PREV_WAN GW=$PREV_GW"
         exit 1
     fi
@@ -531,4 +560,5 @@ if [[ "$PI5_SKIP_PROBE" != "1" ]] && ! probe_default; then
 fi
 
 echo "$ACTIVE_IFACE $GATEWAY_IP" > "$STATE_FILE"
+enforce_gating
 echo "[$(date)] pi5connect.sh complete v$SCRIPT_VERSION WAN=$ACTIVE_IFACE GW=$GATEWAY_IP"

@@ -38,6 +38,13 @@
 #                               This is what the 2AM timer runs, so a RV that
 #                               travels on cellular moves to a free uplink on
 #                               arriving home without ever waking the dish.
+#   wan_scan.sh --enforce-gating
+#                               no walk and no probing: power OFF every gated
+#                               socket that is not carrying the current WAN.
+#                               This is the steady state the rest of the script
+#                               settles into; pi5connect.sh calls it after it
+#                               commits a WAN change, because its own switch
+#                               path has no power management of its own.
 #   wan_scan.sh --dry-run       log the walk, change nothing
 #
 # SAFETY
@@ -64,6 +71,10 @@ HUB_API="${HUB_API:-http://127.0.0.1:12347}"
 PI5CONNECT="/usr/local/sbin/pi5connect.sh"
 STATE_FILE="/run/pi5connect-wan"
 RESULT_FILE="/run/wan-scan-result"
+# Set while a WALK is in flight, so pi5connect does not cut a socket that this
+# script has deliberately powered up to test. The usbhub README records the
+# same race from the dashboard's exclusivity switch killing a modem mid-DHCP.
+SCAN_LOCK="/run/wan-scan-in-progress"
 
 # Same order and the same aliases as pi5connect.sh. Keep them in step.
 WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
@@ -84,6 +95,7 @@ CHEAP=0
 for arg in "$@"; do
     case "$arg" in
         --on-loss) MODE="all" ;;
+        --enforce-gating) MODE="enforce" ;;
         --cheap) CHEAP=1 ;;
         --dry-run) DRYRUN=1 ;;
         -h|--help) sed -n '3,40p' "$0"; exit 0 ;;
@@ -231,6 +243,7 @@ WINNER=""
 WINNER_LABEL=""
 cleanup() {
     local label
+    rm -f "$SCAN_LOCK"
     for label in "${TURNED_ON[@]:-}"; do
         [[ -z "$label" ]] && continue
         [[ "$label" == "$WINNER_LABEL" ]] && continue
@@ -239,6 +252,11 @@ cleanup() {
     done
 }
 trap cleanup EXIT
+
+# Only a walk powers sockets ON, so only a walk needs the interlock. --enforce-gating
+# switches things off and never probes, so it does not take it (and must not: it is
+# called from pi5connect, which would then skip itself).
+[[ "$MODE" != "enforce" ]] && : > "$SCAN_LOCK"
 
 log "===== wan_scan start (mode=$MODE cheap=$CHEAP dryrun=$DRYRUN current=${CUR_IFACE:-none}) ====="
 
@@ -268,6 +286,25 @@ if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Power off every gated WAN socket except $1. The three skips are the policy:
+#   - the socket we are keeping
+#   - name-only sockets (socket 1, "Wifi"): a role would put them in the
+#     exclusive group and a WAN switch would cut them
+#   - sockets that are not gated: cheap ones stay powered on purpose, because a
+#     powered adapter raises its own up-event and gets promoted with no scan
+# Used by all three paths that settle power, so there is one implementation.
+power_off_gated_except() {
+    local keep="$1" reason="$2" label
+    for label in "${CANDIDATES[@]}"; do
+        [[ "$label" == "$keep" ]] && continue
+        [[ -z "${ROLES[$label]}" ]] && continue
+        [[ -z "${GATED[$label]:-}" ]] && continue
+        socket_is_on "${IDENTS[$label]}" || continue
+        log "$reason: socket $label off (gated, keeping socket $keep)"
+        socket_power "$label" off "${IDENTS[$label]}"
+    done
+}
+
 if [[ -n "$CUR_IFACE" ]]; then
     for label in "${CANDIDATES[@]}"; do
         if [[ "$(socket_iface "${IDENTS[$label]}" 2>/dev/null)" == "$CUR_IFACE" ]]; then
@@ -279,6 +316,31 @@ if [[ -n "$CUR_IFACE" ]]; then
     done
 fi
 log "current WAN ${CUR_IFACE:-none} role=${CUR_ROLE:-unknown} rank=$CUR_RANK"
+
+# --enforce-gating stops here: make the steady state true and nothing else. It
+# never powers a socket ON, never probes and never touches the routing table,
+# which is what makes it safe to call from pi5connect's commit path.
+#
+# Both refusals below are deliberate. "Power off everything that is not the
+# current WAN" is only safe when we are sure which socket the current WAN is
+# on; if we are not, the socket we would cut could be the one carrying traffic.
+# Leaving a modem powered costs about 1 W. Getting this wrong costs the uplink.
+if [[ "$MODE" == "enforce" ]]; then
+    if [[ -z "$CUR_IFACE" ]]; then
+        log "enforce: no current WAN in $STATE_FILE; refusing to power anything off"
+        echo "skipped no_wan $(date +%s)" > "$RESULT_FILE"
+        exit 0
+    fi
+    if [[ -z "$CUR_LABEL" ]]; then
+        log "enforce: WAN $CUR_IFACE is not on a mapped hub socket; refusing to power anything off"
+        echo "skipped unmapped_wan $(date +%s)" > "$RESULT_FILE"
+        exit 0
+    fi
+    power_off_gated_except "$CUR_LABEL" "enforce"
+    echo "enforced $CUR_IFACE $CUR_LABEL $(date +%s)" > "$RESULT_FILE"
+    log "===== wan_scan done: gating enforced, WAN=$CUR_IFACE socket=$CUR_LABEL ====="
+    exit 0
+fi
 
 # Preference order
 ORDERED=()
@@ -400,14 +462,7 @@ if [[ -n "$WINNER" ]]; then
     # itself and pi5connect promotes it with no scan and no button. So cheap
     # sockets stay on and only the expensive ones are gated. An earlier
     # version powered off every loser, which was optimising the wrong thing.
-    for label in "${ORDERED[@]}"; do
-        [[ "$label" == "$WINNER_LABEL" ]] && continue
-        [[ -z "${ROLES[$label]}" ]] && continue          # name-only: never switch
-        [[ -z "${GATED[$label]:-}" ]] && continue        # not gated: leave powered
-        socket_is_on "${IDENTS[$label]}" || continue
-        log "settling: socket $label off (gated, winner is $WINNER_LABEL)"
-        socket_power "$label" off "${IDENTS[$label]}"
-    done
+    power_off_gated_except "$WINNER_LABEL" "settling"
     echo "ok $WINNER $WINNER_LABEL $(date +%s)" > "$RESULT_FILE"
     log "===== wan_scan done: WAN=$WINNER socket=$WINNER_LABEL ====="
     exit 0
@@ -420,14 +475,7 @@ fi
 # Measured 2026-10-20: after a failover down to cellular and back to wired,
 # the modem was still drawing power because the next scan short-circuited.
 if [[ -n "$CUR_LABEL" ]]; then
-    for label in "${ORDERED[@]}"; do
-        [[ "$label" == "$CUR_LABEL" ]] && continue
-        [[ -z "${ROLES[$label]}" ]] && continue
-        [[ -z "${GATED[$label]:-}" ]] && continue
-        socket_is_on "${IDENTS[$label]}" || continue
-        log "enforcing gating: socket $label off (current WAN is socket $CUR_LABEL)"
-        socket_power "$label" off "${IDENTS[$label]}"
-    done
+    power_off_gated_except "$CUR_LABEL" "enforcing gating"
 fi
 
 log "no better uplink found; leaving WAN=${CUR_IFACE:-none} as it was"
