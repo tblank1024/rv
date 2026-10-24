@@ -67,8 +67,14 @@ Three things this run taught that the home-LAN tests could not:
   resolved DNS, while `br0 -> eth2` and `eth2 -> br0` stayed at **0 packets**. `SOPHIE-FWD`
   runs first and its `-i br0 -j ACCEPT` plus `RELATED,ESTABLISHED` already carry the whole
   path. Harmless, but `pi5connect` maintains rules that never match.
-- **The dongle blocks outbound ICMP,** so every cellular probe pays a ~6 s ICMP timeout
-  before the TCP fallback succeeds. Visible as `ICMP probe failed on eth2; trying TCP`.
+- **A fresh cellular lease is not usable for ~10 s,** which reads at first like a policy
+  block. `pi5connect` logged `ICMP probe failed on eth2; trying TCP` and fell back, so the
+  first conclusion recorded here was "the dongle blocks outbound ICMP". **That was wrong.**
+  On the 19:06 boot the ICMP probe succeeded on the first try, and a later `ping` gave
+  0% loss on both families (37-56 ms v4, 42-44 ms v6). The failures were at +6 s and +9 s
+  after the lease: the modem's data path simply was not ready yet. Worth having straight,
+  because "ICMP is blocked" would send a future debugging session looking for a filter that
+  does not exist. The TCP fallback is what papers over the warm-up, and it earns its keep.
 
 The gating interlock added in `f5cc58a` was exercised for real: `pi5connect` logged
 `Gating: wan_scan is walking; leaving socket power alone` three times, declining to touch
@@ -110,16 +116,52 @@ sockets **on**, `cleanup()` powers back off only what it turned on and never the
 and the closing `power_off_gated_except "$CUR_LABEL"` is guarded by `-n "$CUR_LABEL"`, so
 an empty `/run/pi5connect-wan` skips the enforce rather than guessing. Confirm:
 
-```bash
-tail -30 /var/log/wan-boot-check.log        # expect: "internet is up; running a scan to enforce gating"
-grep -c "socket 3 off" /var/log/wan-scan.log  # must NOT have grown: socket 3 was the WAN
-cat /run/pi5connect-wan                      # expect: eth2 192.168.0.1
-sudo /usr/local/sbin/sophie-firewall.sh status | tail -1   # expect: == ARMED
-sysctl net.ipv4.conf.all.arp_ignore net.ipv4.conf.all.arp_announce   # bare name on purpose
+**PASSED, boot 2026-10-23 19:06:28.** Uplink committed **6 s** after boot, no manual
+nudge anywhere:
+
+| 19:06:28 | boot |
+| 19:06:33 | dispatcher `eth1 dhcp4-change` -- the modem was *already powered and leased*; the hub kept its socket energised across the Pi's reboot, so none of the 36 s cold cost was paid |
+| 19:06:33 | `rv-manager.service` `ExecMainStart`; **active 5 s after boot**, resuming transcript `3978c097` |
+| 19:06:34 | ICMP probe OK **first try**; default route via `192.168.0.1` dev `eth1` |
+| 19:06:35 | `pi5connect` v2.3 complete, then `wan_scan --enforce-gating`: `role=cellular rank=3 socket=3` -- **kept** |
+| 19:10:10 | `wan-boot-check` at +222 s: internet up, plain scan, 11 s, WAN unchanged |
+
+`== ARMED`, `-A INPUT -j SOPHIE-IN` at position 1 in both families, `FORWARD` and
+`DOCKER-USER` hooked, the cellular interface in **no** INPUT rule either family, 9/9
+containers up, v4 and v6 both reaching the internet. `socket 3 off` lines in
+`wan-scan.log`: **22, unchanged from the pre-boot baseline** -- the boot-time plain scan
+did not power off its own only uplink, which was the one real risk in this test.
+
+`arp_ignore`/`arp_announce` = 1/2, and read with a **bare** `sysctl`: the
+`rv-manager.service` `PATH` fix adding `/usr/sbin:/sbin` is now in force (`$PATH` in the
+autostarted session ends `…:/usr/sbin:/sbin`, and bare `iptables` and `nft` resolve too).
+That item is closed.
+
+### The finding this boot produced: the modem came up as `eth1`
+
+Not `eth2`. It was the only USB-ethernet device present, so it took the first free name --
+**the same name the wired uplink uses on the home LAN.** Anything keying on the interface
+name would have called this "wired", ranked it 0 (best), stopped looking, and treated it as
+non-gated, leaving the modem powered indefinitely. Instead the log reads:
+
+```
+current WAN eth1 role=cellular rank=3
+===== wan_scan done: gating enforced, WAN=eth1 socket=3 =====
 ```
 
-The last one is the point of using a bare `sysctl`: the `rv-manager.service` `PATH` fix
-adding `/usr/sbin:/sbin` only takes effect at a boot, and this is the first one since.
+Role came from the **hub socket**, not the name. This is exactly the trap `CLAUDE.md`
+warns about -- *"the interface name does not identify the uplink type -- don't key policy
+on it"* -- and it fired for real, by accident of enumeration order, within one reboot of
+being written down. Nothing to fix; it is the design working. Two consequences though:
+
+- [ ] **Pin the USB-ethernet adapters by MAC** with `.link` files, the way
+      `11-wlan-wan.link` pins the Alfa. `usbhub/README.md` already recommends it. The
+      modem is `d0:0e:8d:0f:3b:c7` (`cdc_ether`). Policy does not need it, but every
+      *document*, log grep and debugging session does -- `eth1` meaning "wired" in one
+      boot and "cellular" in the next is a trap for humans even when the code is immune.
+- Anywhere these notes say `eth2` for the modem, read "whatever `eth*` it got this boot".
+  The v6 address also changed across the reboot, `…::3d5` -> `…::5c5`, confirming it is
+  dynamic and that any outside v6 scan has to be done against a freshly read address.
 
 ## Firewall — finish the deployment
 
