@@ -74,6 +74,53 @@ The gating interlock added in `f5cc58a` was exercised for real: `pi5connect` log
 `Gating: wan_scan is walking; leaving socket power alone` three times, declining to touch
 socket power while `wan_scan` held `/run/wan-scan-in-progress`.
 
+Clean on cellular as well: 5 MB over **both** v6 and v4 at ~1.27 MB/s, so there is no
+PMTUD black hole -- a dropped ICMPv6 *packet too big* would stall large v6 transfers while
+small ones worked, and the `RELATED,ESTABLISHED` rule ahead of the ICMPv6 allows catches
+those errors. All 9 containers up, dashboard 200 on `10.0.0.1:8000`, MQTT 1883 open.
+
+### The one gap in the cellular run: UNREACHABLE, not passed
+
+- [ ] **Scan the cellular v6 address from outside.** Not done, and *not* skipped: the
+      laptop cannot reach internet IPv6 at all. The home ISP has no native v6, the laptop
+      holds only ULA `fd69:…` addresses, and `ping -6 2606:4700:4700::1111` returns
+      "General failure" -- no route. So the v6-over-cellular exposure above rests on a
+      **reading of the rules, not on a packet from outside.** Given that the home-LAN test
+      already taught us "filtered" is indistinguishable from "unreachable" unless you
+      corroborate on-box, this gap deserves to stay open and visible.
+      Options next time cellular is up: tether the laptop to a phone hotspot with global
+      v6 and run `nmap -6 -Pn -p- <addr>`, or use an online v6 port scanner -- the latter
+      sends Sophie's address to a third party, so it is the user's call, not a default.
+      Whichever is used, corroborate from on-box: get the scanner's source v6 address and
+      confirm `SOPHIE-IN drop` lines with that `SRC=` and `IN=eth2`.
+
+## Check after the cellular-only boot (2026-10-23 ~19:00)
+
+Rebooted deliberately with the Alfa and wired **unplugged**, so cellular was the only
+uplink. The earlier claim that a gated socket "boots unpowered" was wrong --
+`wan-boot-check.service` states the opposite in its own header: *hub sockets default to
+POWERED at boot, so gating is not in force until something applies it.* So what this
+actually tests is the inverse and more dangerous case: at +75 s `wan-boot-check.service`
+runs a plain `wan_scan` while **the current WAN is itself a gated socket**, something that
+had never happened at boot. If the "keep" logic were wrong, Sophie would power off her own
+only modem and go dark unattended.
+
+Read the code before rebooting into it, and it is safe by construction: a walk only powers
+sockets **on**, `cleanup()` powers back off only what it turned on and never the winner,
+and the closing `power_off_gated_except "$CUR_LABEL"` is guarded by `-n "$CUR_LABEL"`, so
+an empty `/run/pi5connect-wan` skips the enforce rather than guessing. Confirm:
+
+```bash
+tail -30 /var/log/wan-boot-check.log        # expect: "internet is up; running a scan to enforce gating"
+grep -c "socket 3 off" /var/log/wan-scan.log  # must NOT have grown: socket 3 was the WAN
+cat /run/pi5connect-wan                      # expect: eth2 192.168.0.1
+sudo /usr/local/sbin/sophie-firewall.sh status | tail -1   # expect: == ARMED
+sysctl net.ipv4.conf.all.arp_ignore net.ipv4.conf.all.arp_announce   # bare name on purpose
+```
+
+The last one is the point of using a bare `sysctl`: the `rv-manager.service` `PATH` fix
+adding `/usr/sbin:/sbin` only takes effect at a boot, and this is the first one since.
+
 ## Firewall — finish the deployment
 
 - [x] ~~**Reboot and confirm `ARMED`.**~~ Done 2026-10-23 11:44. The ordering fix holds on
