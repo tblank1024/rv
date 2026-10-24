@@ -137,6 +137,31 @@ did not power off its own only uplink, which was the one real risk in this test.
 autostarted session ends `…:/usr/sbin:/sbin`, and bare `iptables` and `nft` resolve too).
 That item is closed.
 
+### Power gating: measured, and the switch-back proved the other direction
+
+- [x] ~~**Measure socket 3's draw**~~ Done 2026-10-23 with a meter at the socket:
+      **~1 W powered and idle, 0 W switched off.** So the Plugable really does cut VBUS
+      and `ppps` was not just a capability claim -- the assumption underneath `f5cc58a`
+      is closed, and `usbhub/README.md`'s five-day-old "Untested" note is retired.
+      Sized honestly: 24 Wh/day, ~2 Ah at 12 V. Noise with solar and daily use; it earns
+      its keep over long unattended storage (~2.2 kWh, ~170 Ah over three months).
+
+**The switch back to wired, 19:36, exercised gating in the direction that had only ever
+been triggered by hand.** Five seconds end to end, on a real plug event:
+
+```
+19:36:10  eth2 up
+19:36:11  Promoting eth2 (wired) over healthy eth1 (cell)
+19:36:13  default route via 192.168.2.1 dev eth2
+19:36:14  enforce: socket 3 off (gated, keeping socket 2)
+19:36:15  socket 3 -> off (hub API)
+```
+
+Modem gone from `lsusb`, `eth1` ceased to exist, `== ARMED` with all four hooks intact.
+And the naming inverted a **second** time: wired came up as `eth2`, where it has always
+been `eth1` on the home LAN, twenty minutes after cellular had been `eth1`. The same two
+names meant opposite things within the hour. Nothing broke, because nothing keys on them.
+
 ### The finding this boot produced: the modem came up as `eth1`
 
 Not `eth2`. It was the only USB-ethernet device present, so it took the first free name --

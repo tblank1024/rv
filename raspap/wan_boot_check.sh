@@ -13,6 +13,8 @@
 #  2. Hub sockets default to POWERED at boot, so gating is not in force until
 #     something applies it. Harmless for connectivity -- more powered means
 #     more options -- but the gated modem would quietly draw its ~1W forever.
+#     (Measured 2026-10-23: ~1 W powered, 0 W switched off, at the socket. The
+#     hub really does cut VBUS, so this is a real saving, not a hopeful one.)
 #
 # Both are handled by one pass of wan_scan, which picks the best working
 # uplink and settles the gated ones off.

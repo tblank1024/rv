@@ -42,6 +42,23 @@ which is not the same as "no".
 **If the point is saving power, confirm with a current measurement at the port.**
 A device disappearing from `lsusb` is not evidence that it stopped drawing.
 
+**Measured on this hub, 2026-10-23: it really does switch VBUS.** Socket 3 with the
+cellular modem in it, at the socket:
+
+| socket 3 | draw |
+|---|---|
+| powered, modem idle | **~1 W** (≈200 mA at 5 V, well under the dongle's declared 500 mA `bMaxPower`) |
+| switched off via the API | **0 W** |
+
+So `ppps` is not just a claim on this hardware, and the gating in `wan_scan.sh` saves what
+it is meant to. Keep the warning above anyway: it is a statement about hubs in general,
+and the next hub to replace this one has to be measured the same way rather than assumed
+to behave like the Plugable. The Coolgear it replaced would have needed its own test.
+
+Worth sizing honestly: 1 W is 24 Wh/day, about 2 Ah at 12 V. With solar and daily use
+that is noise. It matters over **long unattended storage** -- roughly 2.2 kWh, ~170 Ah,
+over three months -- which is where leaving a gated modem powered would actually hurt.
+
 ## Exclusivity is policy
 
 A plain hub does not limit how many ports are on, so the two endpoints differ:
@@ -213,9 +230,11 @@ correctly — 409 on a cascade socket, on an `exclusive` that would cut one and 
 `all-off`; 404 on an unknown socket; 400 on a bad body or malformed JSON; 409
 `no_socket_map` when no map exists; and turning a protected port *on* is allowed.
 
-Untested: whether disabling a port actually removes VBUS. `ppps` is a claim.
-Measure the current, or watch an LED-bearing device die, before relying on it
-for power saving.
+~~Untested: whether disabling a port actually removes VBUS.~~ **Measured
+2026-10-23: socket 3 draws ~1 W powered and 0 W switched off** -- see "What
+'off' actually means" above. The claim held, but it was a claim for five days
+before anyone put a meter on it, and the measurement is what makes the power
+gating in `wan_scan.sh` honest rather than hopeful.
 
 ## Interface names
 
