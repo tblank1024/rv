@@ -2,8 +2,20 @@
 
 STATUS: Armed on Sophie as of 2026-10-23 (INPUT hook at position 1 for IPv4 and IPv6, FORWARD and DOCKER-USER
 hooked, `FORWARD` policy DROP; dashboard, MQTT, client internet and all 9 containers healthy).
-Verified from outside on both home-LAN uplinks, `eth1` and `wlan1`, each confirmed on its own interface.
+Verified from outside on both home-LAN uplinks, `eth1` and `wlan1`, each confirmed on its own interface,
+and held across a live WAN switch to cellular (`eth2`) on 2026-10-23 -- see `TODO.md`, "Check at the next
+reboot", stage 2.
 Operator's view: `firewall/README.md`.
+
+**The IPv6 half of this plan is load-bearing on cellular, not decorative.** On the home LAN both uplinks
+sit behind the house router, so the v6 rules were only ever exercised against a ULA. On cellular there is
+no v6 NAT: `eth2` came up on 2026-10-23 with a globally routable `2607:fb91:15d5:cf08::3d5/128` and a `/64`
+SLAAC address, and `curl -6 ifconfig.me` returned the interface address itself -- Sophie was directly
+addressable from the internet, with `ip6tables` `SOPHIE-IN` the only thing in the way. IPv4 over the same
+link is double NAT (private on the interface, a carrier public address outside) and effectively
+unreachable. So the attack surface on the road is **v6, not v4**, which inverts the intuition the home-LAN
+testing built. Any future outside scan of the cellular link should target the v6 address, and it must be
+done while that lease is live -- the address is dynamic.
 
 **Proven at boot 2026-10-23 11:44.** The `After=netfilter-persistent.service` fix works: the journal shows
 `netfilter-persistent` *finished* at 11:44:35 before `sophie-firewall` *started*, with none of the

@@ -34,12 +34,45 @@ should be untrusted by default rather than by name. Note the modem does *not* ap
 `wwan0`: it is a `cdc_ether` dongle (TCL 1bbb:0646) and enumerates as a plain `eth*`,
 `eth2` on 2026-10-23, which is exactly why nothing keys policy on interface names.
 
-**Partly done 2026-10-23, 16:27-16:35.** WiFi and wired were pulled, cellular took over
-automatically (`wan_scan --on-loss` powered socket 3, +53 s cold to a lease), and all four
-firewall hooks stayed present in every 2 s sample across the whole transition -- no gap.
-`eth2` got no INPUT rule while it was the live uplink. What the run did *not* test is a
-sustained cellular session: the Alfa re-associated at 16:34:46 and pi5connect preferred it,
-as designed. Re-run with WiFi kept down.
+**Passed 2026-10-23 18:04 (stage 2, cellular).** A first run at 16:27-16:35 proved the
+switch itself but not a sustained session -- the Alfa re-associated at 16:34:46 and
+pi5connect preferred it, as designed. The second run, with the Alfa *physically unplugged*,
+held. Timeline from `/var/log/pi5connect.log` and `/var/log/wan-scan.log`:
+
+| 18:04:00 | `wlan1` down; old WAN rules removed; "no other interface is up with an address" |
+| 18:04:00 | handed off to `wan_scan --on-loss`, the only component that may power a gated socket |
+| 18:04:10 | socket 2 (wired) rejected, no carrier after 10 s; socket 1 (wifi) powered but nothing plugged in |
+| 18:04:11 | socket 3 (cellular) powered on |
+| 18:04:31 | `eth2` enumerated, +20 s |
+| 18:04:47 | lease `192.168.0.178/24`, +36 s |
+| 18:04:56 | default route via `192.168.0.1` dev `eth2`; NAT/FORWARD rewritten |
+| 18:05:00 | `wan_scan` commits socket 3. **Total outage ~60 s.** |
+
+All four hooks survived the rewrite, `== ARMED`, `-A INPUT -j SOPHIE-IN` at position 1 in
+both families, and `eth2` is in **no** INPUT rule -- untrusted by default rather than by
+name, which was the point. 25 `SOPHIE-IN drop` lines with `IN=eth2` across both families
+confirm the drop path on the new interface.
+
+Three things this run taught that the home-LAN tests could not:
+
+- **Over cellular Sophie has a globally routable IPv6 address and no v6 NAT.** `eth2` held
+  `2607:fb91:15d5:cf08::3d5/128` and a `/64` SLAAC address, and `curl -6 ifconfig.me`
+  returned the interface address itself. On v4 it is double NAT (private on the interface,
+  `172.56.105.86` public) and unreachable; on v6 the box is directly addressable from the
+  internet and `ip6tables` `SOPHIE-IN` is the only thing in the way. The v6 default-deny is
+  not theoretical -- it is load-bearing the moment cellular comes up. Any future outside
+  scan should target the v6 address, which is where the real attack surface is.
+- **`pi5connect`'s per-WAN `FORWARD` accepts are dead code.** Tested with a real RV-LAN
+  client (a veth into `br0` in its own netns at `10.0.0.250`): it reached the internet and
+  resolved DNS, while `br0 -> eth2` and `eth2 -> br0` stayed at **0 packets**. `SOPHIE-FWD`
+  runs first and its `-i br0 -j ACCEPT` plus `RELATED,ESTABLISHED` already carry the whole
+  path. Harmless, but `pi5connect` maintains rules that never match.
+- **The dongle blocks outbound ICMP,** so every cellular probe pays a ~6 s ICMP timeout
+  before the TCP fallback succeeds. Visible as `ICMP probe failed on eth2; trying TCP`.
+
+The gating interlock added in `f5cc58a` was exercised for real: `pi5connect` logged
+`Gating: wan_scan is walking; leaving socket power alone` three times, declining to touch
+socket power while `wan_scan` held `/run/wan-scan-in-progress`.
 
 ## Firewall — finish the deployment
 
@@ -145,9 +178,29 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
       thing that stops working after a sudo upgrade.
 - [ ] `iptables -S INPUT` carries **four** identical `br0` DNS accept rules where
       `pi5connect.sh`'s `-C` guard should have produced two
-      (`raspap/pi5connect.sh:218-221`). Harmless, but if the count grows with each WAN
-      change the guard isn't matching and the list leaks. Worth re-counting after a few
-      uplink switches.
+      (`raspap/pi5connect.sh:218-221`). Harmless. Re-counted after the stage-2 cellular
+      switch on 2026-10-23: **still four, not six** -- so the `-C` guard does hold across a
+      WAN change and the list is not leaking per switch. The duplicate pair comes from
+      somewhere else, most likely a race at boot. Lower priority than it looked.
+
+- [ ] **Stale rules for a dead WAN survive a switch.** After `wlan1` went away on
+      2026-10-23, `FORWARD` still held `-i br0 -o wlan1 -j ACCEPT` and its
+      `RELATED,ESTABLISHED` partner, and `nat POSTROUTING` still held
+      `-o wlan1 -j MASQUERADE` *plus* a duplicated `-o eth2 -j MASQUERADE`. Harmless while
+      the interface is absent, and `SOPHIE-FWD` is in front of all of it, but it shows the
+      remove-then-add path is not symmetric. Root cause is visible in the log: the
+      dispatcher fired **three** `pi5connect` instances concurrently for the same
+      `eth2 up`, all three reaching "Adding rules for new WAN" within the same second.
+      A lock around the rule rewrite, like the one `f5cc58a` added for socket power, is
+      the obvious fix.
+
+- [ ] **`usbhub/README.md`'s observed socket map is stale.** It records
+      `3-1`/`3-1.3`/`4-1`/`4-1.3` from 2026-10-18; after the 2026-10-23 boot the hub
+      enumerates as `1-2.3`, with **one** identity per socket rather than two. The API
+      still resolves sockets correctly, so nothing is broken, but the README now documents
+      a bus path that no longer exists -- and the "one socket, two sysfs identities"
+      reasoning needs a line saying the paths themselves are not stable across boots.
+      Re-run `map_sockets.py` and update the measured map.
 - [ ] README/CLAUDE.md still mention reaching Sophie over SSH at `192.168.2.196`. That
       path is now firewalled off by design — update the instructions to Pi Connect or
       Sophie's own WiFi (`plan_firewall.md` §"Things that will break", item 1).
