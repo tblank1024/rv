@@ -287,6 +287,8 @@ services:
     devices:
       - /dev/gpiochip-rp1:/dev/gpiochip4
     environment:
+      - HEALTHCHECK_TOPICS=rv/alarm/heartbeat
+      - HEALTHCHECK_WINDOW=75
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
@@ -295,6 +297,26 @@ services:
         condition: service_healthy
 
   # Web Dashboard Interface
+    volumes:
+      - ./mqtt-freshness-healthcheck.py:/healthcheck/freshness.py:ro
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    labels:
+      - autoheal=true
+    healthcheck:
+      # The alarm publishes rv/alarm/heartbeat every 30s from inside its main
+      # loop (see HEARTBEAT_INTERVAL in alarm/alarm.py), so silence means the
+      # loop has stopped -- not merely that nothing has changed. Before that
+      # heartbeat existed this container could not be checked at all, because
+      # its status topics move only on change and a freshness check would have
+      # restarted a perfectly healthy alarm.
+      #
+      # 75s window is more than two heartbeat intervals, so a single missed
+      # publish cannot restart the alarm.
+      test: ["CMD", "python3", "/healthcheck/freshness.py"]
+      interval: 120s
+      timeout: 90s
+      retries: 3
+      start_period: 90s
   webserver:
     build:
       context: ../webserver

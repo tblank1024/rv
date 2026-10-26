@@ -65,6 +65,21 @@ class Alarm():
     SLOWBLINK       = int(6 * FASTBLINK) # SLOWBLINK must be a multiple of FASTBLINK
     MAXALARMTIME    = int(2)             # Number of minutes max that the alarm can be on
     LOOPDELAY       = float(.3)          # time in seconds pausing between running loop
+    # Heartbeat so this container can have a Docker healthcheck at all.
+    #
+    # Every other service is checked by whether it is still publishing, but the
+    # alarm publishes only on CHANGE -- arming, disarming, a wire fault -- and
+    # legitimately stays silent for days otherwise. A freshness check on the
+    # status topics would therefore fail while the alarm was working perfectly,
+    # and with autoheal watching that means restarting the alarm in a loop. So
+    # it gets a topic that does beat on a timer.
+    #
+    # Published from inside the MAIN LOOP, deliberately, not from a timer
+    # thread: a thread would keep beating while the loop was wedged on GPIO,
+    # which is precisely the failure the healthcheck exists to catch. The loop
+    # count rides along so a consumer can see the loop progressing rather than
+    # merely that something fired.
+    HEARTBEAT_INTERVAL = float(30)       # seconds between heartbeat publishes
     LOUDENABLE      = True
     
     # Pin Definitions using BCM GPIO numbering for gpiozero:
@@ -153,6 +168,7 @@ class Alarm():
         self._interior_restored = False
         self._bike_restored = False
         self._initial_status_published = False
+        self._last_heartbeat = 0.0
         self.setup_mqtt()
 
     def setup_mqtt(self):
@@ -297,6 +313,24 @@ class Alarm():
                 
             except Exception as e:
                 print(f"Error publishing MQTT status: {e}")
+
+    def publish_heartbeat(self):
+        """Liveness beat on rv/alarm/heartbeat. See HEARTBEAT_INTERVAL.
+
+        Not retained: a retained heartbeat would look fresh forever to anything
+        that subscribed after this process died, which would defeat the point.
+        """
+        if not (self.mqtt_client and self.mqtt_connected):
+            return
+        try:
+            self.mqtt_client.publish("rv/alarm/heartbeat", json.dumps({
+                "timestamp": time.time(),
+                "loop_count": self.LoopCount,
+                "bike": self.BikeState.name,
+                "interior": self.InteriorState.name,
+            }), retain=False)
+        except Exception as e:
+            print(f"Error publishing MQTT heartbeat: {e}")
 
     def cleanup_mqtt(self):
         """Clean up MQTT client"""
@@ -548,6 +582,10 @@ class Alarm():
                     if not self._initial_status_published and self.LoopCount > 10:
                         self._initial_status_published = True
                         self.publish_status()
+                    now = time.time()
+                    if now - self._last_heartbeat >= self.HEARTBEAT_INTERVAL:
+                        self._last_heartbeat = now
+                        self.publish_heartbeat()
                     #if LoopCount % 40 == 0:
                     #    print(AlarmState)
                 time.sleep(self.LOOPDELAY) #sleep

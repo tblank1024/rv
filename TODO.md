@@ -307,6 +307,19 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       gave exactly 1, the network already joined). The strong neighbours are always
       present. Could be improved by lowering the thin-scan retry threshold above 1, but
       the retry costs 6s per attempt on the page load, so it is a trade rather than a fix.
+- [x] **The alarm now has a healthcheck** (2026-10-26). It was the only container without one,
+      because it publishes only on change and a freshness check would have failed while it
+      was working — restarting the alarm in a loop now that autoheal is wired up. It now
+      publishes `rv/alarm/heartbeat` every 30s from **inside its main loop**
+      (`HEARTBEAT_INTERVAL` in `alarm/alarm.py`), not from a timer thread: a thread would keep
+      beating while the loop was wedged on GPIO, which is the failure being detected. The
+      payload carries `loop_count` so progress is visible, and the heartbeat is deliberately
+      not retained — a retained one would look fresh forever after the process died.
+
+      Verified: two consecutive beats advanced `loop_count` by exactly 100 over 30s, matching
+      the 0.3s `LOOPDELAY`; the healthcheck returns 0 on the real topic, 1 on a dead topic and
+      0 on bad credentials; Docker reports `healthy`; and the alarm came back disarmed as it
+      went in. **All 8 containers now have a healthcheck and the autoheal label.**
 - [ ] `webserver/client/src/page-debug/debug.jsx:612` still prints raw `bMaxPower` in mA in
       its socket list. Left deliberately — raw sysfs values are the point of a diagnostic
       page — but the owner's "show all power in watts" was not qualified, so confirm.
@@ -411,7 +424,24 @@ Not tracked anywhere before this, in the review's own priority order:
       exposure run silently for two days with a green `systemctl status`. Strongest candidate of the
       lot. **Fold into the health-hardening work rather than building a one-off** -- that project needs
       an alert channel anyway, and doing it twice would mean two things to keep working.
-- [ ] **Verify `br0` cannot pick up a USB adapter by name.** Checked 2026-10-26 and the concern is
+- [x] **`br0` can no longer pick up a USB adapter by name** (2026-10-26). Was
+      `[Match] Name=eth0` in `raspap-br0-member-eth0.network`, and `br0` is the first ACCEPT
+      in `SOPHIE-IN`, so anything landing on that name sat inside the trusted zone and
+      bypassed the firewall entirely. Fixed in three places: the bridge-member file now
+      matches `MACAddress=2c:cf:67:ab:1b:93`, a new `12-eth-onboard.link` pins that MAC to
+      the name `eth0` (matching `10-wlan-ap.link`/`11-wlan-wan.link`), and
+      `install_raspap_bridge.sh` writes both — reading the MAC from the live interface rather
+      than hardcoding it — so a re-run cannot reintroduce the name match.
+
+      Verified: `udevadm test-builtin net_setup_link` reports
+      `ID_NET_LINK_FILE=/etc/systemd/network/12-eth-onboard.link` and `ID_NET_NAME=eth0`;
+      after `networkctl reload`, `networkctl status eth0` shows the MAC-matched file in force
+      with `br0` members unchanged (`eth0 wlan0`), `br0` still 10.0.0.1, hostapd and dnsmasq
+      active and the dashboard answering on `br0`. Safe to apply live because `eth0` has no
+      carrier. **The `.link` name pinning only takes effect at the next boot** — `.link`
+      files apply at device creation — so re-check `networkctl status eth0` then; the
+      security-relevant MAC match is already live either way.
+- [ ] ~~**Verify `br0` cannot pick up a USB adapter by name.**~~ (done above) Checked 2026-10-26 and the concern is
       real: `/etc/systemd/network/raspap-br0-member-eth0.network` matches `[Match] Name=eth0`, and
       `br0` is the first ACCEPT in `SOPHIE-IN`, so anything landing on that name sits inside the
       trusted zone and bypasses the firewall completely. Likelihood is low -- `eth0` is the SoC NIC

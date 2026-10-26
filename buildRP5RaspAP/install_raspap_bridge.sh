@@ -98,15 +98,45 @@ IPForward=yes
 ConfigureWithoutCarrier=yes
 EOF
 
-# eth0 bridge member configuration
-sudo tee /etc/systemd/network/raspap-br0-member-eth0.network << 'EOF'
+# eth0 bridge member configuration.
+#
+# Matched by MAC, NOT by name. br0 is the first ACCEPT in SOPHIE-IN, so
+# whatever joins it is inside the trusted zone and bypasses the host firewall.
+# A name match meant any device that enumerated as eth0 -- a USB uplink
+# adapter, say -- would land there. Unlikely, since the built-in NIC is a SoC
+# device (driver macb, 1f00100000.ethernet) that enumerates before USB, but
+# the consequence is a total firewall bypass, so it is pinned.
+#
+# The MAC is read from the live interface rather than hardcoded, so this stays
+# correct if the script is ever run on a different board.
+ONBOARD_MAC="$(cat /sys/class/net/eth0/address)"
+if [[ -z "$ONBOARD_MAC" ]]; then
+    echo "ERROR: cannot read /sys/class/net/eth0/address -- refusing to write a"
+    echo "       bridge-member file that would match by name instead." >&2
+    exit 1
+fi
+echo "Pinning the onboard NIC into br0 by MAC: $ONBOARD_MAC"
+
+sudo tee /etc/systemd/network/raspap-br0-member-eth0.network << EOF
+# Matched by MAC, not by name -- see the note in install_raspap_bridge.sh.
 [Match]
-Name=eth0
+MACAddress=$ONBOARD_MAC
 
 [Network]
 Bridge=br0
 LinkLocalAddressing=no
 ConfigureWithoutCarrier=yes
+EOF
+
+# Keep the NAME stable too, matching 10-wlan-ap.link and 11-wlan-wan.link.
+# Belt and braces: either this or the MAC match above would be enough on its
+# own to keep a USB adapter out of the trusted bridge.
+sudo tee /etc/systemd/network/12-eth-onboard.link << EOF
+[Match]
+MACAddress=$ONBOARD_MAC
+
+[Link]
+Name=eth0
 EOF
 
 # wlan0 bridge member configuration  
