@@ -2837,6 +2837,156 @@ def _firewall_family(binary: str) -> dict:
     return fam
 
 
+# ---------------------------------------------------------------------------
+# Host health -> MQTT, through the watcher's existing alert machinery
+# ---------------------------------------------------------------------------
+# Published to RVC/RV_Health/1 with numeric fields whose bounds are declared in
+# WATCH_SPEC (rv/watcher/watcher.py), exactly as the watcher already does for
+# the Pi's own CPU temperature. That reuses the whole alert pipeline -- the
+# SYS_ERRORS heartbeat, the active list, the dashboard's AlertsPanel grouping
+# and acknowledgement -- instead of inventing a second one.
+#
+# Publishing SYS_ERRORS directly would NOT work: the watcher's heartbeat
+# carries the full active list every ~5s and would overwrite anything added to
+# it from outside.
+#
+# A useful consequence: "the webserver stopped reporting" becomes an alert by
+# itself, because the watcher raises a silent-topic alert for a watched topic
+# that goes quiet. Nothing extra is needed for that.
+#
+# This lives in the webserver rather than the watcher deliberately. It needs
+# the Docker socket and the host mount/network namespace, both of which the
+# webserver already has, and the watcher is deliberately unprivileged
+# (privileged: false, no socket) -- moving this there would have meant handing
+# it root on the host to read a few counters.
+HEALTH_INSTANCE = 1
+HEALTH_INTERVAL = 60
+HEALTH_RESTART_WINDOW = 15 * 60        # how long a restart keeps counting
+HEALTH_EXPECTED = ("mqtt", "rvc2mqtt", "battery", "tirelinc", "solar",
+                   "alarm", "webserver", "watcher", "autoheal")
+HEALTH_UNITS = ("wifi-api-rp5", "usbhub-api", "sophie-firewall", "wayvnc")
+
+# container -> (last seen StartedAt, [times it was seen to change])
+_health_starts: dict = {}
+_health_thread = None
+
+
+def _health_containers():
+    """
+    (unhealthy_count, down_count, restarts_in_window, notes).
+
+    Restarts are counted from State.StartedAt CHANGING, not from RestartCount.
+    Measured 2026-10-26: autoheal restarts a container with an explicit
+    `docker restart`, which never increments RestartCount -- a probe container
+    autoheal restarted three times still read RestartCount=0, with autoheal's
+    own log confirming all three. Counting RestartCount would have left the
+    restart-loop alarm permanently silent, which is precisely the hidden
+    failure this is supposed to surface.
+    """
+    now = time.time()
+    unhealthy, down, notes = [], [], []
+    try:
+        import docker as docker_sdk
+        client = docker_sdk.from_env()
+    except Exception as exc:
+        return None, None, None, [f"docker socket unavailable: {exc}"]
+
+    for name in HEALTH_EXPECTED:
+        try:
+            state = client.containers.get(name).attrs.get("State", {})
+        except Exception:
+            down.append(name)
+            continue
+        if state.get("Status") != "running":
+            down.append(name)
+        if ((state.get("Health") or {}).get("Status")) == "unhealthy":
+            unhealthy.append(name)
+        started = state.get("StartedAt", "")
+        previous, stamps = _health_starts.get(name, (None, []))
+        if previous is not None and started and started != previous:
+            stamps = stamps + [now]
+        _health_starts[name] = (started, [t for t in stamps
+                                          if now - t < HEALTH_RESTART_WINDOW])
+
+    restarts = sum(len(stamps) for _, stamps in _health_starts.values())
+    looping = [n for n, (_, stamps) in _health_starts.items() if len(stamps) >= 2]
+    if unhealthy:
+        notes.append("unhealthy: " + ", ".join(unhealthy))
+    if down:
+        notes.append("not running: " + ", ".join(down))
+    if looping:
+        notes.append("restarting repeatedly: " + ", ".join(looping))
+    return len(unhealthy), len(down), restarts, notes
+
+
+def _health_units():
+    """(failed_count, names). `systemctl is-active` prints one line per unit."""
+    try:
+        proc = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "-n", "--", "systemctl", "is-active",
+             *HEALTH_UNITS],
+            capture_output=True, text=True, timeout=20)
+        states = proc.stdout.split()
+        bad = [u for u, st in zip(HEALTH_UNITS, states) if st != "active"]
+        return len(bad), bad
+    except Exception as exc:
+        print(f"WARNING: could not read unit states: {exc}")
+        return 0, []
+
+
+def publish_host_health():
+    """One health report onto the bus. Never raises."""
+    if _mqtt_bus is None:
+        return False
+    try:
+        firewall = get_firewall_status()
+        armed = 1 if firewall.get("healthy") else 0
+        unhealthy, down, restarts, notes = _health_containers()
+        failed, bad_units = _health_units()
+        if bad_units:
+            notes = notes + ["units not active: " + ", ".join(bad_units)]
+        if not armed:
+            # First in the detail string, because it is the one that means
+            # Sophie is reachable from the uplink right now.
+            notes = ["FIREWALL: " + str(firewall.get("message", "NOT ARMED"))[:140]] + notes
+
+        payload = {
+            "name": "RV_Health",
+            "instance": HEALTH_INSTANCE,
+            "timestamp": int(time.time()),
+            "Status": "OK" if not notes else "FAULT",
+            "firewall_armed": armed,
+            "containers_unhealthy": unhealthy or 0,
+            "containers_down": down or 0,
+            "restarts_15m": restarts or 0,
+            "units_failed": failed,
+            "detail": ("; ".join(notes))[:300] or "all clear",
+        }
+        _mqtt_bus.publish(f"RVC/RV_Health/{HEALTH_INSTANCE}", json.dumps(payload))
+        if notes:
+            logging.warning("Host health: %s", payload["detail"])
+        return True
+    except Exception as exc:
+        print(f"WARNING: host health publish failed: {exc}")
+        return False
+
+
+def _start_host_health_publisher():
+    global _health_thread
+
+    def loop():
+        # One pass immediately so a fault is visible within a minute of a
+        # restart rather than after the first interval.
+        while True:
+            publish_host_health()
+            time.sleep(HEALTH_INTERVAL)
+
+    _health_thread = threading.Thread(target=loop, daemon=True,
+                                      name="host-health")
+    _health_thread.start()
+    return _health_thread
+
+
 @app.get("/api/debug/firewall/status")
 def get_firewall_status() -> dict:
     """Is the host firewall actually armed?
@@ -3286,6 +3436,13 @@ if __name__ == "__main__":
     # Start tire TPMS MQTT subscriber
     _start_mqtt_bus()
     print("Tire TPMS MQTT subscriber started")
+
+    # Host health onto the bus, so the watcher's bounds checks turn it into
+    # dashboard alerts. Must come after _start_mqtt_bus(); publish_host_health()
+    # is a no-op while _mqtt_bus is None, so an ordering mistake would fail
+    # quietly rather than loudly -- hence the explicit comment.
+    _start_host_health_publisher()
+    print("Host health publisher started (RVC/RV_Health/1)")
 
     # Initialize internet accessory state from the Kasa strip
     print("Detecting current internet connection state...")

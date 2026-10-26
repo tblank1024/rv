@@ -32,6 +32,11 @@ services:
     environment:
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    # Without this label autoheal ignores the healthcheck entirely --
+    # 'restart: unless-stopped' only acts on exit, never on unhealthy.
+    labels:
+      - autoheal=true
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h localhost -u \"$$MQTT_USER\" -P \"$$MQTT_PASS\" -t health/probe -m 1 2>/dev/null || exit 1"]
       interval: 10s
@@ -122,6 +127,11 @@ services:
     # its own after BAT_STALE_EXIT so restart: unless-stopped recovers it; this
     # healthcheck is what makes the failure *visible* (docker ps, dashboard).
     # Note Docker does not restart an unhealthy container -- the exit does.
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    # Without this label autoheal ignores the healthcheck entirely --
+    # 'restart: unless-stopped' only acts on exit, never on unhealthy.
+    labels:
+      - autoheal=true
     healthcheck:
       # A missing file counts as unhealthy: it means nothing has been
       # published yet, which is a real failure, not a warm-up.
@@ -204,6 +214,11 @@ services:
     # Tires can legitimately be quiet for a few minutes, so the window is much
     # wider than the battery's. TIRE_STALE_MINUTES (15) still warns over MQTT;
     # TIRE_STALE_EXIT_MINUTES (45) exits so Docker restarts us.
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    # Without this label autoheal ignores the healthcheck entirely --
+    # 'restart: unless-stopped' only acts on exit, never on unhealthy.
+    labels:
+      - autoheal=true
     healthcheck:
       # A missing file counts as unhealthy: it means nothing has been
       # published yet, which is a real failure, not a warm-up.
@@ -337,6 +352,11 @@ services:
     # /host-dev instead.
     devices:
       - /dev/gpiochip-rp1:/dev/gpiochip4
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    # Without this label autoheal ignores the healthcheck entirely --
+    # 'restart: unless-stopped' only acts on exit, never on unhealthy.
+    labels:
+      - autoheal=true
     healthcheck:
       # Port 8000 is the FastAPI server; port 80 is RASPAp's native GUI,
       # which answers 302 to everything and made this check pass vacuously

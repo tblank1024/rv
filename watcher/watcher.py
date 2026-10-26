@@ -703,6 +703,25 @@ WATCH_SPEC = [
     ("RV_Loads/1",            "AC Load",                   "RV_Loads_AC"),
     ("RV_Loads/1",            "DC Load",                   "RV_Loads_DC"),
 
+    # Host health, published by the webserver on RVC/RV_Health/1 (see
+    # publish_host_health in webserver/server/server.py). Numeric fields with
+    # bounds, so this file's existing out-of-range machinery turns them into
+    # SYS_ERRORS entries and the dashboard shows them like any other alert --
+    # no second alert path. A topic that goes quiet also raises a silent alert
+    # on its own, which covers the webserver dying.
+    ("RV_Health/1",           "timestamp",                 "Health_timestamp"),
+    ("RV_Health/1",           "Status",                    "Health_Status"),
+    ("RV_Health/1",           "detail",                    "Health_detail"),
+    # 1 = armed. The 2026-10-21 incident was an unarmed firewall nobody saw
+    # for two days, so this is the one that matters most here.
+    ("RV_Health/1",           "firewall_armed",            "Health_firewall_armed", 1, 1),
+    ("RV_Health/1",           "containers_unhealthy",      "Health_containers_unhealthy", 0, 0),
+    ("RV_Health/1",           "containers_down",           "Health_containers_down", 0, 0),
+    # Restarts are expected occasionally; a loop is not. Counted over 15
+    # minutes, so 3+ means something is flapping rather than recovering.
+    ("RV_Health/1",           "restarts_15m",              "Health_restarts_15m", 0, 2),
+    ("RV_Health/1",           "units_failed",              "Health_units_failed", 0, 0),
+
     ("RV_Watcher/1",          "timestamp",                 "RV_Watcher_timestamp"),
     ("RV_Watcher/1",          "Status",                    "RV_Watcher_Status"),
     ("RV_Watcher/1",          "cpu_temp_c",                "RPi_cpu_temp_c", 0, 80),

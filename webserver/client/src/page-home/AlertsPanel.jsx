@@ -21,6 +21,10 @@ const GROUPS = [
   [/^TANK_/, 'Tanks'],
   [/^TIRE_/, 'Tires'],
   [/^RV_Watcher/, 'Raspberry Pi'],
+  // Host health: firewall armed, container health, restart loops, host units.
+  // Published by the webserver on RVC/RV_Health/1 and bounds-checked by the
+  // watcher like any other signal, so it arrives here with no extra plumbing.
+  [/^RV_Health/, 'Sophie health'],
   [/^RV_Loads/, 'RV loads'],
 ];
 
