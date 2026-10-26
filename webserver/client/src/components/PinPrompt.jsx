@@ -33,7 +33,7 @@ const post = async (path, body) => {
   return { status: response.status, data };
 };
 
-export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
+export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState('');
   const [status, setStatus] = useState(null);     // from /api/auth/status
@@ -47,6 +47,10 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
       setStatus(data);
       setFreeze(data.retry_after || 0);
     } catch (err) {
+      // Leaving `status` null here spun on "Checking…" for ever with nothing
+      // said, because the spinner is the no-status-yet state. Record the
+      // failure as a status of its own so the card can explain itself.
+      setStatus({ configured: true, authenticated: false, unreachable: true });
       setError('Could not reach the server: ' + err.message);
     }
   }, []);
@@ -104,6 +108,21 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
     return <Card fluid><Card.Content><Icon name="circle notched" loading /> Checking…</Card.Content></Card>;
   }
 
+  if (status.unreachable) {
+    return (
+      <Card fluid>
+        <Card.Content>
+          <Card.Header><Icon name="lock" /> Enter the PIN</Card.Header>
+          <Message negative size="small" style={{ marginTop: '10px' }}>
+            Cannot reach the server to check whether a PIN is needed, so this
+            page stays locked. {error}
+          </Message>
+          <Button onClick={loadStatus}>Try again</Button>
+        </Card.Content>
+      </Card>
+    );
+  }
+
   // No PIN set and we are not on Sophie's own network: the server refuses to
   // set one from here, so say that rather than offering a form that fails.
   if (settingUp && !status.can_set_pin) {
@@ -130,7 +149,9 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
         </Card.Header>
         <Card.Meta style={{ marginTop: '6px' }}>
           {settingUp
-            ? 'At least 4 digits. It protects reboot, power and the alarm — not the rest of the dashboard.'
+            ? 'At least 4 digits. It protects reboot, power and turning the alarm '
+              + 'off — not the rest of the dashboard. Until you set one, none of '
+              + 'those are protected.'
             : (reason || 'This page can reboot Sophie and cut power.')}
         </Card.Meta>
 
@@ -174,7 +195,11 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
                             || (settingUp && confirm.length < 4)}>
             {settingUp ? 'Set PIN' : 'Unlock'}
           </Button>
-          {onCancel && <Button onClick={onCancel} disabled={busy}>Cancel</Button>}
+          {onCancel && (
+            <Button onClick={onCancel} disabled={busy}>
+              {cancelText || 'Cancel'}
+            </Button>
+          )}
         </div>
       </Card.Content>
     </Card>
@@ -182,33 +207,59 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel }) => {
 };
 
 /**
- * Renders `children` only once this device is trusted. When no PIN has been
- * set at all the server gates nothing, so this lets the page through rather
- * than locking the owner out of the page where the PIN is set.
+ * Renders `children` only once this device is trusted.
+ *
+ * The no-PIN-set case is the subtle one, and the first version got it wrong.
+ * The server gates nothing until a PIN exists, so letting the page straight
+ * through looked right -- but it meant the setup flow inside PinPrompt existed
+ * and nothing could ever reach it, so opening the debug page never offered to
+ * set a PIN. Reported 2026-10-26.
+ *
+ * So: with no PIN set, prompt to choose one, but always with a way past. The
+ * owner must never be *unable* to reach the page, since the server is not
+ * enforcing anything yet anyway -- a hard block here would be a lockout with
+ * no security benefit. Off the RV LAN the server refuses to set a PIN at all,
+ * so there is nothing to offer and the page is shown directly.
  */
 export const PinGate = ({ children, reason }) => {
   const [state, setState] = useState(null);   // null = still checking
+  const [skippedSetup, setSkippedSetup] = useState(false);
 
   const check = useCallback(async () => {
     try {
       const data = await fetchFromServer('/api/auth/status');
       setState(data);
     } catch (err) {
+      // Fail CLOSED. If the status cannot be read we do not know whether a
+      // PIN is set, and guessing "no" would hand over the page precisely when
+      // something is wrong.
       setState({ configured: true, authenticated: false, unreachable: err.message });
     }
   }, []);
 
   useEffect(() => { check(); }, [check]);
 
+  const prompt = (node) => (
+    <div style={{ maxWidth: '420px', margin: '30px auto', padding: '0 16px' }}>
+      {node}
+    </div>
+  );
+
   if (state === null) {
     return <div style={{ padding: '20px' }}><Icon name="circle notched" loading /> Checking…</div>;
   }
-  if (!state.configured || state.authenticated) return children;
-  return (
-    <div style={{ maxWidth: '420px', margin: '30px auto', padding: '0 16px' }}>
-      <PinPrompt reason={reason} onUnlocked={check} />
-    </div>
-  );
+  if (state.authenticated && state.configured) return children;
+
+  if (!state.configured) {
+    // Cannot be set from here, or the owner chose to deal with it later.
+    if (!state.can_set_pin || skippedSetup) return children;
+    return prompt(
+      <PinPrompt reason={reason} onUnlocked={check}
+                 onCancel={() => setSkippedSetup(true)}
+                 cancelText="Skip for now" />
+    );
+  }
+  return prompt(<PinPrompt reason={reason} onUnlocked={check} />);
 };
 
 export default PinGate;
