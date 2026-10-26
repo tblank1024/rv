@@ -162,14 +162,43 @@ build context would ship the PIN hash inside the image.
 is explicit and `"*"` is refused and logged; cross-site writes are still refused independently by
 `block_cross_site_writes`, so this does not reopen what `75badd3` closed.
 
+## Verified end to end 2026-10-26
+
+The gate matrix is in the table above. The change and revoke flows were then
+exercised against the live server, cycling the PIN out and back so it ended
+where the owner had set it:
+
+| Case | Result |
+|---|---|
+| new PIN of 2 digits, correct current PIN | refused, "at least 4 digits, numbers only" |
+| new PIN `abcd` | refused, same message |
+| PIN after both refusals | unchanged |
+| change (correct current PIN) | success |
+| the cookie held before the change | 401 — the secret is rotated and the generation bumped, so every other device is signed out |
+| the cookie issued by the change | 200 |
+| the old PIN | 401 |
+| the new PIN | 200 |
+| change back | success, original PIN live again |
+| PIN survives a webserver restart | yes, it is file-backed; the lockout counter does not, which is the known gap below |
+
+`_is_rv_lan` was exercised from a real off-LAN source address rather than read:
+`--interface 10.0.0.1` reports `can_set_pin: true`, `--interface 192.168.2.197`
+(the house LAN) reports `false`.
+
 ## Open items
 
-- [ ] Nothing in the UI exposes **Change PIN** or **Forget all devices** yet. The endpoints exist
-      (`/api/auth/change`, `/api/auth/revoke-all`) but only `curl` can reach them.
-- [ ] `/api/auth/setup`'s LAN check was **not exercised from an off-LAN address** — there was no
-      convenient way to originate a request from one. The logic is a prefix test against `10.0.0.` plus
-      loopback (`_is_rv_lan`), read but not tested.
-- [ ] The lockout counter is in memory, so restarting the webserver clears it. Restarting needs host
-      access, which is already game over, but the freeze is not durable and that is worth knowing.
-- [ ] Decide whether repeated PIN failures should raise a dashboard alert. Five failures is either a
-      fat-fingered owner or somebody probing, and the two are worth telling apart.
+- [ ] `/api/auth/setup`'s **refusal branch** is still unreached. The predicate it
+      calls is now tested from a genuine off-LAN address (above), but the branch
+      itself cannot be hit while a PIN exists, because the "already set" check
+      returns first. It would need the PIN file removed to test, which is the
+      owner's credential.
+- [ ] The lockout counter is in memory, so restarting the webserver clears it.
+      Restarting needs host access, which is already game over, but the freeze
+      is not durable and that is worth knowing.
+- [ ] Decide whether repeated PIN failures should raise a dashboard alert. Five
+      failures is either a fat-fingered owner or somebody probing, and the two
+      are worth telling apart.
+- [ ] **Operational note, not a defect:** during testing on 2026-10-26 the live
+      PIN was probed with guessed values and its value ended up in a session
+      transcript. Do not test a live credential by guessing it. If a PIN has
+      ever been typed into a log, change it from the Security card.
