@@ -266,6 +266,22 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
    present in both `iptables` and `ip6tables` `SOPHIE-IN`, and they are rebuilt by
    `systemctl restart sophie-firewall.service` (which is what boot does).
 
+   **The wired MAC is proven from the laptop; the Wi-Fi MAC is NOT.** `sshd` logged `Accepted publickey for
+   tblank` from both `192.168.2.218` and `192.168.2.143`, which looked like both adapters working. The rule
+   counters say otherwise: the wired rule took all 6 SYNs and the Wi-Fi rule took **zero**. The LOG lines
+   explain it -- iptables prints `MAC=<dest>:<source>:<ethertype>`, and every frame carried
+   `08:3a:88:55:27:80`, the USB dongle, even the ones whose source IP was the Wi-Fi address `.143`.
+
+   The cause is a testing trap worth remembering: binding the source *address* does not choose the egress
+   *interface*. Windows routed out the wired adapter regardless, so the frame's source MAC was the dongle's and
+   the Wi-Fi rule was never exercised. To test it for real the wired adapter has to be disabled or unplugged, so
+   the AX201 is the only way out.
+
+   Why it matters rather than being pedantry: if Windows randomizes the AX201's MAC per network -- it can, even
+   on a vendor adapter -- the Wi-Fi path will fail silently, and it will fail precisely when the dongle is not
+   plugged in and SSH is the only way to the tmux session. Check the Wi-Fi rule's counter after the first real
+   Wi-Fi-only attempt; a zero there with a connection refused is the signature.
+
    Unchanged, and still the better answer away from home:
    - On Sophie's WiFi: `ssh tblank@10.0.0.1` -- `br0` is trusted, so this always worked and needs no exception.
    - Anywhere: Raspberry Pi Connect (dials out; remote shell and screen sharing).
