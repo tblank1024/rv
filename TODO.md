@@ -285,6 +285,35 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
       **Not yet proven across a reboot or a USB-uplink switch** — see
       §"Check at the next reboot" at the top of this file.
 
+## Internet page redesign (2026-10-26) — what is still open
+
+Done and verified: the Options selector, `POST /api/internet/select` (socket + mains in one
+call), watts instead of mA, accessories card removed, the WiFi bridge card folded into one
+line, Sophie filtered out, and the manual-choice override that stops a deliberate uplink
+choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridge).
+
+- [ ] **The Starlink path of the selector is UNTESTED.** Cellular was tested end to end on
+      2026-10-26 and passed (held 180s, no outage, restored cleanly). Starlink was not:
+      testing it means dropping the uplink again, and in the garage the dish cannot get a
+      route anyway. What is unverified is specifically that selecting it switches Kasa
+      outlet 6 on and powers socket 4 — the code path is shared with cellular, which is
+      evidence but not proof. Do it on a trip.
+- [ ] **The amplifier costs 16.9 W**, measured 2026-10-26 at the Kasa outlet, against ~1 W
+      for the modem itself. Cellular + amp is therefore ~18 W all-in, roughly 430 Wh/day or
+      36 Ah at 12 V. Worth a line in the UI, or at least worth knowing before leaving it on
+      while boondocking.
+- [ ] **The WiFi list is thin after a long idle gap** — 3 networks at 330s and 420s idle
+      versus 13 when warm. That is the kernel ageing its scan out, not the old bug (which
+      gave exactly 1, the network already joined). The strong neighbours are always
+      present. Could be improved by lowering the thin-scan retry threshold above 1, but
+      the retry costs 6s per attempt on the page load, so it is a trade rather than a fix.
+- [ ] `webserver/client/src/page-debug/debug.jsx:612` still prints raw `bMaxPower` in mA in
+      its socket list. Left deliberately — raw sysfs values are the point of a diagnostic
+      page — but the owner's "show all power in watts" was not qualified, so confirm.
+- [ ] `MANUAL_GRACE` is 120s in **three** places (`pi5connect.sh`, `wan_scan.sh`,
+      and implicitly the modem timings they are derived from). They must stay in step;
+      a comment says so but nothing enforces it.
+
 ## Small / unrelated
 
 - [ ] `chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset` — `visudo -c`
