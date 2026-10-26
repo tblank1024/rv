@@ -14,7 +14,7 @@
  * password, or somebody tapping Reboot to see what it does.
  */
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button, Card, Icon, Message, Form } from 'semantic-ui-react';
+import { Button, Card, Icon, Message } from 'semantic-ui-react';
 import { fetchFromServer, getServerUrl } from '../utils/api';
 import './PinPrompt.css';
 
@@ -36,6 +36,13 @@ const post = async (path, body) => {
 export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState('');
+  // Setup is two passes on the SAME keypad. The first version put the
+  // confirmation in a text input, which needs a keyboard -- and the device
+  // this runs on is a wall tablet, so there was no way to fill it in. A
+  // keypad whose whole purpose is to avoid needing a keyboard must not then
+  // depend on one.
+  const [stage, setStage] = useState('enter');   // 'enter' | 'confirm'
+
   const [status, setStatus] = useState(null);     // from /api/auth/status
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -65,12 +72,29 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
   }, [freeze]);
 
   const settingUp = status && !status.configured;
+  const confirming = settingUp && stage === 'confirm';
+  const entry = confirming ? confirm : pin;
+  const setEntry = confirming ? setConfirm : setPin;
 
   const tap = (key) => {
     setError('');
-    if (key === '⌫') { setPin((p) => p.slice(0, -1)); return; }
+    if (key === '⌫') { setEntry((v) => v.slice(0, -1)); return; }
     if (key === '') return;
-    setPin((p) => (p.length >= 12 ? p : p + key));
+    setEntry((v) => (v.length >= 12 ? v : v + key));
+  };
+
+  // Setup's first pass just moves to the second; nothing is sent yet.
+  const next = () => {
+    if (pin.length < 4) return;
+    setError('');
+    setConfirm('');
+    setStage('confirm');
+  };
+
+  const back = () => {
+    setError('');
+    setConfirm('');
+    setStage('enter');
   };
 
   const submit = async () => {
@@ -78,7 +102,15 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
     setError('');
     try {
       if (settingUp) {
-        if (pin !== confirm) { setError('The two PINs do not match.'); return; }
+        if (pin !== confirm) {
+          // Back to the first pass: re-entering only the confirmation after a
+          // mismatch risks saving a typo made in the first one.
+          setError('The two PINs did not match. Start again.');
+          setPin('');
+          setConfirm('');
+          setStage('enter');
+          return;
+        }
         const { data } = await post('/api/auth/setup', { pin });
         if (!data.success) { setError(data.message || 'Could not set the PIN.'); return; }
         onUnlocked();
@@ -145,31 +177,24 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
       <Card.Content>
         <Card.Header>
           <Icon name={settingUp ? 'lock open' : 'lock'} />
-          {settingUp ? 'Choose a PIN' : 'Enter the PIN'}
+          {!settingUp ? 'Enter the PIN'
+            : confirming ? 'Re-enter the PIN' : 'Choose a PIN'}
         </Card.Header>
         <Card.Meta style={{ marginTop: '6px' }}>
-          {settingUp
-            ? 'At least 4 digits. It protects reboot, power and turning the alarm '
-              + 'off — not the rest of the dashboard. Until you set one, none of '
-              + 'those are protected.'
-            : (reason || 'This page can reboot Sophie and cut power.')}
+          {!settingUp
+            ? (reason || 'This page can reboot Sophie and cut power.')
+            : confirming
+              ? 'Tap the same digits again to confirm.'
+              : 'At least 4 digits. It protects reboot, power and turning the '
+                + 'alarm off — not the rest of the dashboard. Until you set '
+                + 'one, none of those are protected.'}
         </Card.Meta>
 
         <div className="pin-display">
-          {pin.length === 0
+          {entry.length === 0
             ? <span className="pin-display__empty">— — — —</span>
-            : '•'.repeat(pin.length)}
+            : '•'.repeat(entry.length)}
         </div>
-
-        {settingUp && (
-          <Form style={{ marginTop: '10px' }}>
-            <Form.Input
-              type="password" label="Confirm the PIN" value={confirm}
-              inputMode="numeric" autoComplete="off"
-              onChange={(e) => setConfirm(e.target.value.replace(/\D/g, ''))}
-            />
-          </Form>
-        )}
 
         <div className="pin-keypad">
           {KEYS.map((key, i) => (
@@ -190,12 +215,16 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
         {error && freeze === 0 && <Message negative size="small">{error}</Message>}
 
         <div style={{ marginTop: '10px', display: 'flex', gap: '8px' }}>
-          <Button primary loading={busy} onClick={submit}
-                  disabled={busy || freeze > 0 || pin.length < 4
-                            || (settingUp && confirm.length < 4)}>
-            {settingUp ? 'Set PIN' : 'Unlock'}
-          </Button>
-          {onCancel && (
+          {settingUp && !confirming ? (
+            <Button primary onClick={next} disabled={pin.length < 4}>Next</Button>
+          ) : (
+            <Button primary loading={busy} onClick={submit}
+                    disabled={busy || freeze > 0 || entry.length < 4}>
+              {settingUp ? 'Set PIN' : 'Unlock'}
+            </Button>
+          )}
+          {confirming && <Button onClick={back} disabled={busy}>Back</Button>}
+          {onCancel && !confirming && (
             <Button onClick={onCancel} disabled={busy}>
               {cancelText || 'Cancel'}
             </Button>
