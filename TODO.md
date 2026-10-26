@@ -314,6 +314,48 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       and implicitly the modem timings they are derived from). They must stay in step;
       a comment says so but nothing enforces it.
 
+## pi5connect lock (2026-10-26) -- fixes both duplicate-rule items
+
+`pi5connect.sh` v2.4 takes an `flock` on `/run/pi5connect.lock` around the whole invocation.
+Every rule guard in it is check-then-act (`iptables -C ... || iptables -A ...`), which is not
+atomic, and the NetworkManager dispatcher fires several instances for one event -- six log
+entries for the 2026-10-26 boot, three inside one second on 2026-10-23.
+
+**The straightforward test was inconclusive and is worth recording as such.** Firing five
+concurrent instances of the *unlocked* v2.3 did **not** duplicate anything: counts stayed at
+2 DNS / 1 MASQUERADE / 1 FORWARD, same as the locked version. So that A/B proved nothing
+either way. The reason is that each instance spends about two seconds probing before it
+reaches `ensure_dns_input`, which staggers them enough to usually miss the window -- which is
+also why the duplicates accumulate slowly in real life (four rules, not six, after many WAN
+changes).
+
+Tested the mechanism in isolation instead, on a throwaway `PI5LOCKTEST` chain, which does
+settle it:
+
+| concurrency | check-then-act, unlocked | serialized by flock |
+|---|---|---|
+| 5 | 4 rules | 1 |
+| 10 | 3 rules | 1 |
+| 20 | 3 rules | 1 |
+| 40 | 8 rules | 1 |
+
+Two behaviours that mattered more than the duplicate count, both verified:
+
+- **The recursive failover child does not deadlock.** `PI5_LOCK_HELD=1` is exported for the
+  `"$0" "$cand" up` child so it does not wait for a lock its own parent holds. Measured with
+  the lock held externally: child with the flag returned in 3s, child without it waited the
+  full 30s. A deadlock here would have hung the one path that matters when there is no WAN.
+- **A timeout proceeds rather than exits.** Duplicate rules are cosmetic; skipping the work
+  because another instance looked busy could leave the RV with no uplink if that instance is
+  wedged. The log line makes the race visible when it happens.
+
+Latency cost is negligible: with a dispatcher storm the first instance still commits the WAN
+in ~2s and the rest are redundant no-ops behind it.
+
+- [ ] Watch the rule counts over the next few WAN changes. They were deduped to 2/1/1 on
+      2026-10-26; if they stay there through several uplink switches and a reboot, both
+      duplicate-rule items below can be closed properly rather than on a mechanism argument.
+
 ## Reboot test after disabling netfilter-persistent (2026-10-26 16:18)
 
 First boot since netfilter-persistent was disabled and `install_raspap_bridge.sh` was stopped

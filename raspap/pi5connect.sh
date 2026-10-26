@@ -59,7 +59,7 @@
 # route on its device and therefore fails the probe, which is the intent.
 # Known limitation: a captive portal answers the probe and still looks healthy.
 
-SCRIPT_VERSION="2.3"   # 2.3: enforces socket gating after a WAN commit
+SCRIPT_VERSION="2.4"   # 2.4: flock around the whole invocation (see LOCK_FILE)
 LOGFILE="/var/log/pi5connect.log"
 exec >> $LOGFILE 2>&1
 echo "[$(date)] pi5connect.sh triggered: iface=${1:-unset} status=${2:-unset}"
@@ -411,6 +411,43 @@ probe_default() {
 # --- Determine active interface ---
 TRIGGERED_IFACE="$1"
 TRIGGERED_STATUS="${2:-up}"
+
+# --- Serialize the whole invocation -----------------------------------------
+# The NetworkManager dispatcher fires SEVERAL instances of this script for one
+# event -- six log entries for the 2026-10-26 boot, three within the same
+# second for one eth2 up on 2026-10-23. Every rule guard here is check-then-act
+# (`iptables -C ... || iptables -A ...`), which is not atomic, so instances
+# raced each other into duplicate rules: four identical br0 DNS accepts where
+# there should be two, stale per-WAN FORWARD rules, and a duplicated
+# MASQUERADE. Confirmed as the cause on 2026-10-26 after a reboot ruled out
+# netfilter-persistent restoring them.
+#
+# With the lock, the first instance does the work and the others find every
+# guard already satisfied, which is what makes them cheap no-ops rather than
+# duplicate-rule generators.
+#
+# PI5_LOCK_HELD is exported for the recursive failover child ("$0" "$cand" up).
+# That child must NOT wait for a lock its own parent holds -- that would
+# deadlock the failover path, which is precisely the path that matters when
+# the RV has no WAN.
+#
+# On timeout we proceed ANYWAY rather than exit. Getting duplicate rules is
+# cosmetic; skipping the work because another instance looked busy could leave
+# the RV with no uplink if that instance is wedged. Connectivity wins, and the
+# log line makes the race visible.
+LOCK_FILE="/run/pi5connect.lock"
+LOCK_WAIT=30
+if [[ "${PI5_LOCK_HELD:-0}" != "1" ]]; then
+    if exec {LOCK_FD}>"$LOCK_FILE" 2>/dev/null; then
+        if flock -w "$LOCK_WAIT" "$LOCK_FD"; then
+            export PI5_LOCK_HELD=1
+        else
+            echo "[$(date)] Lock: waited ${LOCK_WAIT}s for $LOCK_FILE, proceeding without it (duplicate rules possible)"
+        fi
+    else
+        echo "[$(date)] Lock: could not open $LOCK_FILE, proceeding without it"
+    fi
+fi
 
 MANUAL_ROLE="$(manual_role)"
 if [[ -n "$MANUAL_ROLE" ]]; then
