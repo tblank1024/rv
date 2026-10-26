@@ -314,6 +314,29 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       and implicitly the modem timings they are derived from). They must stay in step;
       a comment says so but nothing enforces it.
 
+## Reboot test after disabling netfilter-persistent (2026-10-26 16:18)
+
+First boot since netfilter-persistent was disabled and `install_raspap_bridge.sh` was stopped
+from writing `rules.v4`. **Passed.**
+
+| Check | Before | After |
+|---|---|---|
+| `sophie-firewall.sh status` | `== ARMED` | `== ARMED` |
+| `-A INPUT -j SOPHIE-IN` at position 1, v4 and v6 | yes | yes |
+| `FORWARD` policy | DROP | DROP |
+| `netfilter-persistent` | disabled but still active from the old boot | **inactive** |
+| SSH MAC rules, v4/v6 | 2/2 | 2/2 |
+| MASQUERADE rules | 6 | 4 |
+| `br0` DNS INPUT rules | 4 | **4** (see the corrected item below) |
+| uplink | wired `eth1` | wired `eth1`, internet up |
+| containers | 9 running, 7 healthy + labelled | same |
+| `RVC/RV_Health/1` | `Status=OK ... all clear` | same, publisher restarted cleanly |
+| dashboard PIN | set | survived (`configured: true`) |
+
+Nothing depended on `netfilter-persistent`: the firewall armed without it, NAT came back from
+`pi5connect.sh` as designed, and the MASQUERADE duplicates dropped from six to four because
+the saved ruleset no longer seeds them.
+
 ## From the HA security review (relayed 2026-10-26)
 
 Reconciled against this repo the same day. Most of the review was already tracked; these are the
@@ -383,10 +406,23 @@ Not tracked anywhere before this, in the review's own priority order:
       thing that stops working after a sudo upgrade.
 - [ ] `iptables -S INPUT` carries **four** identical `br0` DNS accept rules where
       `pi5connect.sh`'s `-C` guard should have produced two
-      (`raspap/pi5connect.sh:218-221`). Harmless. Re-counted after the stage-2 cellular
-      switch on 2026-10-23: **still four, not six** -- so the `-C` guard does hold across a
-      WAN change and the list is not leaking per switch. The duplicate pair comes from
-      somewhere else, most likely a race at boot. Lower priority than it looked.
+      (`raspap/pi5connect.sh`, `ensure_dns_input`). Harmless. Re-counted after the stage-2
+      cellular switch on 2026-10-23: **still four, not six** -- so the guard holds across a
+      WAN change and the list is not leaking per switch.
+
+      **Source identified 2026-10-26, and it is NOT `rules.v4`.** Commits `b87e27c` and
+      `186ed0c` claimed `netfilter-persistent` restoring `/etc/iptables/rules.v4` explained
+      these, because that file does contain four such lines. The reboot that evening
+      disproved it: `netfilter-persistent` was `inactive`, nothing restored that file, and
+      the count came back as **four** anyway, as two exact `udp` pairs and two exact `tcp`
+      pairs.
+
+      So it is the TOCTOU race in `ensure_dns_input`: `-C` then `-A` is not atomic, and the
+      dispatcher fires several `pi5connect` instances for one event (six trigger entries in
+      the log for this boot alone). Two instances both find the rule absent and both add it.
+      That makes this the **same root cause** as the stale-FORWARD-rules item below, and the
+      lock proposed there fixes both. The `rules.v4` claim in those two commit messages is
+      wrong; the rest of what they say stands.
 
 - [ ] **Stale rules for a dead WAN survive a switch.** After `wlan1` went away on
       2026-10-23, `FORWARD` still held `-i br0 -o wlan1 -j ACCEPT` and its
