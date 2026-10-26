@@ -53,10 +53,10 @@ from typing import Annotated, Optional
 from kasa_power_strip import KasaPowerStrip, KasaPowerStripError
 from usb_modem_manager import usb_modem_manager
 
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import FastAPI, Body, HTTPException, Request
 from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import random
 from server_calcs import *
@@ -172,13 +172,124 @@ try:
 except FileNotFoundError:
     index_content = "<html><body><h1>RV Security Server Running</h1><p>Build the client first with 'make build'</p></body></html>"
 
+# Cross-origin policy. This used to be allow_origins=["*"] with
+# allow_credentials=True, which is the widest setting there is, and because
+# those two are contradictory under the CORS spec Starlette resolved it by
+# ECHOING back whatever Origin asked. Verified 2026-10-23: a preflight for
+# POST /api/system/reboot sent from "https://evil.example" was answered
+#   access-control-allow-origin: https://evil.example
+#   access-control-allow-credentials: true
+# i.e. approved. Since this API has no authentication and ~20 endpoints that
+# act on the world (host reboot, container restart, hub socket power, WAN
+# selection, Kasa mains outlets, Synology shutdown, alarm state), that let ANY
+# web page loaded by ANY browser on the RV LAN drive the RV and read the
+# replies. A phone on Sophie's WiFi following a bad link was enough; the user
+# did not have to do anything wrong. The host firewall cannot help here --
+# br0 is trusted by design, or the dashboard would not work at all.
+#
+# Production needs no cross-origin permission whatsoever: client/src/constants.js
+# sets IPADDR="auto" and PORT="8000", and utils/api.js derives the API base from
+# window.location.hostname, so the page and the API are always the same origin
+# and the browser never consults this policy. Narrowing it therefore cannot
+# break access from the RV LAN, the house LAN or cellular, at any address.
+#
+# The only genuine cross-origin case is `make client_start` -- the CRA dev
+# server on :3000 calling the API on :8000. That is what this list is for.
+# Add others with DASHBOARD_CORS_ORIGINS (comma separated) rather than
+# widening this back to "*".
+_default_cors = "http://localhost:3000,http://127.0.0.1:3000"
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get("DASHBOARD_CORS_ORIGINS", _default_cors).split(",")
+    if o.strip()
+]
+if "*" in _cors_origins:
+    # Refuse the one value that reintroduces the hole described above.
+    logging.warning(
+        'DASHBOARD_CORS_ORIGINS contains "*", which would let any website on '
+        "the internet drive this unauthenticated API through a LAN browser. "
+        "Ignoring it; set explicit origins instead."
+    )
+    _cors_origins = [o for o in _cors_origins if o != "*"] or _default_cors.split(",")
+logging.info("CORS: allowing origins %s", _cors_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    # No cookies or TLS client certs are used, and allow_credentials=True is
+    # what forced the origin echo above. Keep it False: a bearer token for the
+    # write endpoints would travel in the Authorization header, which is
+    # covered by allow_headers, not by this flag.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "Authorization"],
 )
+
+
+# Narrowing the CORS list above is necessary but NOT sufficient, and it is worth
+# being precise about why, because the gap is easy to miss.
+#
+# CORS governs whether a page may READ a reply. It does not stop the browser from
+# SENDING the request. A "simple" request -- GET, or POST whose Content-Type is
+# text/plain, form-urlencoded or multipart, with no custom headers -- gets no
+# preflight at all: the browser just sends it, then withholds the response. Any
+# side effect has already happened. That is CSRF, and CORS never addressed it.
+#
+# Measured 2026-10-25 after pinning the origins: of the 20 write endpoints, the 11
+# that require a JSON body became unreachable from a web page, because the JSON
+# Content-Type forces a preflight that now fails. The 9 that take NO body were
+# still wide open -- including POST /api/system/reboot,
+# POST /api/system/restart-containers and POST /api/debug/synology/{action}.
+# Confirmed with a text/plain POST and a foreign Origin to the harmless
+# /api/debug/kasa/clear-cache: 200.
+#
+# So this guard closes the half CORS cannot. Browsers attach an Origin header to
+# every cross-origin state-changing request, simple ones included, and to
+# same-origin POSTs as well. Three cases:
+#   - no Origin            -> not a browser (curl, a script, a container). Allowed;
+#                             anything on the LAN can already open a socket, so
+#                             rejecting here would buy nothing and break tooling.
+#   - Origin == our own    -> the dashboard talking to the host that served it.
+#     host                   Allowed at ANY address, which is what keeps RV-LAN,
+#                             house-LAN and cellular access working.
+#   - any other Origin     -> a different site driving us. Refused.
+# This is not authentication, and it is not a substitute for it: a non-browser
+# client on the LAN is unaffected. It removes the drive-by path, where merely
+# loading a page on a phone joined to Sophie's WiFi was enough to reboot her.
+_UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+def _origin_is_self(origin: str, host_header: str) -> bool:
+    """True if `origin` names the same host:port the request was addressed to."""
+    if not origin or not host_header:
+        return False
+    netloc = origin.split("://", 1)[-1]
+    if netloc == host_header:
+        return True
+    # Tolerate a default port on one side only (http://h vs h:80).
+    bare_origin = netloc.rsplit(":", 1)[0] if ":" in netloc else netloc
+    bare_host = host_header.rsplit(":", 1)[0] if ":" in host_header else host_header
+    return bare_origin == bare_host and {netloc, host_header} & {bare_origin}
+
+
+@app.middleware("http")
+async def block_cross_site_writes(request: Request, call_next):
+    if request.method in _UNSAFE_METHODS:
+        origin = request.headers.get("origin", "")
+        if origin:
+            host_header = request.headers.get("host", "")
+            if origin not in _cors_origins and not _origin_is_self(origin, host_header):
+                logging.warning(
+                    "Refused %s %s from cross-site origin %r (host %r)",
+                    request.method, request.url.path, origin, host_header,
+                )
+                return JSONResponse(
+                    {"success": False,
+                     "message": "Cross-site request refused. This API only accepts "
+                                "state-changing requests from its own dashboard."},
+                    status_code=403,
+                )
+    return await call_next(request)
 
 @app.get("/")
 @app.get("/power")
