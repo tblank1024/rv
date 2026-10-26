@@ -140,3 +140,80 @@ describe('setting a PIN with no keyboard', () => {
     expect(screen.getByRole('button', { name: /^Next$/ })).not.toBeDisabled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// SecurityCard: the change and forget flows, which exist because the
+// endpoints were previously reachable only by curl.
+// ---------------------------------------------------------------------------
+describe('SecurityCard', () => {
+  let SecurityCard;
+  beforeEach(() => {
+    SecurityCard = require('./SecurityCard').default;
+    global.fetch = jest.fn().mockResolvedValue({
+      status: 200, ok: true, json: async () => ({ success: true, message: 'PIN changed.' }),
+    });
+  });
+
+  test('three keypad passes change the PIN', async () => {
+    authStatus({ configured: true, authenticated: true, expires_in: 2592000 });
+    render(<SecurityCard />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Change PIN' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change PIN' }));
+    await waitFor(() => expect(screen.getByText('Enter the current PIN')).toBeInTheDocument());
+    tapDigits('8471');
+    fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+
+    await waitFor(() => expect(screen.getByText('Enter the new PIN')).toBeInTheDocument());
+    tapDigits('1234');
+    fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+
+    await waitFor(() => expect(screen.getByText('Re-enter the new PIN')).toBeInTheDocument());
+    tapDigits('1234');
+    fireEvent.click(screen.getByRole('button', { name: 'Change PIN' }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toContain('/api/auth/change');
+    expect(JSON.parse(options.body)).toEqual({ current: '8471', new: '1234' });
+  });
+
+  test('mismatched new PINs go back to the new-PIN pass and send nothing', async () => {
+    authStatus({ configured: true, authenticated: true, expires_in: 2592000 });
+    render(<SecurityCard />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Change PIN' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Change PIN' }));
+    tapDigits('8471');
+    fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+    tapDigits('1234');
+    fireEvent.click(screen.getByRole('button', { name: /^Next$/ }));
+    tapDigits('9999');
+    fireEvent.click(screen.getByRole('button', { name: 'Change PIN' }));
+
+    await waitFor(() => expect(screen.getByText(/did not match/i)).toBeInTheDocument());
+    expect(screen.getByText('Enter the new PIN')).toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('forget all devices confirms before sending', async () => {
+    authStatus({ configured: true, authenticated: true, expires_in: 2592000 });
+    render(<SecurityCard />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Forget all devices' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Forget all devices' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Yes, sign all out/i })).toBeInTheDocument());
+    expect(global.fetch).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Yes, sign all out/i }));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    expect(global.fetch.mock.calls[0][0]).toContain('/api/auth/revoke-all');
+  });
+
+  test('with no PIN set it offers to set one instead', async () => {
+    authStatus({ configured: false, authenticated: true, can_set_pin: true });
+    render(<SecurityCard />);
+    await waitFor(() => expect(screen.getByText('No PIN set')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Change PIN' })).not.toBeInTheDocument();
+  });
+});

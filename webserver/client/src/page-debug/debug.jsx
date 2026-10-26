@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import './debug.css';
 import { getServerUrl } from '../utils/api';
 import PinGate from '../components/PinPrompt';
+import SecurityCard from '../components/SecurityCard';
 
 console.log("Debug component loaded");
 
@@ -776,6 +777,8 @@ function DebugPanel() {
             </div>
           </div>
         </div>
+
+        <SecurityCard />
 
         {/* System: destructive actions, kept at the bottom and behind a
             confirmation. A reboot drops every WiFi client on Sophie. */}

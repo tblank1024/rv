@@ -21,7 +21,7 @@ import './PinPrompt.css';
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
 
 /** POST that needs the raw status code, which fetchFromServer hides. */
-const post = async (path, body) => {
+export const post = async (path, body) => {
   const response = await fetch(`${getServerUrl()}${path}`, {
     method: 'POST',
     credentials: 'include',
@@ -32,6 +32,39 @@ const post = async (path, body) => {
   try { data = await response.json(); } catch (e) { /* empty body */ }
   return { status: response.status, data };
 };
+
+/**
+ * The digits and the dots. Shared, because every PIN flow on this dashboard
+ * has to work with no keyboard attached -- a second copy of this would be a
+ * second chance to forget that.
+ */
+export const Keypad = ({ value, setValue, disabled }) => {
+  const tap = (key) => {
+    if (key === '\u232b') { setValue(value.slice(0, -1)); return; }
+    if (key === '') return;
+    setValue(value.length >= 12 ? value : value + key);
+  };
+  return (
+    <>
+      <div className="pin-display">
+        {value.length === 0
+          ? <span className="pin-display__empty">— — — —</span>
+          : '•'.repeat(value.length)}
+      </div>
+      <div className="pin-keypad">
+        {KEYS.map((key, i) => (
+          <button key={i} type="button" className="pin-key"
+                  disabled={!key || disabled}
+                  style={{ visibility: key ? 'visible' : 'hidden' }}
+                  onClick={() => tap(key)}>
+            {key}
+          </button>
+        ))}
+      </div>
+    </>
+  );
+};
+
 
 export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
   const [pin, setPin] = useState('');
@@ -75,13 +108,6 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
   const confirming = settingUp && stage === 'confirm';
   const entry = confirming ? confirm : pin;
   const setEntry = confirming ? setConfirm : setPin;
-
-  const tap = (key) => {
-    setError('');
-    if (key === '⌫') { setEntry((v) => v.slice(0, -1)); return; }
-    if (key === '') return;
-    setEntry((v) => (v.length >= 12 ? v : v + key));
-  };
 
   // Setup's first pass just moves to the second; nothing is sent yet.
   const next = () => {
@@ -190,22 +216,9 @@ export const PinPrompt = ({ reason, onUnlocked, onCancel, cancelText }) => {
                 + 'one, none of those are protected.'}
         </Card.Meta>
 
-        <div className="pin-display">
-          {entry.length === 0
-            ? <span className="pin-display__empty">— — — —</span>
-            : '•'.repeat(entry.length)}
-        </div>
-
-        <div className="pin-keypad">
-          {KEYS.map((key, i) => (
-            <button key={i} type="button" className="pin-key"
-                    disabled={!key || busy || freeze > 0}
-                    style={{ visibility: key ? 'visible' : 'hidden' }}
-                    onClick={() => tap(key)}>
-              {key}
-            </button>
-          ))}
-        </div>
+        <Keypad value={entry}
+                setValue={(v) => { setError(''); setEntry(v); }}
+                disabled={busy || freeze > 0} />
 
         {freeze > 0 && (
           <Message negative size="small">
