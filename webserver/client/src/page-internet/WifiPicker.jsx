@@ -183,12 +183,15 @@ const WifiPicker = ({ onConnected }) => {
   useEffect(() => {
     loadNetworks(true);
     pollStatus();
-    // A forced rescan can return while the scan is still running, carrying
-    // only the associated BSS (measured on the Alfa: 1 BSS, then 17 a few
-    // seconds later). The bridge now carries recently-seen SSIDs across such
-    // a scan, but right after the bridge itself restarts it has nothing to
-    // carry -- so read once more when the radio has had time to finish.
-    const settle = setTimeout(() => loadNetworks(false), 5000);
+    // Read once more when the radio has had time to finish. After a long
+    // idle gap the mount read returns only the strong neighbours, because the
+    // kernel is still walking channels; a few seconds later it has the lot.
+    //
+    // 12s, not 5s, and that is measured rather than chosen: the bridge caches
+    // the list for NETWORKS_TTL = 10s, so a re-read at 5s is served from that
+    // cache and gains nothing. Measured after 360s idle -- mount 3 networks,
+    // +5s still 3, +15s 9. Keep this above the bridge's TTL or it is a no-op.
+    const settle = setTimeout(() => loadNetworks(false), 12000);
     return () => clearTimeout(settle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
