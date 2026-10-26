@@ -240,14 +240,39 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
 
 ## Things that will break unless handled
 
-1. **SSH/VNC to Sophie through an uplink.** README/CLAUDE.md mention reaching Sophie at `192.168.2.196` from home.
-   That address is on the home network via an uplink, so it will be blocked. **Decision (2026-10-12): no
-   exceptions.** There is no inbound allow-list (e.g., SSH from the home subnet), because a park network can use
-   the same subnet. Instead:
-   - At home: Raspberry Pi Connect (dials out; has both a remote shell and screen sharing), or put the laptop on
-     Sophie's WiFi (trusted `br0`; direct SSH and VNC work).
-   - On the road: same. Later, Tailscale/WireGuard for remote access (dials out, works through CGNAT, no open ports).
-   - Update README/CLAUDE.md's `192.168.2.196` SSH instructions accordingly once deployed.
+1. **SSH to Sophie through an uplink.** **Superseded 2026-10-26: there is now exactly one inbound exception.**
+
+   The original decision (2026-10-12) was *no exceptions*: no inbound allow-list such as SSH from the home
+   subnet, because a park network can use the same subnet. That reasoning was right about the subnet and wrong
+   to conclude nothing was possible, and it is what the new rule is built to respect.
+
+   The owner wanted the laptop's Workers window to attach to the `rv-manager` tmux session over SSH. `SSH_MACS`
+   in `firewall/sophie-firewall.sh` now accepts tcp/22 from two MAC addresses only -- the laptop's Wi-Fi
+   (`28:d0:ea:d4:f7:47`) and its USB Ethernet dongle (`08:3a:88:55:27:80`) -- for IPv4 and IPv6 both.
+
+   Why this does not reopen the thing the original decision protected: `-m mac` matches the source MAC of the
+   arriving **frame**, so it can only ever match a directly attached neighbour. A packet routed from the
+   internet carries the gateway's MAC and can never match, and no campground device carries these MACs. There
+   is deliberately no `-i` pin, because the uplink name swaps between `eth1` and `eth2` across boots and the MAC
+   match already confines this to the local segment.
+
+   Residual risk, accepted by the owner: anyone already on the home LAN who knows those MACs could spoof one.
+   Key-only authentication is what stands behind the rule, not the rule itself --
+   `/etc/ssh/sshd_config.d/10-sophie-hardening.conf` sets `PasswordAuthentication no`,
+   `KbdInteractiveAuthentication no` and `PermitRootLogin no`. A drop-in rather than an edit to `sshd_config`,
+   so a package upgrade of that file cannot silently restore password logins.
+
+   Everything else still drops. Verified 2026-10-26: `status` reports `== ARMED`, the two port-22 rules are
+   present in both `iptables` and `ip6tables` `SOPHIE-IN`, and they are rebuilt by
+   `systemctl restart sophie-firewall.service` (which is what boot does).
+
+   Unchanged, and still the better answer away from home:
+   - On Sophie's WiFi: `ssh tblank@10.0.0.1` -- `br0` is trusted, so this always worked and needs no exception.
+   - Anywhere: Raspberry Pi Connect (dials out; remote shell and screen sharing).
+   - On the road, if a laptop tab is ever wanted there: Tailscale/WireGuard, which dials out and opens no port.
+   - **`192.168.2.196` is not an address Sophie has.** It is `192.168.2.197` (`eth1`, wired USB adapter,
+     MAC `00:e0:4c:36:01:fb`) and `192.168.2.107` (`wlan1`, Alfa, MAC `00:c0:ca:be:29:62`). Both are DHCP, so
+     reserve them on the home router. README/CLAUDE.md still cite `.196` and need updating.
 2. **Home automation talking to Sophie.** If HA (192.168.2.11) or anything at home connects *to* Sophie (MQTT
    bridge, API polling) while parked at home, it will be dropped. Check the `SOPHIE-IN drop:` log lines at home,
    and decide per case. Prefer making the connection go outward from Sophie (e.g., Sophie

@@ -7,6 +7,35 @@ set -uo pipefail
 
 TRUSTED=(lo br0 docker0 "br-+")          # everything else (eth1, eth2, wlan1, wwan0, ...) is untrusted
 
+# The ONE inbound exception, added 2026-10-26 on the owner's decision. It
+# reverses "no inbound allow-list" in plan_firewall.md, so the reasoning is
+# here rather than in the commit alone.
+#
+# Purpose: the laptop's Workers window attaches to the rv-manager tmux session
+# over SSH. On Sophie's own WiFi that already worked, because br0 is trusted;
+# this is for when BOTH are on the home LAN and the packet arrives on an
+# uplink.
+#
+# Why MAC and not a source subnet: a source match of 192.168.2.0/24 would also
+# match at any campground using that subnet -- one of the most common there is
+# -- silently exposing port 22 to every other guest. `-m mac` matches the
+# source MAC of the arriving FRAME, so it can only ever match a directly
+# attached neighbour: a packet routed from the internet carries the gateway's
+# MAC and can never match, and no campground device carries these MACs. So the
+# road posture is unchanged.
+#
+# Why no -i pin: the uplink's interface name swaps between eth1 and eth2 across
+# boots (see TODO.md), and the MAC match already confines this to the local
+# segment, which is what an interface pin would have been for.
+#
+# Residual risk, accepted: someone already on the home LAN who knows these MACs
+# could spoof one. Key-only auth is what stands behind it -- see
+# /etc/ssh/sshd_config.d/10-sophie-hardening.conf.
+SSH_MACS=(
+    28:d0:ea:d4:f7:47      # laptop Wi-Fi, Intel AX201 (vendor MAC, not randomized)
+    08:3a:88:55:27:80      # laptop wired, Lenovo USB Ethernet dongle
+)
+
 chain() { "$1" -N "$2" 2>/dev/null || "$1" -F "$2"; }
 hook()  { "$1" -C "$2" -j "$3" 2>/dev/null || "$1" -I "$2" 1 -j "$3"; }
 unhook(){ while "$1" -D "$2" -j "$3" 2>/dev/null; do :; done; }
@@ -16,6 +45,11 @@ build_in() {   # $1 = iptables | ip6tables
     chain $T SOPHIE-IN
     for i in "${TRUSTED[@]}"; do $T -A SOPHIE-IN -i "$i" -j ACCEPT; done
     $T -A SOPHIE-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    # SSH from the laptop only. IPv4 and IPv6 both, since the home LAN hands
+    # out a ULA and ssh may pick either family.
+    for m in "${SSH_MACS[@]}"; do
+        $T -A SOPHIE-IN -p tcp --dport 22 -m mac --mac-source "$m" -j ACCEPT
+    done
     if [ "$T" = ip6tables ]; then
         for t in 133 134 135 136; do              # RS, RA, NS, NA: needed for IPv6 to work at all
             $T -A SOPHIE-IN -p ipv6-icmp --icmpv6-type $t -j ACCEPT
