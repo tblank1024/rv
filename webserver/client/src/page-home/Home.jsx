@@ -65,9 +65,7 @@ function getFaultSet(d) {
 function Home() {
   const [data, setData] = useState({});
   const [tireRunning, setTireRunning] = useState(null); // null = unknown
-  const [restarting, setRestarting] = useState(false);
   const [tireFaultSilenced, setTireFaultSilenced] = useState(false);
-  const serverWentDown = useRef(false);
   const tireStatusLockedUntil = useRef(0); // epoch ms — ignore poll results until this time
   const tireFaultSilencedRef = useRef(false); // mirror for use inside setInterval closure
   const silencedFaultSet = useRef(new Set()); // tire keys faulted when silence was pressed
@@ -76,10 +74,6 @@ function Home() {
     fetchFromServer('/data/home')
       .then(myJson => {
         setData(myJson);
-        if (serverWentDown.current) {
-          serverWentDown.current = false;
-          setRestarting(false);
-        }
         // Reset silenced state if faults cleared or a new (previously un-silenced) fault appears
         if (tireFaultSilencedRef.current) {
           const currentFaults = getFaultSet(myJson);
@@ -100,7 +94,6 @@ function Home() {
       })
       .catch(error => {
         console.error('Error fetching data:', error);
-        serverWentDown.current = true;
         setData({ var17: '--', var18: '--', var13: '--', var14: '--', battery_percent: 0 });
       });
   };
@@ -121,13 +114,6 @@ function Home() {
     const svcInterval  = setInterval(fetchTireServiceStatus, 10000);
     return () => { clearInterval(dataInterval); clearInterval(svcInterval); };
   }, []);
-
-  const handleRestart = () => {
-    serverWentDown.current = false;
-    setRestarting(true);
-    fetchFromServer('/api/system/restart-containers', { method: 'POST' })
-      .catch(err => { console.error('Restart error:', err); setRestarting(false); });
-  };
 
   const handleTireService = () => {
     const action = tireRunning ? 'stop' : 'start';
@@ -291,9 +277,10 @@ function Home() {
           <div className="home-card home-card--actions">
             <div className="card-title">System</div>
             <div className="action-buttons">
-              <button className="action-btn action-btn--restart" onClick={handleRestart} disabled={restarting}>
-                {restarting ? 'Restarting' : 'Restart Program'}
-              </button>
+              {/* Restart Program moved to the debug page 2026-10-26, so it
+                  sits behind the PIN with the other destructive controls.
+                  The home page now has no control that can interrupt
+                  anything. */}
               <button className="action-btn action-btn--debug" onClick={() => { window.location.href = '/debug'; }}>
                 Debug
               </button>

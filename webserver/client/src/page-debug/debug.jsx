@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import './debug.css';
 import { getServerUrl } from '../utils/api';
+import PinGate from '../components/PinPrompt';
 
 console.log("Debug component loaded");
 
@@ -10,7 +11,7 @@ console.log("Debug component loaded");
 // power to the WiFi adapter.
 const socketLabel = (sock) => sock.name || sock.wan || '';
 
-function Debug() {
+function DebugPanel() {
   const [hubSockets, setHubSockets] = useState({});
   const [hubConfigured, setHubConfigured] = useState(null);
   const [hubConnected, setHubConnected] = useState(null);
@@ -33,6 +34,7 @@ function Debug() {
   const [message, setMessage] = useState('');
   const [lastUpdate, setLastUpdate] = useState(null);
   const [confirmReboot, setConfirmReboot] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [rebooting, setRebooting] = useState(false);
 
 
@@ -43,6 +45,7 @@ function Debug() {
   const getFirewallStatus = async () => {
     try {
       const response = await fetch(`${getServerUrl()}/api/debug/firewall/status`, {
+        credentials: 'include',
         headers: { 'Accept': 'application/json' },
       });
       if (!response.ok) {
@@ -63,6 +66,7 @@ function Debug() {
     console.log('getKasaStatus: Starting request...');
     try {
       const response = await fetch(`${getServerUrl()}/api/debug/kasa/status`, {
+        credentials: 'include',
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -139,6 +143,7 @@ function Debug() {
     }
     try {
       const response = await fetch(`${getServerUrl()}/api/debug/watcher/logs?lines=200`, {
+        credentials: 'include',
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -189,6 +194,7 @@ function Debug() {
   const getHubSockets = async () => {
     try {
       const response = await fetch(`${getServerUrl()}/api/hub/sockets`, {
+        credentials: 'include',
         headers: { 'Accept': 'application/json' },
       });
       const data = await response.json();
@@ -219,11 +225,36 @@ function Debug() {
   // Moved here from the Home page: a reboot drops every WiFi client on the
   // RV and takes the dashboard down with it, so it belongs behind the
   // diagnostics rather than one tap from the status screen.
+  // Moved here from the Home page 2026-10-26. It belongs behind the PIN with
+  // the other destructive controls, and the home page should have nothing on
+  // it that can interrupt the RV.
+  const doRestartContainers = async () => {
+    setRestarting(true);
+    setMessage('Restarting containers\u2026');
+    try {
+      const response = await fetch(`${getServerUrl()}/api/system/restart-containers`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await response.json();
+      setMessage(data.message || (data.success ? 'Containers restarted.' : 'Restart failed.'));
+    } catch (error) {
+      // This container restarts itself, so the reply routinely never arrives.
+      // A failure here is not evidence the restart did not happen.
+      setMessage('Restart requested; no reply received (expected, since this '
+                 + 'server restarts itself).');
+    } finally {
+      setRestarting(false);
+    }
+  };
+
   const doReboot = async () => {
     setConfirmReboot(false);
     setRebooting(true);
     try {
       await fetch(`${getServerUrl()}/api/system/reboot`, {
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -243,6 +274,7 @@ function Debug() {
     // confirms it is how a port gets reported on while it is off.
     try {
       const response = await fetch(`${getServerUrl()}/api/hub/socket`, {
+        credentials: 'include',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ socket: String(label), on }),
@@ -276,6 +308,7 @@ function Debug() {
       }));
       
       const response = await fetch(`${getServerUrl()}/api/debug/kasa/${outletId}`, {
+        credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -313,6 +346,7 @@ function Debug() {
       const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
       
       const response = await fetch(`${getServerUrl()}/api/debug/synology/${action}`, {
+        credentials: 'include',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -749,6 +783,18 @@ function Debug() {
           <h2>System</h2>
           <div className="control-grid">
             <div className="control-item">
+              <h3>Restart Program</h3>
+              <div style={{fontSize: '12px', color: '#666', marginBottom: '12px'}}>
+                Restarts all nine containers. The dashboard goes away for a few
+                seconds and comes back; the Pi itself stays up, so WiFi clients
+                and the uplink are untouched.
+              </div>
+              <button className="control-btn" disabled={restarting}
+                      onClick={doRestartContainers}>
+                {restarting ? 'Restarting\u2026' : 'Restart Program'}
+              </button>
+            </div>
+            <div className="control-item">
               <h3>Reboot</h3>
               <div style={{fontSize: '12px', color: '#666', marginBottom: '12px'}}>
                 Reboots the Pi. Every WiFi client on the RV loses its
@@ -904,6 +950,20 @@ function Debug() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The panel is gated here rather than inside its own render, so none of its
+ * data fetching starts until the device is trusted. The server refuses those
+ * endpoints anyway (see _PROTECTED in server.py) -- this only avoids a page
+ * full of 401s, and is a convenience, not the control.
+ */
+function Debug() {
+  return (
+    <PinGate reason="The debug page can reboot Sophie, cut power to the NAS and switch hub sockets.">
+      <DebugPanel />
+    </PinGate>
   );
 }
 

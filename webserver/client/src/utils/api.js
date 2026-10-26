@@ -26,6 +26,12 @@ export const fetchFromServer = async (endpoint, options = {}) => {
   
   const defaultOptions = {
     method: "GET",
+    // The PIN cookie is HttpOnly, so the browser is the only thing that can
+    // attach it. 'include' rather than the default 'same-origin' because the
+    // CRA dev server on :3000 calls the API on :8000 -- a different origin,
+    // where the default silently drops the cookie and would leave the debug
+    // page permanently locked in development.
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json'

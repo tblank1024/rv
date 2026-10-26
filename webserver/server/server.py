@@ -12,6 +12,10 @@ import requests
 import urllib.request
 import urllib.error
 import json
+import hmac
+import hashlib
+import secrets
+import base64
 import shutil
 import signal
 import atexit
@@ -216,11 +220,21 @@ logging.info("CORS: allowing origins %s", _cors_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    # No cookies or TLS client certs are used, and allow_credentials=True is
-    # what forced the origin echo above. Keep it False: a bearer token for the
-    # write endpoints would travel in the Authorization header, which is
-    # covered by allow_headers, not by this flag.
-    allow_credentials=False,
+    # Was False, on the reasoning that no cookies were used and a bearer token
+    # would travel in the Authorization header instead. The PIN gate changed
+    # that deliberately: a cookie can be HttpOnly, so page JavaScript cannot
+    # read it and an injected script cannot steal and replay it, which a token
+    # in localStorage cannot match.
+    #
+    # True is safe here ONLY because _cors_origins is an explicit list that
+    # cannot contain "*" -- that is refused and logged above, and it was the
+    # "*" plus credentials combination that forced the origin echo described
+    # there. Cross-site writes are also refused outright by
+    # block_cross_site_writes regardless of this flag, so this does not reopen
+    # what 75badd3 closed. The cookie has to cross origins at all only because
+    # the CRA dev server on :3000 calls the API on :8000; in production the
+    # dashboard is same-origin.
+    allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Accept", "Authorization"],
 )
@@ -256,6 +270,426 @@ app.add_middleware(
 # This is not authentication, and it is not a substitute for it: a non-browser
 # client on the LAN is unaffected. It removes the drive-by path, where merely
 # loading a page on a phone joined to Sophie's WiFi was enough to reboot her.
+# ===========================================================================
+# PIN gate
+# ===========================================================================
+# Design, scope and the measurements behind it: plan_pin_protection.md.
+#
+# In one paragraph: the dashboard has no authentication, and the cross-site
+# guard below only stops a *website* driving it through a LAN browser -- a
+# script on the RV LAN was always unaffected. This gates the actions that can
+# reboot Sophie, cut power or disarm the alarm. The threat model is accident
+# and casual access (a guest with the WiFi password, a child tapping a red
+# button), NOT a determined attacker: the dashboard is plain HTTP, so the PIN
+# crosses the air in clear text and no password would be better.
+#
+# Arming the alarm is deliberately NOT gated -- arming can never cause harm,
+# and friction there is how people stop arming. That check lives inside the
+# alarm handler rather than here, because by then Pydantic has coerced `state`
+# into a real bool; this middleware sees a raw body where "off" and false and
+# 0 all mean disarm, and a naive `state is False` would wave three of them
+# through.
+AUTH_FILE = "/etc/rvdashboard/dashboard-auth.json"
+AUTH_COOKIE = "sophie_pin"
+AUTH_TTL = 30 * 24 * 3600          # a device stays trusted 30 days
+AUTH_RENEW_AFTER = 24 * 3600       # re-issue once a token is a day old
+PIN_MIN_DIGITS = 4
+LOCKOUT_MAX_FAILURES = 5           # per window, per source address
+LOCKOUT_WINDOW = 900
+LOCKOUT_FREEZE = 900
+
+# What needs the PIN, as (method, compiled path pattern).
+#
+# The nine write endpoints are the agreed scope. The four GETs after them are
+# the debug page's own data, so the page cannot be *viewed* without the PIN
+# rather than merely being unable to act -- they were checked to be used by no
+# other page. /api/debug/synology/status and .../scheduled-time are
+# deliberately absent: the Plex page reads them to display NAS state, they
+# change nothing, and gating them would break a page nobody asked to gate.
+_PROTECTED = [
+    ("POST",   r"^/api/system/reboot$"),
+    ("POST",   r"^/api/system/restart-containers$"),
+    ("POST",   r"^/api/debug/synology/schedule-shutdown$"),
+    ("DELETE", r"^/api/debug/synology/scheduled-time$"),
+    ("POST",   r"^/api/debug/synology/(?!status$)[^/]+$"),
+    ("POST",   r"^/api/debug/kasa/(?!clear-cache$)\d+$"),
+    ("POST",   r"^/api/hub/socket$"),
+    ("POST",   r"^/api/hub/socket/exclusive$"),
+    # The debug page's reads.
+    ("GET",    r"^/api/debug/firewall/status$"),
+    ("GET",    r"^/api/debug/kasa/status$"),
+    ("GET",    r"^/api/debug/watcher/logs$"),
+    ("GET",    r"^/api/hub/sockets$"),
+]
+_PROTECTED = [(m, re.compile(p)) for m, p in _PROTECTED]
+
+_auth_lock = threading.Lock()
+_auth_failures: dict = {}          # source address -> [failure timestamps]
+
+
+def _auth_config():
+    """
+    The stored salt, PIN hash, signing secret and generation, or None if no
+    PIN has been set yet.
+
+    Lives on the HOST at AUTH_FILE, read through the init mount namespace for
+    the same reason as the manual uplink choice: this container does not share
+    the host filesystem, and a file baked into the image would ship the PIN
+    hash inside it.
+    """
+    try:
+        proc = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "--", "cat", AUTH_FILE],
+            capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            return None
+        config = json.loads(proc.stdout)
+    except Exception as exc:
+        print(f"WARNING: could not read {AUTH_FILE}: {exc}")
+        return None
+    if not all(k in config for k in ("pin_salt", "pin_hash", "secret")):
+        return None
+    config.setdefault("generation", 1)
+    return config
+
+
+def _auth_config_write(config) -> bool:
+    text = json.dumps(config, indent=2) + "\n"
+    try:
+        proc = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "--", "sh", "-c",
+             f"mkdir -p $(dirname {AUTH_FILE}) && cat > {AUTH_FILE} "
+             f"&& chmod 0600 {AUTH_FILE}"],
+            input=text, capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            print(f"WARNING: could not write {AUTH_FILE}: {proc.stderr.strip()}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"WARNING: could not write {AUTH_FILE}: {exc}")
+        return False
+
+
+def _hash_pin(pin: str, salt: str) -> str:
+    """scrypt, so a stolen file cannot be brute-forced as fast as the 10 000
+    possible 4-digit PINs otherwise invite."""
+    return hashlib.scrypt(pin.encode(), salt=bytes.fromhex(salt),
+                          n=2 ** 14, r=8, p=1, dklen=32).hex()
+
+
+def _issue_token(config) -> str:
+    """
+    A signed, stateless token: "<payload>.<hmac>".
+
+    Stateless on purpose. Server-side sessions would be lost on every
+    container rebuild -- which happens often here -- logging every device out.
+    Revocation still works because the generation counter is inside the signed
+    payload, so bumping it in the config file invalidates every token at once.
+    """
+    payload = json.dumps({"exp": int(time.time() + AUTH_TTL),
+                          "gen": int(config["generation"])},
+                         separators=(",", ":")).encode()
+    body = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    sig = hmac.new(bytes.fromhex(config["secret"]), body.encode(),
+                   hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def _token_claims(token: str, config):
+    """The token's claims if it is validly signed, current and unexpired."""
+    if not token or "." not in token or config is None:
+        return None
+    body, _, sig = token.rpartition(".")
+    expected = hmac.new(bytes.fromhex(config["secret"]), body.encode(),
+                        hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        padding = "=" * (-len(body) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(body + padding))
+    except Exception:
+        return None
+    if int(claims.get("gen", 0)) != int(config["generation"]):
+        return None          # revoked by a generation bump
+    if float(claims.get("exp", 0)) < time.time():
+        return None
+    return claims
+
+
+def _client_address(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _lockout_remaining(address: str) -> int:
+    """Seconds left on a freeze for this address, or 0."""
+    now = time.time()
+    with _auth_lock:
+        hits = [t for t in _auth_failures.get(address, [])
+                if now - t < LOCKOUT_WINDOW]
+        _auth_failures[address] = hits
+        if len(hits) >= LOCKOUT_MAX_FAILURES:
+            return int(LOCKOUT_FREEZE - (now - hits[-1])) or 1
+    return 0
+
+
+def _record_failure(address: str):
+    with _auth_lock:
+        _auth_failures.setdefault(address, []).append(time.time())
+
+
+def _clear_failures(address: str):
+    with _auth_lock:
+        _auth_failures.pop(address, None)
+
+
+def is_authenticated(request: Request):
+    """(authenticated, claims, config) for this request."""
+    config = _auth_config()
+    if config is None:
+        # No PIN set: nothing is gated. Said plainly rather than failing
+        # closed, because failing closed on a fresh install would lock the
+        # owner out of the page where the PIN is set.
+        return True, None, None
+    claims = _token_claims(request.cookies.get(AUTH_COOKIE, ""), config)
+    return claims is not None, claims, config
+
+
+def _needs_pin(method: str, path: str) -> bool:
+    return any(m == method and pattern.match(path) for m, pattern in _PROTECTED)
+
+
+def require_pin(request: Request):
+    """Raise 401 unless this request carries a valid token. For handlers that
+    gate on the payload rather than the path -- currently alarm disarm."""
+    authenticated, _, config = is_authenticated(request)
+    if config is not None and not authenticated:
+        raise HTTPException(status_code=401, detail="PIN required")
+
+
+class PinData(BaseModel):
+    pin: str
+
+
+class PinChangeData(BaseModel):
+    current: str
+    new: str
+
+
+def _is_rv_lan(address: str) -> bool:
+    """Sophie's own LAN (br0 is 10.0.0.1/24), or loopback."""
+    return (address.startswith("10.0.0.")
+            or address in ("127.0.0.1", "::1", "localhost"))
+
+
+def _pin_is_plausible(pin: str):
+    if not pin.isdigit() or len(pin) < PIN_MIN_DIGITS:
+        return False, f"the PIN must be at least {PIN_MIN_DIGITS} digits, numbers only"
+    return True, ""
+
+
+def _set_auth_cookie(response, token: str):
+    response.set_cookie(
+        AUTH_COOKIE, token,
+        max_age=AUTH_TTL,
+        # httponly: page JavaScript cannot read this, so a script injected
+        # into the dashboard cannot steal the token and replay it elsewhere.
+        httponly=True,
+        samesite="lax",
+        # NOT secure: the dashboard is plain HTTP, and a Secure cookie would
+        # simply never be sent. This is also why the PIN is not strong
+        # authentication -- see plan_pin_protection.md "Honest limits".
+        secure=False,
+        path="/",
+    )
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> Response:
+    """Whether a PIN is set, whether this device is trusted, and how long for."""
+    authenticated, claims, config = is_authenticated(request)
+    remaining = _lockout_remaining(_client_address(request))
+    response = JSONResponse({
+        "configured": config is not None,
+        "authenticated": authenticated,
+        "locked_out": remaining > 0,
+        "retry_after": remaining,
+        "expires_in": int(claims["exp"] - time.time()) if claims else None,
+        "can_set_pin": _is_rv_lan(_client_address(request)),
+    })
+    # "Renewed on use": a device that keeps visiting never has to re-enter the
+    # PIN, while one that stops visiting falls out of trust on schedule.
+    if (config is not None and claims
+            and (claims["exp"] - time.time()) < (AUTH_TTL - AUTH_RENEW_AFTER)):
+        _set_auth_cookie(response, _issue_token(config))
+    return response
+
+
+@app.post("/api/auth/setup")
+def auth_setup(request: Request, data: Annotated[PinData, Body()]) -> Response:
+    """
+    Set the PIN for the first time.
+
+    Refused from anywhere but the RV's own LAN. Otherwise, on a Pi that has
+    never had a PIN, whoever reached the dashboard first over a campground
+    network could claim it -- and then hold the gate against the owner.
+    """
+    if _auth_config() is not None:
+        return JSONResponse({"success": False,
+                             "message": "a PIN is already set; use Change PIN"},
+                            status_code=400)
+    address = _client_address(request)
+    if not _is_rv_lan(address):
+        logging.warning("Refused PIN setup from off-LAN address %s", address)
+        return JSONResponse(
+            {"success": False,
+             "message": "The PIN can only be set from Sophie's own network. "
+                        f"You are connecting from {address}."},
+            status_code=403)
+    ok, why = _pin_is_plausible(data.pin)
+    if not ok:
+        return JSONResponse({"success": False, "message": why}, status_code=400)
+
+    salt = secrets.token_hex(16)
+    config = {"pin_salt": salt,
+              "pin_hash": _hash_pin(data.pin, salt),
+              "secret": secrets.token_hex(32),
+              "generation": 1}
+    if not _auth_config_write(config):
+        return JSONResponse({"success": False,
+                             "message": f"could not write {AUTH_FILE}"},
+                            status_code=500)
+    logging.warning("Dashboard PIN set from %s", address)
+    response = JSONResponse({"success": True, "message": "PIN set"})
+    _set_auth_cookie(response, _issue_token(config))
+    return response
+
+
+@app.post("/api/auth/pin")
+def auth_pin(request: Request, data: Annotated[PinData, Body()]) -> Response:
+    """Enter the PIN. Every attempt is logged, successful or not."""
+    config = _auth_config()
+    if config is None:
+        return JSONResponse({"success": False, "message": "no PIN is set"},
+                            status_code=400)
+    address = _client_address(request)
+    remaining = _lockout_remaining(address)
+    if remaining > 0:
+        logging.warning("PIN attempt from %s refused: frozen for %ss",
+                        address, remaining)
+        return JSONResponse(
+            {"success": False, "locked_out": True, "retry_after": remaining,
+             "message": f"Too many wrong attempts. Try again in "
+                        f"{remaining // 60 + 1} minutes."},
+            status_code=429)
+
+    if not hmac.compare_digest(_hash_pin(data.pin, config["pin_salt"]),
+                               config["pin_hash"]):
+        _record_failure(address)
+        with _auth_lock:
+            used = len(_auth_failures.get(address, []))
+        left = max(0, LOCKOUT_MAX_FAILURES - used)
+        logging.warning("Wrong dashboard PIN from %s (%s attempts left)",
+                        address, left)
+        return JSONResponse({"success": False, "attempts_left": left,
+                             "message": "Wrong PIN."}, status_code=401)
+
+    _clear_failures(address)
+    logging.info("Dashboard PIN accepted from %s", address)
+    response = JSONResponse({"success": True, "message": "Unlocked"})
+    _set_auth_cookie(response, _issue_token(config))
+    return response
+
+
+@app.post("/api/auth/change")
+def auth_change(request: Request, data: Annotated[PinChangeData, Body()]) -> Response:
+    """Change the PIN. Needs the current one, so a trusted device that has
+    been left lying around cannot silently change the lock."""
+    config = _auth_config()
+    if config is None:
+        return JSONResponse({"success": False, "message": "no PIN is set"},
+                            status_code=400)
+    address = _client_address(request)
+    if _lockout_remaining(address) > 0:
+        return JSONResponse({"success": False, "message": "Too many wrong attempts."},
+                            status_code=429)
+    if not hmac.compare_digest(_hash_pin(data.current, config["pin_salt"]),
+                               config["pin_hash"]):
+        _record_failure(address)
+        logging.warning("Wrong current PIN on change attempt from %s", address)
+        return JSONResponse({"success": False, "message": "Wrong current PIN."},
+                            status_code=401)
+    ok, why = _pin_is_plausible(data.new)
+    if not ok:
+        return JSONResponse({"success": False, "message": why}, status_code=400)
+
+    salt = secrets.token_hex(16)
+    config.update({"pin_salt": salt, "pin_hash": _hash_pin(data.new, salt)})
+    # The signing secret is rotated too, so changing the PIN also signs every
+    # other device out -- which is the point of changing it.
+    config["secret"] = secrets.token_hex(32)
+    config["generation"] = int(config["generation"]) + 1
+    if not _auth_config_write(config):
+        return JSONResponse({"success": False, "message": "could not update the PIN file"},
+                            status_code=500)
+    _clear_failures(address)
+    logging.warning("Dashboard PIN changed from %s; all devices signed out", address)
+    response = JSONResponse({"success": True,
+                             "message": "PIN changed. Other devices must enter the new one."})
+    _set_auth_cookie(response, _issue_token(config))
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout() -> Response:
+    response = JSONResponse({"success": True, "message": "This device is signed out."})
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    return response
+
+
+@app.post("/api/auth/revoke-all")
+def auth_revoke_all(request: Request) -> Response:
+    """
+    Forget every device, including this one.
+
+    Works by bumping the generation counter that is inside every signed token,
+    so all of them stop validating at once. That is what makes stateless
+    tokens acceptable here: a lost phone can be cut off without the server
+    having kept a list of sessions that a rebuild would have thrown away.
+    """
+    require_pin(request)
+    config = _auth_config()
+    if config is None:
+        return JSONResponse({"success": False, "message": "no PIN is set"},
+                            status_code=400)
+    config["generation"] = int(config["generation"]) + 1
+    if not _auth_config_write(config):
+        return JSONResponse({"success": False, "message": "could not update the PIN file"},
+                            status_code=500)
+    logging.warning("All dashboard devices revoked from %s (generation %s)",
+                    _client_address(request), config["generation"])
+    response = JSONResponse({"success": True,
+                             "message": "Every device must enter the PIN again."})
+    response.delete_cookie(AUTH_COOKIE, path="/")
+    return response
+
+
+# Defined BEFORE the cross-site guard so that guard ends up outermost: a
+# cross-site request should be refused as cross-site, which is the more
+# informative answer, rather than as missing a PIN it could never have sent.
+@app.middleware("http")
+async def enforce_pin(request: Request, call_next):
+    if _needs_pin(request.method, request.url.path):
+        authenticated, _, config = is_authenticated(request)
+        if config is not None and not authenticated:
+            logging.warning("PIN required for %s %s from %s", request.method,
+                            request.url.path, _client_address(request))
+            return JSONResponse(
+                {"success": False, "pin_required": True,
+                 "message": "This needs the dashboard PIN."},
+                status_code=401)
+    return await call_next(request)
+
+
 _UNSAFE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
 
 
@@ -602,7 +1036,14 @@ class ScheduleShutdownData(BaseModel):
     hours: int
 
 @app.post("/api/alarmpost")
-async def alarm_endpoint(data: Annotated[AlarmPostData, Body()]) -> dict:
+async def alarm_endpoint(request: Request,
+                         data: Annotated[AlarmPostData, Body()]) -> dict:
+    # Disarming needs the PIN; arming does not. The check is here rather than
+    # in the middleware because `data.state` has been coerced to a real bool
+    # by now -- the raw body could say false, "false", "off" or 0, and all four
+    # mean disarm. See the PIN gate note near AUTH_FILE.
+    if not data.state:
+        require_pin(request)
     if debug > 0:
         print(f"Web alarm request: {data.alarm} State: {data.state}")
     

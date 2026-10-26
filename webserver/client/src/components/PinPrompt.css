@@ -1,0 +1,44 @@
+/* PIN entry. Sized for a thumb on the dashboard tablet, not for a mouse. */
+.pin-display {
+  margin-top: 14px;
+  padding: 12px;
+  text-align: center;
+  font-size: 28px;
+  letter-spacing: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  min-height: 56px;
+  color: #212529;
+}
+
+.pin-display__empty {
+  color: #adb5bd;
+  letter-spacing: 6px;
+  font-size: 22px;
+}
+
+.pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.pin-key {
+  padding: 18px 0;
+  font-size: 22px;
+  font-family: inherit;
+  background: #fff;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #212529;
+  /* A mis-tap that selects the digit instead of pressing it looks broken. */
+  user-select: none;
+}
+
+.pin-key:hover:not(:disabled) { background: #f1f3f5; border-color: #adb5bd; }
+.pin-key:active:not(:disabled) { background: #e9ecef; }
+.pin-key:disabled { opacity: 0.45; cursor: not-allowed; }
