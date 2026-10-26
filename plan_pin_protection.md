@@ -1,9 +1,32 @@
 # plan_pin_protection.md — PIN gate on the dashboard's destructive actions
 
-STATUS: **designed 2026-10-26, not yet built.** Scope and parameters settled with the owner the same day:
+STATUS: **built and deployed 2026-10-26.** Scope and parameters settled with the owner the same day:
 PIN on alarm *disarm* and on the debug page; the Internet page stays open; 4 digits; a device stays
 trusted 30 days, renewed on use. Companion to `plan_firewall.md`, which covers the network perimeter —
 this covers what someone already *inside* the RV LAN can do to Sophie through the dashboard.
+
+**No PIN is set yet, and until one is, nothing is gated.** Deliberate, not an oversight: failing closed
+on a box with no PIN would lock the owner out of the page where the PIN is set. Open the debug page from
+Sophie's own WiFi and it offers to set one. `/api/auth/setup` refuses from any other network, so nobody
+who reaches the dashboard over a campground link can claim the PIN first and hold the gate against the
+owner.
+
+Verified 2026-10-26 with a temporary PIN, since deleted:
+
+| Case | Result |
+|---|---|
+| before any PIN exists | everything open, `authenticated: true` |
+| 4 debug reads + `hub/socket`, `hub/socket/exclusive`, `kasa/{n}`, the 3 Synology actions, no cookie | 401 |
+| the same, with cookie | 200 |
+| `POST /api/debug/synology/status` (Plex reads it), no cookie | 200, not gated |
+| `internet/status`, `hub/wan`, `alarmget`, `kasa/clear-cache` | 200, not gated |
+| arm the alarm, no cookie | 200, arming is free |
+| disarm, no cookie | 401 |
+| disarm with `state: "off"` and with `state: 0` | 401, the coercion bypass is closed |
+| five wrong PINs | `attempts_left` 4, 3, 2, 1, 0 then frozen 899s |
+| correct PIN while frozen | refused |
+| already trusted cookie while frozen | still 200: the freeze targets guessing, not a device that already passed |
+| `revoke-all`, then the cookie that had just worked | 401 |
 
 ## What this is actually for
 
@@ -112,12 +135,41 @@ Exempt, deliberately:
    is still a host compromise; the PIN only governs who may ask it to do things on purpose. Trimming that
    is Phase 4 hardening, already noted in the compose file.
 
+## What was built
+
+`webserver/server/server.py` holds the gate: `_PROTECTED` (the method/path list), the `enforce_pin`
+middleware, and `/api/auth/{status,setup,pin,change,logout,revoke-all}`. The alarm check sits inside the
+alarm handler rather than the middleware, because by then Pydantic has coerced `state` into a real bool.
+The raw body can say `false`, `"false"`, `"off"` or `0` and all four mean disarm, so a middleware-level
+`state is False` would have waved three of them through. That was the risk this file flagged before the
+build; it is now tested, and both `"off"` and `0` return 401.
+
+Tokens are **stateless**: an HMAC over `{exp, gen}`, signed with a secret in the config file.
+Server-side sessions would be lost on every container rebuild, which happens often here, signing every
+device out each time. Revocation still works because `gen` is inside the signed payload, so bumping it
+invalidates every token at once without the server keeping a session list a rebuild would discard.
+
+`webserver/client/src/components/PinPrompt.jsx` has the keypad and `PinGate`. The debug panel is wrapped
+*outside* its own render, so none of its data fetching starts before the device is trusted; wrapping the
+markup alone would have fired a dozen 401s first. Restart Program moved from the home page to the debug
+page, so the home page now carries no control that can interrupt the RV.
+
+The auth file lives on the host at `/etc/rvdashboard/dashboard-auth.json`, mode 0600, read and written
+through the init mount namespace. This container does not share the host filesystem, and a file in the
+build context would ship the PIN hash inside the image.
+
+`allow_credentials` went from False to True to let the cookie through. Safe only because the origin list
+is explicit and `"*"` is refused and logged; cross-site writes are still refused independently by
+`block_cross_site_writes`, so this does not reopen what `75badd3` closed.
+
 ## Open items
 
-- [ ] Build it: middleware, `/api/auth/pin`, lockout, the PIN prompt in React, move Restart to the debug page.
-- [ ] Decide how the PIN is first set. Candidate: a one-time setup if `pin.json` is absent, reachable only
-      from `br0`, so an unset PIN cannot be claimed from a WAN interface.
-- [ ] `/api/alarmpost` takes `{alarm, state}` — confirm every caller so gating only `state=off` cannot be
-      bypassed by an unexpected payload shape (e.g. a string `"off"` vs boolean `false`).
-- [ ] Decide whether a PIN failure should raise a dashboard alert. Five failures is either a fat-fingered
-      owner or somebody probing, and the two are worth telling apart.
+- [ ] Nothing in the UI exposes **Change PIN** or **Forget all devices** yet. The endpoints exist
+      (`/api/auth/change`, `/api/auth/revoke-all`) but only `curl` can reach them.
+- [ ] `/api/auth/setup`'s LAN check was **not exercised from an off-LAN address** — there was no
+      convenient way to originate a request from one. The logic is a prefix test against `10.0.0.` plus
+      loopback (`_is_rv_lan`), read but not tested.
+- [ ] The lockout counter is in memory, so restarting the webserver clears it. Restarting needs host
+      access, which is already game over, but the freeze is not durable and that is worth knowing.
+- [ ] Decide whether repeated PIN failures should raise a dashboard alert. Five failures is either a
+      fat-fingered owner or somebody probing, and the two are worth telling apart.
