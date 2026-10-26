@@ -266,21 +266,31 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
    present in both `iptables` and `ip6tables` `SOPHIE-IN`, and they are rebuilt by
    `systemctl restart sophie-firewall.service` (which is what boot does).
 
-   **The wired MAC is proven from the laptop; the Wi-Fi MAC is NOT.** `sshd` logged `Accepted publickey for
-   tblank` from both `192.168.2.218` and `192.168.2.143`, which looked like both adapters working. The rule
-   counters say otherwise: the wired rule took all 6 SYNs and the Wi-Fi rule took **zero**. The LOG lines
-   explain it -- iptables prints `MAC=<dest>:<source>:<ethertype>`, and every frame carried
-   `08:3a:88:55:27:80`, the USB dongle, even the ones whose source IP was the Wi-Fi address `.143`.
+   **Both MACs are now proven from the laptop, but the first round of testing only looked like it.** Worth
+   recording, because the trap is easy to fall into again.
 
-   The cause is a testing trap worth remembering: binding the source *address* does not choose the egress
-   *interface*. Windows routed out the wired adapter regardless, so the frame's source MAC was the dongle's and
-   the Wi-Fi rule was never exercised. To test it for real the wired adapter has to be disabled or unplugged, so
-   the AX201 is the only way out.
+   The first attempt reported all four address/adapter combinations succeeding, and `sshd` did log
+   `Accepted publickey for tblank` from both `192.168.2.218` and `192.168.2.143`. The rule counters disagreed:
+   the wired rule had taken all 6 SYNs and the Wi-Fi rule **zero**. The LOG lines settled it -- iptables prints
+   `MAC=<dest>:<source>:<ethertype>`, and every frame carried `08:3a:88:55:27:80`, the USB dongle, including the
+   ones whose source IP was the Wi-Fi address.
 
-   Why it matters rather than being pedantry: if Windows randomizes the AX201's MAC per network -- it can, even
-   on a vendor adapter -- the Wi-Fi path will fail silently, and it will fail precisely when the dongle is not
-   plugged in and SSH is the only way to the tmux session. Check the Wi-Fi rule's counter after the first real
-   Wi-Fi-only attempt; a zero there with a connection refused is the signature.
+   Cause: **binding the source address does not choose the egress interface.** Windows routed out the wired
+   adapter either way, so the AX201's MAC never reached the wire and its rule was never exercised. Four
+   combinations were really one adapter tested twice. Checking the per-rule counters, not just whether the login
+   succeeded, is what caught it.
+
+   Settled 2026-10-26 by disconnecting the laptop's Ethernet so the AX201 was the only way out:
+
+   | Rule | Packets |
+   |---|---|
+   | `--mac-source 28:d0:ea:d4:f7:47` (Wi-Fi) | 2 |
+   | `--mac-source 08:3a:88:55:27:80` (wired) | 6 |
+
+   with `Accepted publickey for tblank from 192.168.2.143` at 14:06:54. The randomization worry was unfounded:
+   the neighbour table shows the AX201 using its vendor MAC on this network
+   (`192.168.2.143 lladdr 28:d0:ea:d4:f7:47`), so no per-network MAC needs chasing. If that ever changes, the
+   signature is a zero counter on the Wi-Fi rule alongside a refused connection.
 
    Unchanged, and still the better answer away from home:
    - On Sophie's WiFi: `ssh tblank@10.0.0.1` -- `br0` is trusted, so this always worked and needs no exception.
