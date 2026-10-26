@@ -2882,6 +2882,14 @@ def _health_containers():
     own log confirming all three. Counting RestartCount would have left the
     restart-loop alarm permanently silent, which is precisely the hidden
     failure this is supposed to surface.
+
+    This counts OBSERVED changes, not actual restarts, and it polls -- so two
+    restarts between ticks register as one. Measured: restarting a container
+    twice five seconds apart produced restarts_15m=1. That is fine for what
+    this is for, because a container genuinely flapping changes StartedAt
+    between every tick and crosses the threshold within a few minutes; it just
+    means the number is a floor, not a tally. The window also lives in this
+    process's memory, so a webserver restart resets it.
     """
     now = time.time()
     unhealthy, down, notes = [], [], []

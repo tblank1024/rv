@@ -244,6 +244,8 @@ services:
       - /dev/ttyAMA0:/dev/ttyAMA0
     privileged: false
     environment:
+      - HEALTHCHECK_TOPICS=RVC/SOLAR_CONTROLLER_STATUS/1
+      - HEALTHCHECK_WINDOW=45
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
@@ -252,6 +254,20 @@ services:
         condition: service_healthy
 
   # GPIO Alarm System
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    labels:
+      - autoheal=true
+    volumes:
+      - ./mqtt-freshness-healthcheck.py:/healthcheck/freshness.py:ro
+    healthcheck:
+      # Fails only when this container is alive but has stopped publishing --
+      # the wedge a process-alive check cannot see. Any other fault exits 0
+      # ("can't tell"), so an unrelated problem cannot restart-loop it.
+      test: ["CMD", "python3", "/healthcheck/freshness.py"]
+      interval: 120s
+      timeout: 25s
+      retries: 3
+      start_period: 120s
   alarm:
     build:
       context: ../alarm
@@ -385,6 +401,8 @@ services:
     image: watcher:latest
     privileged: false
     environment:
+      - HEALTHCHECK_TOPICS=RVC/SYS_ERRORS,RVC/RV_Watcher/1
+      - HEALTHCHECK_WINDOW=20
       - MQTT_USER=${MQTT_USER}
       - MQTT_PASS=${MQTT_PASS}
       - PYTHONUNBUFFERED=1
@@ -392,12 +410,25 @@ services:
       mqtt:
         condition: service_healthy
     volumes:
+      - ./mqtt-freshness-healthcheck.py:/healthcheck/freshness.py:ro
       - ./watcherlogs:/app/watcher/watcherlogs
 
   # Autoheal — watches containers labeled autoheal=true and restarts them
   # when Docker reports them unhealthy (see rvc2mqtt's healthcheck above).
   # Only touches containers carrying that label, so it won't act on mqtt/
   # webserver's own healthchecks.
+    # autoheal (see below) restarts this when Docker marks it unhealthy.
+    labels:
+      - autoheal=true
+    healthcheck:
+      # Fails only when this container is alive but has stopped publishing --
+      # the wedge a process-alive check cannot see. Any other fault exits 0
+      # ("can't tell"), so an unrelated problem cannot restart-loop it.
+      test: ["CMD", "python3", "/healthcheck/freshness.py"]
+      interval: 60s
+      timeout: 25s
+      retries: 3
+      start_period: 90s
   autoheal:
     container_name: autoheal
     image: willfarrell/autoheal:latest

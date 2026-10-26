@@ -11,6 +11,12 @@ import { fetchFromServer } from '../utils/api';
 const SYS_ERRORS_TOPIC = 'RVC/SYS_ERRORS';
 const HEARTBEAT_RE = /^#\s*Errors\s*=\s*(\d+)/;
 const ACK_POLL_MS = 15000;
+// The watcher heartbeats about every 5s. Past this, treat its silence as "we
+// cannot tell" rather than "nothing is wrong": the watcher IS the alert
+// channel, so it is the one failure it can never report on itself, and
+// showing "No active alerts" while it is dead is the most misleading thing
+// this panel could say. Generous multiple of 5s so a slow tick is not a scare.
+const HEARTBEAT_STALE_MS = 45000;
 
 const GROUPS = [
   [/^(INVERTER|CHARGER)_/, 'Inverter/Charger'],
@@ -80,6 +86,11 @@ function AlertsPanel() {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
   const [ackError, setAckError] = useState('');
+  const [lastBeat, setLastBeat] = useState(0);   // 0 = none seen yet
+  const [now, setNow] = useState(Date.now());
+  // When this panel mounted, so "never heard a heartbeat" can be told apart
+  // from "the page only just opened".
+  const [mounted] = useState(() => Date.now());
 
   useEffect(() => {
     const client = mqtt.connect(`ws://${window.location.hostname}:9001`);
@@ -91,6 +102,7 @@ function AlertsPanel() {
       const m = msg.error.match(HEARTBEAT_RE);
       if (!m) return; // individual events show up in the next heartbeat's "recent"
       setCount(parseInt(m[1], 10));
+      setLastBeat(Date.now());
       if (Array.isArray(msg.active)) setActive(msg.active);
       if (Array.isArray(msg.recent)) setRecent(msg.recent);
     });
@@ -142,16 +154,27 @@ function AlertsPanel() {
     return next;
   });
 
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // No heartbeat yet (page just opened) is not the same as one that stopped.
+  const heartbeatStale = lastBeat > 0 && (now - lastBeat) > HEARTBEAT_STALE_MS;
+  const heartbeatMissing = lastBeat === 0 && (now - mounted) > HEARTBEAT_STALE_MS;
+  const blind = heartbeatStale || heartbeatMissing;
+
   const openDialog = () => { setAckError(''); loadAcks(); setOpen(true); };
 
   let title = 'Alerts';
-  if (alarmCount > 0) title = `Alerts (${alarmCount})`;
+  if (blind) title = 'Alerts (unavailable)';
+  else if (alarmCount > 0) title = `Alerts (${alarmCount})`;
   else if (activeList.length > 0) title = `Alerts (${activeList.length} acknowledged)`;
 
   return (
     <>
       <div
-        className={`sys-alerts sys-alerts--clickable${alarmCount > 0 ? ' sys-alerts--active' : ''}`}
+        className={`sys-alerts sys-alerts--clickable${alarmCount > 0 || blind ? ' sys-alerts--active' : ''}`}
         role="button"
         tabIndex={0}
         onClick={openDialog}
@@ -161,7 +184,12 @@ function AlertsPanel() {
           <span>{title}</span>
           <span className="sys-alerts-hint">Details ›</span>
         </div>
-        {groupEntries.length === 0 ? (
+        {blind ? (
+          <div className="sys-alert-item sys-alert-item--none">
+            No heartbeat from the watcher for {Math.round((now - (lastBeat || mounted)) / 1000)}s
+            — alerts cannot be reported. Check the watcher container.
+          </div>
+        ) : groupEntries.length === 0 ? (
           <div className="sys-alert-item sys-alert-item--none">
             {count > 0 && !active ? `${count} active (details unavailable)` : 'No active alerts'}
           </div>
