@@ -314,6 +314,60 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       and implicitly the modem timings they are derived from). They must stay in step;
       a comment says so but nothing enforces it.
 
+## From the HA security review (relayed 2026-10-26)
+
+Reconciled against this repo the same day. Most of the review was already tracked; these are the
+items that were **not**, so they would have been lost. Two had been completed and are marked so.
+
+Already covered elsewhere, not repeated here: `netfilter-persistent` and `install_raspap_bridge.sh`
+(below, and `plan_firewall.md`), `.link` files, the `privileged`/`pid: host`/docker-socket webserver,
+the `pi5connect` lock and its dead per-WAN FORWARD rules, the cellular v6 outside scan, and the
+Starlink scan on first use.
+
+Done 2026-10-26, recorded for completeness:
+- [x] **SSH key-only.** `/etc/ssh/sshd_config.d/10-sophie-hardening.conf` sets
+      `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`. See
+      `plan_firewall.md` item 1.
+- [x] **Dashboard authentication.** PIN gate with server-side enforcement; see
+      `plan_pin_protection.md`.
+
+Not tracked anywhere before this, in the review's own priority order:
+
+- [ ] **Alert when `sophie-firewall` reads NOT ARMED.** `plan_firewall.md` documents the `status`
+      output and the Debug page card, but nothing *pushes*. This is the gap that let the 2026-10-21
+      exposure run silently for two days with a green `systemctl status`. Strongest candidate of the
+      lot. **Fold into the health-hardening work rather than building a one-off** -- that project needs
+      an alert channel anyway, and doing it twice would mean two things to keep working.
+- [ ] **Verify `br0` cannot pick up a USB adapter by name.** Checked 2026-10-26 and the concern is
+      real: `/etc/systemd/network/raspap-br0-member-eth0.network` matches `[Match] Name=eth0`, and
+      `br0` is the first ACCEPT in `SOPHIE-IN`, so anything landing on that name sits inside the
+      trusted zone and bypasses the firewall completely. Likelihood is low -- `eth0` is the SoC NIC
+      (`driver macb`, platform path `1f00100000.ethernet`, MAC `2c:cf:67:ab:1b:93`) and enumerates
+      before USB -- but the consequence is total bypass and the fix is five lines. Add a `.link`
+      pinning that MAC to `eth0`, matching `10-wlan-ap.link`/`11-wlan-wan.link`, and preferably also
+      change the bridge-member file to `[Match] MACAddress=` so the name stops mattering at all.
+      Note RaspAP owns those files and may rewrite them.
+- [ ] **Require auth on Mosquitto 9001.** Measured 2026-10-26: `allow_anonymous true` with
+      `acl_file` = `topic read RVC/#`. Read-only and confined to RV-C topics -- it cannot write, and
+      cannot reach the alarm command topics -- but it does hand all RV telemetry to anyone on
+      Sophie's WiFi. Low severity on its own; matters more while 9001 is still bound to every
+      interface.
+- [ ] **Check RaspAP's web UI (:80) and `wayvnc` (:5900) for default or empty passwords.**
+      `plan_firewall.md:90` lists both as ports but nobody has verified their credentials. On the
+      RV LAN side the firewall gives no protection at all, so a default password there is equivalent
+      to no password.
+- [ ] **Bind the dashboard (8000) and Mosquitto websockets (9001) to `10.0.0.1`.** Defence in depth:
+      if the firewall ever drops again, nothing is listening on the uplink to find. **Bind
+      `127.0.0.1` as well**, or the compose healthcheck and every local probe break -- the webserver
+      is `network_mode: host` and its own health check talks to localhost.
+- [ ] **Turn on unattended security upgrades.** Nothing currently patches this box on its own, and it
+      is often unattended for months.
+- [ ] **Review the `SOPHIE-IN drop:` logs over a few days at home.** Cheap, and the only way to find
+      something legitimate that is being silently dropped -- home automation polling Sophie is the
+      review's own example.
+- [ ] **A true cold boot** (full power-off, not a reboot). The 2026-10-23 test rebooted with the hub
+      still energised, so the modem never paid its ~36 s from a dead socket. Needs someone at the RV.
+
 ## Small / unrelated
 
 - [ ] `chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset` — `visudo -c`
