@@ -1655,6 +1655,7 @@ def get_internet_status() -> dict:  # Removed async
     try:
         detected_connection = detect_current_internet_connection()
         wan_interface = default_route_interface()
+        manual = read_manual_choice()
 
         return {
             "current_connection": detected_connection,
@@ -1664,6 +1665,12 @@ def get_internet_status() -> dict:  # Removed async
             "wan_interface": wan_interface,
             "message": (f"WAN via {wan_interface}" if wan_interface
                         else "No default route"),
+            # The deliberate choice, if one is still in force, and the reason
+            # the system is not on it when failover could not honour it. Both
+            # are what stop the page showing the wrong option as active
+            # without explaining itself.
+            "manual_choice": manual["choice"],
+            "manual_fallback": manual["fallback"],
         }
     except Exception as e:
         print(f"Error getting internet status: {e}")
@@ -1672,6 +1679,223 @@ def get_internet_status() -> dict:  # Removed async
             "status": "error", 
             "message": f"Error detecting connection: {str(e)}"
         }
+
+# The Internet page's selector. One entry per thing the user can pick, naming
+# the hub WAN role to power and the Kasa outlets that option needs energised.
+# Feature outlets NOT named by the chosen option are switched off: leaving the
+# Starlink supply (tens of watts) on while running on wired was the largest
+# silent waste on the page, and with the old "Powered Accessories" card gone
+# there is nothing else to turn it off.
+#
+# "wifi" has no hub role on purpose. The Alfa sits in socket 1, outside the
+# exclusive WAN group, so choosing WiFi powers the switched uplinks down and
+# leaves the adapter up. That is deliberate: it is what keeps the network
+# picker usable whatever uplink is live, and gating the picker behind a WAN
+# selection was tried once and reverted (see Internet.jsx).
+#
+# "none" is therefore not quite "no internet": it drops the switched uplinks
+# and the accessories, but the WiFi adapter stays powered and NetworkManager
+# may reassociate on its own. Said plainly in the UI rather than papered over.
+KASA_AMP_OUTLET = 1
+KASA_STARLINK_OUTLET = 6
+KASA_FEATURE_OUTLETS = (KASA_AMP_OUTLET, KASA_STARLINK_OUTLET)
+
+# "manual" is the role recorded in /run/wan-manual-choice so pi5connect and
+# wan_scan honour the choice. It is NOT the same as "role": WiFi has no hub
+# role (socket 1 is outside the exclusive group) but is very much a uplink to
+# be honoured, and both cellular options map to the one cellular role.
+INTERNET_OPTIONS = {
+    "wired":    {"role": "wired",    "outlets_on": (),                       "state": "wired",         "manual": "wired"},
+    "wifi":     {"role": None,       "outlets_on": (),                       "state": "wifi",          "manual": "wifi"},
+    "cell":     {"role": "cell",     "outlets_on": (),                       "state": "cellular",      "manual": "cellular"},
+    "cell-amp": {"role": "cell",     "outlets_on": (KASA_AMP_OUTLET,),       "state": "cellular-amp",  "manual": "cellular"},
+    "starlink": {"role": "starlink", "outlets_on": (KASA_STARLINK_OUTLET,),  "state": "starlink",      "manual": "starlink"},
+    "none":     {"role": None,       "outlets_on": (),                       "state": "none",          "manual": None},
+}
+
+# Where the deliberate choice lives. These are on the HOST's /run, which this
+# container does not share -- only /run/dbus is bind-mounted -- so every access
+# goes through the init process's mount namespace, the same route
+# /api/system/reboot and the firewall reads already take.
+MANUAL_CHOICE_FILE = "/run/wan-manual-choice"
+MANUAL_FALLBACK_FILE = "/run/wan-manual-fallback"
+
+
+def _host_write(path: str, text: str):
+    """Write a small file in the host's namespace. Returns (ok, detail)."""
+    try:
+        proc = subprocess.run(["nsenter", "-t", "1", "-m", "--", "tee", path],
+                              input=text, capture_output=True, text=True,
+                              timeout=10)
+        return proc.returncode == 0, proc.stderr.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _host_remove(path: str):
+    try:
+        proc = subprocess.run(["nsenter", "-t", "1", "-m", "--", "rm", "-f", path],
+                              capture_output=True, text=True, timeout=10)
+        return proc.returncode == 0, proc.stderr.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def read_manual_choice():
+    """
+    The deliberate uplink choice and any recorded fallback, as the UI needs
+    them. One nsenter for both, since this is read on every status poll.
+
+    Shapes: choice is "<role> <epoch>"; fallback is "<wanted> <got> <epoch>",
+    written by wan_scan.sh when a choice could not be honoured.
+    """
+    blank = {"choice": None, "fallback": None}
+    try:
+        proc = subprocess.run(
+            # "|| true" on both: an absent file is the normal case, and
+            # without it cat's exit status becomes the shell's, so a missing
+            # fallback file made this report "no choice" even when one was
+            # recorded. Caught 2026-10-26 by the plumbing test.
+            ["nsenter", "-t", "1", "-m", "--", "sh", "-c",
+             f"cat {MANUAL_CHOICE_FILE} 2>/dev/null || true; echo '|'; "
+             f"cat {MANUAL_FALLBACK_FILE} 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            return blank
+        choice_raw, _, fallback_raw = proc.stdout.partition("|")
+    except Exception as exc:
+        print(f"WARNING: could not read the manual uplink choice: {exc}")
+        return blank
+
+    now = time.time()
+    result = dict(blank)
+    parts = choice_raw.split()
+    if len(parts) >= 2:
+        try:
+            result["choice"] = {"role": parts[0],
+                                "age_seconds": round(now - float(parts[1]), 1)}
+        except ValueError:
+            pass
+    parts = fallback_raw.split()
+    if len(parts) >= 3:
+        try:
+            result["fallback"] = {"wanted": parts[0], "got": parts[1],
+                                  "age_seconds": round(now - float(parts[2]), 1)}
+        except ValueError:
+            pass
+    return result
+
+
+class InternetSelectData(BaseModel):
+    option: str
+
+
+def _switch_kasa_outlet(outlet, on):
+    """Switch one Kasa outlet. Returns (ok, detail); never raises."""
+    try:
+        strip = get_kasa_power_strip()
+        if not strip:
+            return False, f"outlet {outlet}: power strip unavailable"
+        if on:
+            strip.turn_on_outlet(outlet - 1)
+        else:
+            strip.turn_off_outlet(outlet - 1)
+        return True, ""
+    except Exception as exc:
+        clear_kasa_cache()
+        return False, f"outlet {outlet}: {exc}"
+
+
+@app.post("/api/internet/select")
+def select_internet_option(data: Annotated[InternetSelectData, Body()]) -> dict:
+    """
+    Apply one choice from the Internet page: power the right hub socket AND the
+    mains the option needs, in that one call.
+
+    Ordering is not cosmetic. Outlets an option NEEDS come on before the socket
+    switch, so the device has mains by the time its USB adapter enumerates --
+    Starlink in particular comes up on its own supply, not off USB. Outlets the
+    option does NOT need go off only AFTER the switch, so this never cuts power
+    to the uplink it is in the middle of selecting.
+
+    Like /api/hub/wan, this does NOT seize the default route: pi5connect.sh
+    decides that on the interface event which follows. Powering an uplink
+    offers it.
+    """
+    global current_internet_connection
+
+    spec = INTERNET_OPTIONS.get((data.option or "").strip().lower())
+    if spec is None:
+        return {"success": False, "error": "no_such_option",
+                "message": f"unknown option {data.option!r}; expected one of "
+                           + ", ".join(sorted(INTERNET_OPTIONS))}
+
+    warnings = []
+
+    # 1. Record the choice FIRST, and this ordering is load-bearing.
+    #
+    # Powering the current socket off is itself an uplink-loss event, and
+    # pi5connect reacts to it within a second. If the choice were written after
+    # the switch, wan_scan would already be walking the preference list and
+    # would revert to wired before the override existed. Measured 2026-10-26:
+    # the whole revert took 19 seconds end to end.
+    if spec["manual"]:
+        ok, detail = _host_write(MANUAL_CHOICE_FILE,
+                                 f"{spec['manual']} {int(time.time())}\n")
+        if not ok:
+            warnings.append(f"could not record the choice, so failover may "
+                            f"revert it: {detail}")
+    else:
+        _host_remove(MANUAL_CHOICE_FILE)
+    _host_remove(MANUAL_FALLBACK_FILE)
+
+    # 2. Mains this option needs, before the socket comes up.
+    for outlet in spec["outlets_on"]:
+        ok, detail = _switch_kasa_outlet(outlet, True)
+        if not ok:
+            warnings.append(detail)
+
+    # 3. The hub: exactly one roled socket powered, or none of them.
+    hub = set_hub_wan(HubWanData(role=spec["role"]))
+    if not hub.get("success"):
+        # The socket switch is the part that matters; if it failed, say so and
+        # leave the outlets alone rather than tidying up after a half-change.
+        # The choice goes too -- nothing was switched, so honouring it would
+        # only skew the next failover.
+        _host_remove(MANUAL_CHOICE_FILE)
+        return {"success": False, "error": hub.get("error", "hub_failed"),
+                "message": f"Could not switch the uplink: {hub.get('message', '')}",
+                "option": data.option, "warnings": warnings}
+
+    # 4. Mains this option does not need, after the switch.
+    for outlet in KASA_FEATURE_OUTLETS:
+        if outlet in spec["outlets_on"]:
+            continue
+        ok, detail = _switch_kasa_outlet(outlet, False)
+        if not ok:
+            warnings.append(detail)
+
+    current_internet_connection = spec["state"]
+    _save_internet_state(spec["state"])
+
+    message = hub.get("message", "")
+    if spec["outlets_on"]:
+        message += f"; outlet{'s' if len(spec['outlets_on']) > 1 else ''} " \
+                   + ", ".join(str(o) for o in spec["outlets_on"]) + " on"
+    if warnings:
+        message += " (" + "; ".join(warnings) + ")"
+
+    return {
+        "success": True,
+        "message": message,
+        "option": data.option,
+        "role": spec["role"],
+        "socket": hub.get("socket"),
+        "state": spec["state"],
+        "outlets_on": list(spec["outlets_on"]),
+        "warnings": warnings,
+    }
+
 
 @app.post("/api/internet/cellular-test")
 def test_cellular_modem_setup() -> InternetResponse:

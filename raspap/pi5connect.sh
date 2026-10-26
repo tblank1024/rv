@@ -96,6 +96,15 @@ AP_SIDE=("lo" "eth0" "wlan0" "br0" "docker0")
 WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
 SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
 
+# A deliberate choice from the dashboard ("<role> <epoch>"), written by
+# /api/internet/select. While it is in force the chosen role outranks
+# everything, so failover tries it first and a "more preferred" uplink cannot
+# preempt it. See manual_role() and the longer note in wan_scan.sh, which owns
+# clearing this file when the choice cannot be honoured.
+MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
+MANUAL_GRACE="${MANUAL_GRACE:-120}"
+MANUAL_ROLE=""
+
 # The WAN role of an interface, resolved through the hub socket its device is
 # plugged into. Deliberately NOT keyed on the interface name: names here are
 # driver-dependent and drift -- the wired adapter was eth1 and then eth2 inside
@@ -151,11 +160,42 @@ normalise_role() {
     esac
 }
 
+# The deliberate choice, if one is in force, else "".
+#
+# Inside the grace window the choice stands unconditionally, because the uplink
+# it names may still be coming up -- a cold modem needs ~90s. After that it
+# stands only while it IS the WAN, so a choice that never came up cannot pin
+# the ranking forever and leave the RV on nothing.
+manual_role() {
+    local role stamp now cur
+    [[ -r "$MANUAL_FILE" ]] || return 0
+    read -r role stamp < "$MANUAL_FILE" || return 0
+    role="$(normalise_role "${role:-}")"
+    [[ -n "$role" ]] || return 0
+    now="$(date +%s)"
+    if [[ -n "${stamp:-}" ]] && (( now - stamp < MANUAL_GRACE )); then
+        echo "$role"
+        return 0
+    fi
+    cur="$(cut -d" " -f1 "$STATE_FILE" 2>/dev/null)"
+    [[ -n "$cur" ]] && [[ "$(normalise_role "$(iface_role "$cur")")" == "$role" ]] \
+        && echo "$role"
+    return 0
+}
+
 # Rank of a role; lower is better. An unknown role ranks worst, so an
 # unclassified interface can never displace a classified one.
 iface_rank() {
     local role i=0 p
     role="$(normalise_role "$1")"
+    # A deliberate choice outranks the whole preference list, which is the
+    # point: without this, picking cellular while wired is plugged in is
+    # reverted, because wired ranks better and a healthy better-ranked
+    # candidate is exactly what this script promotes.
+    if [[ -n "$MANUAL_ROLE" && "$role" == "$MANUAL_ROLE" ]]; then
+        echo -1
+        return 0
+    fi
     for p in "${WAN_PREFERENCE[@]}"; do
         [[ "$role" == "$p" ]] && { echo "$i"; return 0; }
         i=$((i + 1))
@@ -371,6 +411,11 @@ probe_default() {
 # --- Determine active interface ---
 TRIGGERED_IFACE="$1"
 TRIGGERED_STATUS="${2:-up}"
+
+MANUAL_ROLE="$(manual_role)"
+if [[ -n "$MANUAL_ROLE" ]]; then
+    echo "[$(date)] Manual choice in force: $MANUAL_ROLE (outranks the preference list)"
+fi
 
 if [[ -n "$TRIGGERED_IFACE" ]] && ! is_ap_side "$TRIGGERED_IFACE"; then
     ACTIVE_IFACE="$TRIGGERED_IFACE"

@@ -76,6 +76,26 @@ RESULT_FILE="/run/wan-scan-result"
 # same race from the dashboard's exclusivity switch killing a modem mid-DHCP.
 SCAN_LOCK="/run/wan-scan-in-progress"
 
+# A deliberate choice from the dashboard, written by /api/internet/select as
+# "<role> <epoch>".
+#
+# This exists because choosing a LESS preferred uplink used to be undone within
+# 19 seconds. Measured 2026-10-26: selecting cellular powered socket 2 off,
+# pi5connect read that as uplink loss, handed off to --on-loss, and this walk
+# then tested roles in preference order -- so it powered WIRED back on, won on
+# it, and switched the modem's socket off again. The modem was never tested at
+# all, because wired outranks it and the walk stops at a winner.
+#
+# "In force" means: inside MANUAL_GRACE, while the chosen uplink is still
+# coming up (a cold modem needs 17s to enumerate, 22s for carrier, 52s for
+# DHCP -- see the timeouts above), or after that only while the choice IS the
+# current WAN. So a choice that never came up cannot pin the scan forever:
+# that is the half of this that stops a deliberate choice stranding the RV.
+MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
+MANUAL_FALLBACK="${MANUAL_FALLBACK:-/run/wan-manual-fallback}"
+MANUAL_GRACE="${MANUAL_GRACE:-120}"
+MANUAL_ROLE=""
+
 # Same order and the same aliases as pi5connect.sh. Keep them in step.
 WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
 
@@ -132,6 +152,23 @@ rank_of() {
         i=$((i + 1))
     done
     echo 99
+}
+
+# The deliberate choice, if one is in force. Needs CUR_ROLE, so it is only
+# called once that is known. Echoes "" when there is no choice to honour.
+manual_role() {
+    local role stamp now
+    [[ -r "$MANUAL_FILE" ]] || return 0
+    read -r role stamp < "$MANUAL_FILE" || return 0
+    role="$(normalise_role "${role:-}")"
+    [[ -n "$role" ]] || return 0
+    now="$(date +%s)"
+    if [[ -n "${stamp:-}" ]] && (( now - stamp < MANUAL_GRACE )); then
+        echo "$role"
+        return 0
+    fi
+    [[ "$role" == "$CUR_ROLE" ]] && echo "$role"
+    return 0
 }
 
 # "label|role|name|gated|hub:port,hub:port" for every socket.
@@ -294,11 +331,20 @@ fi
 #     powered adapter raises its own up-event and gets promoted with no scan
 # Used by all three paths that settle power, so there is one implementation.
 power_off_gated_except() {
-    local keep="$1" reason="$2" label
+    local keep="$1" reason="$2" label role
     for label in "${CANDIDATES[@]}"; do
         [[ "$label" == "$keep" ]] && continue
         [[ -z "${ROLES[$label]}" ]] && continue
         [[ -z "${GATED[$label]:-}" ]] && continue
+        # Never cut the socket the user deliberately chose while that choice is
+        # in force. This is the exact revert the override exists to stop -- the
+        # same class of race as the scan interlock, but caused by preference
+        # rather than by timing.
+        role="$(normalise_role "${ROLES[$label]}")"
+        if [[ -n "$MANUAL_ROLE" && "$role" == "$MANUAL_ROLE" ]]; then
+            log "$reason: socket $label ($role) left powered -- manual choice in force"
+            continue
+        fi
         socket_is_on "${IDENTS[$label]}" || continue
         log "$reason: socket $label off (gated, keeping socket $keep)"
         socket_power "$label" off "${IDENTS[$label]}"
@@ -316,6 +362,11 @@ if [[ -n "$CUR_IFACE" ]]; then
     done
 fi
 log "current WAN ${CUR_IFACE:-none} role=${CUR_ROLE:-unknown} rank=$CUR_RANK"
+
+MANUAL_ROLE="$(manual_role)"
+if [[ -n "$MANUAL_ROLE" ]]; then
+    log "manual choice in force: $MANUAL_ROLE -- tested first, never powered off"
+fi
 
 # --enforce-gating stops here: make the steady state true and nothing else. It
 # never powers a socket ON, never probes and never touches the routing table,
@@ -342,11 +393,17 @@ if [[ "$MODE" == "enforce" ]]; then
     exit 0
 fi
 
-# Preference order
+# Preference order, with any deliberate choice promoted to the front so
+# --on-loss tests what the user asked for before what the list prefers.
+# Deduplicated, or the chosen role would be walked twice.
 ORDERED=()
-for want in "${WAN_PREFERENCE[@]}"; do
+_ordered_seen=" "
+for want in ${MANUAL_ROLE:+$MANUAL_ROLE} "${WAN_PREFERENCE[@]}"; do
     for label in "${CANDIDATES[@]}"; do
-        [[ "$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")" == "$want" ]] && ORDERED+=("$label")
+        [[ "$(normalise_role "${ROLES[$label]:-${NAMES[$label]}}")" == "$want" ]] || continue
+        [[ "$_ordered_seen" == *" $label "* ]] && continue
+        ORDERED+=("$label")
+        _ordered_seen+="$label "
     done
 done
 
@@ -463,6 +520,17 @@ if [[ -n "$WINNER" ]]; then
     # sockets stay on and only the expensive ones are gated. An earlier
     # version powered off every loser, which was optimising the wrong thing.
     power_off_gated_except "$WINNER_LABEL" "settling"
+    # A choice that lost is a choice that could not be honoured. Clear it and
+    # record why, so a stale override cannot skew the next walk and so the
+    # dashboard can say what happened instead of silently showing the wrong
+    # option as active.
+    if [[ -n "$MANUAL_ROLE" && "$role" != "$MANUAL_ROLE" ]]; then
+        log "manual choice $MANUAL_ROLE could not be honoured; fell back to $role"
+        echo "$MANUAL_ROLE $role $(date +%s)" > "$MANUAL_FALLBACK"
+        rm -f "$MANUAL_FILE"
+    elif [[ -n "$MANUAL_ROLE" ]]; then
+        rm -f "$MANUAL_FALLBACK"
+    fi
     echo "ok $WINNER $WINNER_LABEL $(date +%s)" > "$RESULT_FILE"
     log "===== wan_scan done: WAN=$WINNER socket=$WINNER_LABEL ====="
     exit 0

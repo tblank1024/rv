@@ -435,3 +435,89 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+
+/* ---- the Options selector (2026-10-26) -------------------------------- */
+/* One row per option, sized for a thumb on the dashboard tablet rather than
+   for a mouse. Replaces the radio-button list: a radio implies "setting", and
+   these are actions that take seconds and can fail. */
+.wan-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.wan-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d4d4d5;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.wan-option:hover:not(:disabled) {
+  border-color: #96c8da;
+  background: #f8fcfe;
+}
+
+.wan-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wan-option--active {
+  border-color: #21ba45;
+  background: #f6fff7;
+  box-shadow: inset 0 0 0 1px #21ba45;
+}
+
+.wan-option__mark {
+  flex: 0 0 20px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.wan-option__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wan-option__name {
+  font-weight: 600;
+  font-size: 15px;
+  color: #212529;
+}
+
+.wan-option__detail {
+  font-size: 12px;
+  color: #6c757d;
+  margin-top: 2px;
+}
+
+.wan-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e8e8e8;
+}
+
+/* A carried-over scan row: last seen recently, not seen in the newest scan.
+   Dimmed rather than hidden, because hiding it is what made the picker look
+   like it had nothing to offer. */
+.wifi-row--stale {
+  opacity: 0.55;
+}

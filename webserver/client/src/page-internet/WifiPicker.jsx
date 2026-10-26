@@ -1,5 +1,10 @@
 /**
- * WifiPicker — a conventional WiFi picker for the Pi Zero 2W uplink.
+ * WifiPicker — a conventional WiFi picker for the Alfa WAN radio (wlan1).
+ *
+ * Trimmed 2026-10-26: the six-row "WiFi bridge" status card went, folded into
+ * one line above the list. It restated what the list already showed -- the
+ * connected row carries the SSID, band and signal -- and pushed the only
+ * actionable part, the networks, below the fold on the dashboard tablet.
  *
  * Signal is shown in dBm (real RSSI from iw, via the API) with the bars driven
  * by NM's 0-100 quality percentage. A leading "~" means the dBm was derived
@@ -54,7 +59,7 @@ const SignalBars = ({ signal, dbm }) => {
   );
 };
 
-const WifiPicker = () => {
+const WifiPicker = ({ onConnected }) => {
   const [networks, setNetworks] = useState([]);
   const [scanAge, setScanAge] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -156,6 +161,8 @@ const WifiPicker = () => {
           const ip = (data.wifi && data.wifi.ip) || '';
           setResult({ type: 'success', message: `Connected to ${op.ssid}${ip ? ` — ${ip}` : ''}` });
           addLog(`Connected to ${op.ssid}${ip ? ` — ${ip}` : ''}`);
+          // The selector above shows WiFi's live SSID, so it has to be told.
+          if (onConnected) onConnected();
         } else {
           const rolled = op.rolled_back ? ' Previous network restored.' : '';
           setResult({ type: 'error', message: `${op.ssid}: ${op.error || 'failed'}.${rolled}` });
@@ -169,13 +176,20 @@ const WifiPicker = () => {
       failuresRef.current += 1;
       setStatusError(err.message);
     }
-  }, [addLog, loadProfilesAndNetworks]);
+  }, [addLog, loadProfilesAndNetworks, onConnected]);
 
   // Scan once on mount; never on a timer, since a rescan while
   // NetworkManager is associating fights the association.
   useEffect(() => {
     loadNetworks(true);
     pollStatus();
+    // A forced rescan can return while the scan is still running, carrying
+    // only the associated BSS (measured on the Alfa: 1 BSS, then 17 a few
+    // seconds later). The bridge now carries recently-seen SSIDs across such
+    // a scan, but right after the bridge itself restarts it has nothing to
+    // carry -- so read once more when the radio has had time to finish.
+    const settle = setTimeout(() => loadNetworks(false), 5000);
+    return () => clearTimeout(settle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -283,10 +297,9 @@ const WifiPicker = () => {
   const wifi = (status && status.wifi) || {};
   const op = (status && status.operation) || {};
   const cooling = Date.now() - lastScanAt < RESCAN_COOLDOWN;
-  // The status endpoint's signal comes from the API's scan cache and reads 0
-  // before the first scan; prefer the in-use row when we have it.
+  // The live row carries the association's own readings, which the status
+  // endpoint can lack before its first scan.
   const liveRow = networks.find((n) => n.in_use);
-  const liveSignal = wifi.signal || (liveRow ? liveRow.signal : 0);
   // Real RSSI. /api/status reads it straight off the live association with iw,
   // so unlike the percentage it is present even before the first scan; fall
   // back to the in-use scan row only if the service could not read it.
@@ -296,69 +309,7 @@ const WifiPicker = () => {
 
   return (
     <div className="wifi-picker">
-      <Card className="wifi-status-card">
-        <Card.Content>
-          <Card.Header>
-            WiFi bridge
-            {op.state === 'running' && <Icon name="circle notched" loading style={{ marginLeft: 8 }} />}
-          </Card.Header>
-        </Card.Content>
-        <Card.Content>
-          {statusError ? (
-            <Message negative size="small" icon="plug">
-              <Message.Content>
-                <Message.Header>Bridge not responding</Message.Header>
-                {statusError}
-              </Message.Content>
-            </Message>
-          ) : (
-            <div className="wifi-status-grid">
-              <div className="wifi-status-row">
-                <strong>State</strong>
-                <span>
-                  {op.state === 'running'
-                    ? `${op.phase || 'working'}…`
-                    : (wifi.state || 'unknown')}
-                </span>
-              </div>
-              <div className="wifi-status-row">
-                <strong>Network</strong>
-                <span>{wifi.ssid || '—'}</span>
-              </div>
-              <div className="wifi-status-row">
-                <strong>Signal</strong>
-                <span>
-                  {liveDbm != null || liveSignal
-                    ? <>
-                        <SignalBars signal={liveSignal} dbm={liveDbm} />{' '}
-                        {liveDbm != null ? `${liveDbm} dBm` : `${liveSignal}%`}
-                      </>
-                    : '—'}
-                </span>
-              </div>
-              <div className="wifi-status-row">
-                <strong>Band</strong>
-                <span>
-                  {wifi.band ? `${wifi.band} GHz` : '—'}
-                  {wifi.band === '2.4' && liveRow && liveRow.has_5g && (
-                    <span className="wifi-row__why"> (5 GHz available)</span>
-                  )}
-                </span>
-              </div>
-              <div className="wifi-status-row">
-                <strong>Address</strong>
-                <span>{wifi.ip || '—'}</span>
-              </div>
-              <div className="wifi-status-row">
-                <strong>Profile</strong>
-                <span>{wifi.profile || '—'}</span>
-              </div>
-            </div>
-          )}
-        </Card.Content>
-      </Card>
-
-      <Card className="wifi-config-card" style={{ marginTop: '15px' }}>
+      <Card className="wifi-config-card">
         <Card.Content>
           <Card.Header>
             Available networks
@@ -373,25 +324,47 @@ const WifiPicker = () => {
             />
           </Card.Header>
           <Card.Description className="wifi-scan-age">
-            {scanning ? 'Scanning…'
-              : scanAge == null ? ''
-              : scanAge < 2 ? 'Updated just now'
-              : `Updated ${Math.round(scanAge)}s ago`}
+            {statusError ? '' : (
+              <span>
+                {wifi.state === 'connected'
+                  ? <>On <strong>{wifi.ssid}</strong>
+                      {liveDbm != null && <> · {liveDbm} dBm</>}
+                      {wifi.band && <> · {wifi.band} GHz</>}
+                      {wifi.ip && <> · {wifi.ip}</>}</>
+                  : <>Not connected{wifi.state ? ` (${wifi.state})` : ''}</>}
+                {op.state === 'running' && <> · {op.phase || 'working'}…</>}
+              </span>
+            )}
+            <span style={{ display: 'block' }}>
+              {scanning ? 'Scanning…'
+                : scanAge == null ? ''
+                : scanAge < 2 ? 'Updated just now'
+                : `Updated ${Math.round(scanAge)}s ago`}
+            </span>
           </Card.Description>
         </Card.Content>
         <Card.Content>
+          {statusError && (
+            <Message negative size="small" icon="plug">
+              <Message.Content>
+                <Message.Header>Bridge not responding</Message.Header>
+                {statusError}
+              </Message.Content>
+            </Message>
+          )}
           {scanError && <Message negative size="small" content={scanError} />}
-          {!scanError && networks.length === 0 && !scanning && (
+          {!scanError && networks.filter((n) => n.blocked !== 'self').length === 0 && !scanning && (
             <div className="wifi-empty">No networks found. Try Rescan.</div>
           )}
           <div className="wifi-list">
-            {networks.map((network) => {
+            {networks.filter((network) => network.blocked !== 'self').map((network) => {
               const isPending = pending === network.ssid;
               const isOpen = expanded === network.ssid;
               const classes = ['wifi-row'];
               if (network.in_use) classes.push('wifi-row--active');
               if (!network.joinable) classes.push('wifi-row--blocked');
               if (isPending) classes.push('wifi-row--pending');
+              if (network.stale) classes.push('wifi-row--stale');
               if (isOpen) classes.push('wifi-row--expanded');
               return (
                 <div key={network.ssid}>
