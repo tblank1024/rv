@@ -333,6 +333,14 @@ Done 2026-10-26, recorded for completeness:
 
 Not tracked anywhere before this, in the review's own priority order:
 
+- [x] **`install_raspap_bridge.sh` no longer touches netfilter** (2026-10-26). It used to write a
+      permissive `/etc/iptables/rules.v4` and `iptables-restore` it immediately, so re-running it on
+      the live RV would have flushed `SOPHIE-IN`/`SOPHIE-FWD`, set INPUT and FORWARD back to ACCEPT,
+      reopened 22/80/443/53 on **every** interface (undoing the MAC-restricted SSH rule added the
+      same day), and re-enabled `netfilter-persistent`. STEP 7 now sets only `net.ipv4.ip_forward`
+      via a `/etc/sysctl.d` drop-in -- the old append duplicated the line on every run -- and the
+      script no longer installs `iptables-persistent` or enables the unit. NAT belongs to
+      `pi5connect.sh` at runtime, the filter policy to `sophie-firewall.sh`.
 - [ ] **Alert when `sophie-firewall` reads NOT ARMED.** `plan_firewall.md` documents the `status`
       output and the Debug page card, but nothing *pushes*. This is the gap that let the 2026-10-21
       exposure run silently for two days with a green `systemctl status`. Strongest candidate of the
