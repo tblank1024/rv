@@ -1,0 +1,11 @@
+// Installed by sdcard-writes/unattended-upgrades/install.sh on Sophie.
+// Turns on the periodic apt machinery that unattended-upgrades hooks into.
+// 1 = run daily (the apt-daily and apt-daily-upgrade systemd timers already
+// exist; these keys are what make the "-upgrade" half actually apply, not
+// just download).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+
+// Deliberately NOT enabling Download-Upgradeable-Packages or AutocleanInterval
+// as separate prefetch/cleanup passes: Sophie is often on metered cellular and
+// there is no reason to spend data ahead of the single daily apply.

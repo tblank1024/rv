@@ -8,16 +8,19 @@ done and merged three pairs of duplicates.
 
 ## Open work, most urgent first
 
-| # | Item | Where | Why it is here |
+Status as of 2026-10-27: items 1, 3, 4 and 6 are done this session (1 has one
+owner-only question left); the rest are below in full.
+
+| # | Item | State | Why it is here |
 |---|---|---|---|
-| 1 | Check RaspAP `:80` and `wayvnc` `:5900` for default or empty passwords | HA security review | The firewall gives **no** protection on the RV LAN, so a default password there is equivalent to none. Pure investigation, no change needed to find out. |
-| 2 | Alert when `sophie-firewall` reads NOT ARMED | HA security review | The gap that let the 2026-10-21 exposure run silently for two days behind a green `systemctl status`. Fold into the health-hardening work, which needs an alert channel anyway. |
-| 3 | Review the `SOPHIE-IN drop:` logs | Firewall — finish the deployment | Cheap, and the only way to find something legitimate being silently dropped. Home automation at `192.168.2.11` is the review's own example. |
-| 4 | Turn on unattended security upgrades | HA security review | Nothing patches this box on its own and it is unattended for months. |
-| 5 | Bind the dashboard `:8000` to `10.0.0.1` + `127.0.0.1` | Phase 2 hardening | Defence in depth: if the firewall drops again, nothing on the uplink to find. Loopback is **not** optional — the compose healthcheck uses it. |
-| 6 | mDNS `allow-interfaces=br0` | Phase 2 hardening | Stops Sophie advertising herself off the RV LAN. Small. |
-| 7 | `sophie-hostd` on `127.0.0.1` | webserver container privileges | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). **Wants its own session** — it touches reboot and container restart, the two controls you need while debugging it. |
-| 8 | Remote access (Tailscale/WireGuard) | Phase 2 hardening | Dials out, works through CGNAT, no inbound exception. |
+| 1 | RaspAP `:80` / `wayvnc` `:5900` default-or-empty passwords | **Done bar one question** | Both enforce auth and neither is empty; VNC is PAM-backed. One owner-only question: is the RaspAP admin password still the factory `secret`? I did not test it — see the item. |
+| 2 | Alert when `sophie-firewall` reads NOT ARMED | Open — next up | The gap that let the 2026-10-21 exposure run silently for two days behind a green `systemctl status`. Fold into the health-hardening work, which needs an alert channel anyway. |
+| 3 | Review the `SOPHIE-IN drop:` logs | **Done** | 23 h reviewed: zero TCP drops from the home LAN, nothing aimed at Sophie's service ports. Nothing legitimate dropped. |
+| 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
+| 5 | Bind the dashboard `:8000` to `10.0.0.1` + `127.0.0.1` | Open | Defence in depth: if the firewall drops again, nothing on the uplink to find. Loopback is **not** optional — the compose healthcheck uses it. |
+| 6 | mDNS `allow-interfaces=br0` | **Done** | avahi was announcing on both uplinks; now br0 only. |
+| 7 | `sophie-hostd` on `127.0.0.1` | Open — own session | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). **Wants its own session** — it touches reboot and container restart, the two controls you need while debugging it. |
+| 8 | Remote access (Tailscale/WireGuard) | Open | Dials out, works through CGNAT, no inbound exception. |
 
 Blocked on being somewhere else, not on effort:
 
@@ -278,13 +281,30 @@ being written down. Nothing to fix; it is the design working. Two consequences t
       `rules.v4` was dead weight because `pi5connect.sh` installs the MASQUERADE rule itself
       on every WAN change. Hazard removed rather than sequenced around.
 
-- [ ] **Review `SOPHIE-IN drop:` logs** over a few days parked at home, for anything of
-      ours trying to reach Sophie inbound — home automation at `192.168.2.11` especially
-      (`plan_firewall.md` §"Things that will break", item 2). First 25 minutes showed only
-      discovery broadcasts and mDNS multicast, nothing legitimate. Prefer making the
-      connection dial outward from Sophie over adding an inbound exception.
+- [x] ~~**Review `SOPHIE-IN drop:` logs** over a few days parked at home~~ Reviewed
+      2026-10-27 over **23 h** parked at home (16,604 drops since the 2026-10-26 reboot).
+      **Nothing legitimate of ours is being dropped inbound**; no inbound exception is
+      warranted. Breakdown:
+
+      - **Zero TCP drops from the home LAN**, and **zero hits on Sophie's own service ports**
+        (22 / 1883 / 8000 / 9001) from any source. So nothing is making a deliberate
+        connection to Sophie and being refused — the one thing this review was for.
+      - Home automation at `192.168.2.11` appears only on `5353` (mDNS), `7000` (AirPlay
+        discovery) and `1900` (SSDP) — all multicast/broadcast discovery, never a unicast
+        connection to a service. It is not trying to reach Sophie; it is announcing itself.
+      - The high-count sources are all benign UDP discovery: `.153 -> :55555` is a beacon to
+        `255.255.255.255`, `.1 -> :10001` and `.168 -> :10001` are Ubiquiti device
+        discovery, `.218 -> :57621` is Spotify Connect, and `:5353` from ~20 hosts is mDNS.
+      - 8,307 of the total are IPv6, all to `ff0::/8` multicast — link-local discovery.
+      - Only **four** WAN-side drops, and all four are out-of-state *reply* packets
+        (`SPT=443` from remote servers, `DPT=` an ephemeral port on Sophie) that arrived
+        just after their conntrack flow expired. Not inbound connection attempts.
+
+      Re-run if the mix of devices at home changes; the standing preference is still to make
+      any needed connection dial **outward** from Sophie rather than add an inbound rule.
       ```bash
-      sudo journalctl -k | grep 'SOPHIE-IN drop' | sed -E 's/.*drop: //' | sort | uniq -c | sort -rn
+      sudo journalctl -k | grep 'SOPHIE-IN drop' | grep PROTO=TCP | grep 'SRC=192.168.2' \
+        | grep -oE 'DST=[0-9.]+.*DPT=[0-9]+' | sort | uniq -c | sort -rn   # expect empty
       ```
 
 - [x] ~~**`buildRP5RaspAP/install_raspap_bridge.sh` still writes the permissive `rules.v4`**~~
@@ -312,14 +332,26 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
       Mosquitto's 9001 half of this is **already done** (2026-10-27, bound to `127.0.0.1`
       and `10.0.0.1`, ACL narrowed to `RVC/SYS_ERRORS`); 1883 is deliberately left on
       `0.0.0.0` — see the Mosquitto item under "From the HA security review".
-- [ ] **mDNS**: `allow-interfaces=br0` in `/etc/avahi/avahi-daemon.conf`.
+- [x] ~~**mDNS**: `allow-interfaces=br0` in `/etc/avahi/avahi-daemon.conf`.~~ Done 2026-10-27.
+      Set `allow-interfaces=br0` (was the commented `#allow-interfaces=eth0` example) and
+      restarted `avahi-daemon`. This was doing real work: avahi's own log showed it had been
+      joined on **eth1 and wlan1 (both uplinks)** plus br0, so Sophie was announcing her
+      hostname and `192.168.2.197` onto the home/campground LAN. After the restart it joins
+      **br0 only** (`New relevant interface br0.IPv4/IPv6`, and it *left* eth1/wlan1). The
+      5353 socket still binds `0.0.0.0` — that is how avahi works; `allow-interfaces`
+      governs which interfaces it answers on, not the bind. `rpi-connectd` also holds 5353
+      and is left alone (Pi Connect's own discovery, a separate concern). Original saved to
+      the scratchpad; the one-line change is easy to reproduce, so it is not versioned.
 - [ ] **Least privilege for the webserver container.** Tracked in full under
       §"webserver container privileges" below — two of four steps are done, and the
       remaining work is the `sophie-hostd` project. Not repeated here.
 - [ ] **Remote access**: Tailscale or WireGuard — dials out, works through CGNAT, needs no
       inbound exception. This is the replacement for the old `192.168.2.196` SSH habit.
-- [ ] **Updates**: periodic `apt full-upgrade` and container image rebuilds. Same item as
-      "unattended security upgrades" under the HA security review.
+- [-] **Updates**: periodic `apt full-upgrade` and container image rebuilds. The
+      **security** half is done (see "unattended security upgrades" under the HA review).
+      Still open, and deliberately kept manual: a full `apt full-upgrade` (general stable
+      point-release updates beyond security) and the container image rebuilds. Both can
+      change behaviour, so they stay a deliberate on-a-trip action, not automatic.
 - [ ] `raspap` compose profile (inactive) sets `RASPAP_COUNTRY=GB`; set `US` if ever
       enabled (regulatory domain, `plan_new_WAN_WiFi.md` issue 8).
 
@@ -721,17 +753,75 @@ Not tracked anywhere before this, in the review's own priority order:
       cannot reach the alarm command topics -- but it does hand all RV telemetry to anyone on
       Sophie's WiFi. Low severity on its own; matters more while 9001 is still bound to every
       interface.
-- [ ] **Check RaspAP's web UI (:80) and `wayvnc` (:5900) for default or empty passwords.**
-      `plan_firewall.md:90` lists both as ports but nobody has verified their credentials. On the
-      RV LAN side the firewall gives no protection at all, so a default password there is equivalent
-      to no password.
+- [-] **Check RaspAP's web UI (:80) and `wayvnc` (:5900) for default or empty passwords.**
+      Investigated 2026-10-27. **Neither is empty; VNC is provably not default. One open
+      question for the owner on the RaspAP password, which I did not test by guessing.**
+
+      `wayvnc` (:5900) — **done, no action.** `/etc/wayvnc/config` has `enable_auth=true`,
+      `enable_pam=true` and TLS (cert + key). There is no VNC password of its own to be
+      empty or default: it delegates to PAM, so login is as strong as the `tblank` account
+      password. The `vnc` service account is locked (`passwd -S vnc` = `L`), which is
+      correct — CLAUDE-rv.md documents login as `tblank`, not `vnc`.
+
+      RaspAP (:80) — **auth is enforced and the password is non-empty.** `/etc/raspap/raspap.auth`
+      holds username `admin` and a `$2y$10$` bcrypt hash (so: not empty). Unauthenticated
+      requests to `/` and to an ajax endpoint both return `302` to the login page — RaspAP
+      does session auth in the PHP app, not via lighttpd `mod_auth` (which is all commented
+      out, as shipped). So the UI is not open.
+
+      - [ ] **One thing only the owner knows: is the RaspAP admin password still the factory
+            default `secret`?** It cannot be read from the hash — RaspAP salts per install,
+            so the stored string differs from any published default even if the password is
+            unchanged, and confirming it would mean a login attempt, which I'm not doing on
+            my own initiative. If you did not deliberately change it from `secret`, change it
+            now in the RaspAP UI (Authentication page) — it is reachable by any device on
+            Sophie's WiFi.
+
+      **The bound on all of this: the firewall confines both ports to the RV LAN.** Verified
+      on-box — `SOPHIE-IN` trusts `lo`/`br0`/`docker0`/`br-+` and drops everything else, and
+      there is no `eth1`/uplink ACCEPT for 80 or 5900, so both fall through to the default
+      DROP on the uplink. On `br0` (10.0.0.1) both answer, so the real residual exposure is
+      to **anyone on Sophie's WiFi** — a guest, a phone — bounded only by these two
+      passwords. That is exactly the "firewall gives no protection on the RV LAN side"
+      caveat the item was raised under, which is why the default-password question matters
+      even though the uplink is closed.
 - [ ] **Bind the dashboard (8000) to `10.0.0.1` and `127.0.0.1`.** Same item as "Bind the
       dashboard (8000)" under §"Phase 2 hardening"; the 9001 half is already done.
-- [ ] **Turn on unattended security upgrades.** Nothing currently patches this box on its own, and it
-      is often unattended for months.
-- [ ] **Review the `SOPHIE-IN drop:` logs over a few days at home.** Cheap, and the only way to find
-      something legitimate that is being silently dropped -- home automation polling Sophie is the
-      review's own example.
+- [x] ~~**Turn on unattended security upgrades.**~~ Done 2026-10-27. `unattended-upgrades`
+      installed and enabled (`apt-daily-upgrade.timer` active), configured **security-only**
+      and to **never reboot on its own** — the one setting that matters most on an
+      unattended RV, since an auto-reboot could strand it with no uplink or mid-task.
+
+      Config is versioned in `sdcard-writes/unattended-upgrades/` (two `apt.conf.d` files
+      plus an `install.sh` in the repo's existing host-config style). Three deliberate
+      choices, each with a reason in the files:
+      - **Security origin only** (`...-security,label=Debian-Security`), and the installer
+        also comments out the stock `50unattended-upgrades` main-archive line
+        (`label=Debian`) as belt-and-braces, so future general point-release updates are not
+        auto-applied — those stay in the manual "Updates" item above.
+      - **`Automatic-Reboot "false"`**, plus `--force-confold` so a changed package conffile
+        keeps the installed version rather than prompting (nobody is there to answer).
+      - **Raspberry Pi firmware repo left out**, so kernel/firmware stays deliberate.
+
+      Applied the backlog immediately while on free wired — **60 pending security updates**,
+      every one a `deb12uN` build confirmed present in `bookworm-security` (the box had not
+      been patched since the SD image was made): openssl/libssl3 `3.0.22-1~deb12u2`, perl,
+      python3.11 `deb12u9`, bind9, nodejs `deb12u3`, php8.2, libmariadb3, imagemagick, and
+      more. `All upgrades installed`, **no `reboot-required` flag**, 9/9 containers healthy,
+      firewall `== ARMED`, uplink up afterward.
+
+      - [ ] **A reboot would let host services pick up the new openssl/libssl.** Not
+            required (no flag set) and not urgent; the next deliberate reboot covers it.
+            Containers are unaffected — they carry their own libs in-image.
+      - Note the one real tradeoff: if the daily timer fires while Sophie is on **metered
+        cellular**, it will download security updates over that link. Security updates are
+        usually small; there is no clean "unmetered-only" gate without wiring
+        NetworkManager's metered flag into apt, which was judged not worth it. Revisit if a
+        bill ever shows it.
+- [x] ~~**Review the `SOPHIE-IN drop:` logs over a few days at home.**~~ Done 2026-10-27 —
+      same item as under §"Firewall — finish the deployment", where the full 23 h result
+      is recorded. Nothing legitimate dropped; home automation at `.11` only ever appears in
+      multicast discovery, never a unicast connection to a Sophie service.
 - [ ] **A true cold boot** (full power-off, not a reboot). The 2026-10-23 test rebooted with the hub
       still energised, so the modem never paid its ~36 s from a dead socket. Needs someone at the RV.
 
