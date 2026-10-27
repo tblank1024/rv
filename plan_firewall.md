@@ -298,7 +298,11 @@ following `sdcard-writes/setup-passwordless-sudo.sh`.
    - On the road, if a laptop tab is ever wanted there: Tailscale/WireGuard, which dials out and opens no port.
    - **`192.168.2.196` is not an address Sophie has.** It is `192.168.2.197` (`eth1`, wired USB adapter,
      MAC `00:e0:4c:36:01:fb`) and `192.168.2.107` (`wlan1`, Alfa, MAC `00:c0:ca:be:29:62`). Both are DHCP, so
-     reserve them on the home router. README/CLAUDE.md still cite `.196` and need updating.
+     reserve them on the home router. Both confirmed still current 2026-10-27.
+     The `.196` references are cleaned up as of 2026-10-27 — and the claim that "README/CLAUDE.md still cite
+     `.196`" was itself wrong: neither file ever mentioned it. The two real users were
+     `plan_rv_improvements.md` (calling it "the bench Pi") and the `ssh -t` example in
+     `sdcard-writes/setup-passwordless-sudo.sh`; both now point at `10.0.0.1` over Sophie's own WiFi.
 2. **Home automation talking to Sophie.** If HA (192.168.2.11) or anything at home connects *to* Sophie (MQTT
    bridge, API polling) while parked at home, it will be dropped. Check the `SOPHIE-IN drop:` log lines at home,
    and decide per case. Prefer making the connection go outward from Sophie (e.g., Sophie

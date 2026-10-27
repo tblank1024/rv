@@ -3,8 +3,10 @@
 # Scoped to exactly the commands install.sh runs -- not blanket sudo access.
 #
 # Needs an interactive terminal (asks for your password once, to write the
-# sudoers rule itself). Run it directly on Sophie, or via:
-#   ssh -t tblank@192.168.2.196 '.../sdcard-writes/setup-passwordless-sudo.sh'
+# sudoers rule itself). Run it directly on Sophie, or over SSH from Sophie's own
+# WiFi -- the uplink is default-deny since the firewall went in, so from the home
+# LAN only the laptop's MAC-excepted addresses get in:
+#   ssh -t tblank@10.0.0.1 '.../sdcard-writes/setup-passwordless-sudo.sh'
 
 set -e
 

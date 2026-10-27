@@ -421,6 +421,23 @@ in ~2s and the rest are redundant no-ops behind it.
       2026-10-26; if they stay there through several uplink switches and a reboot, both
       duplicate-rule items below can be closed properly rather than on a mechanism argument.
 
+      **Checkpoint 2026-10-27, and the honest reading is "partly".** Counted live through
+      `nsenter -t 1 -m -n iptables`: **2** `br0` DNS INPUT rules, **1** WAN MASQUERADE
+      (`-o eth1`, plus the two Docker ones), and exactly **2** per-WAN FORWARD rules, both
+      for the current `eth1`, with no `wlan1` or `eth2` leftovers anywhere. So 2/1/1 holds
+      a day later. The installed `pi5connect.sh` is v2.4 and `diff`s identical to the repo.
+
+      What this does *not* yet prove: **there has been no WAN change since the lock went in.**
+      The installed file is dated 16:37:42 on 2026-10-26 and the last real WAN event in
+      `/var/log/pi5connect.log` is 16:39:51 the same day -- i.e. the deliberate concurrency
+      tests of that session, not new evidence. The uplink has been `eth1` continuously since.
+      Two things in that log are still worth having, though, because they were with the lock
+      in force: a genuine **five-instance dispatcher storm** at 16:38:34, all five logging
+      "Adding rules for new WAN=eth1" inside the same second, and one real
+      `Lock: waited 30s ... proceeding without it (duplicate rules possible)` at 16:39:50.
+      Neither produced a duplicate. The DNS item below is closeable on that; the stale-rule
+      item is not, because it needs an interface to actually go away.
+
 ## Reboot test after disabling netfilter-persistent (2026-10-26 16:18)
 
 First boot since netfilter-persistent was disabled and `install_raspap_bridge.sh` was stopped
@@ -579,28 +596,41 @@ Not tracked anywhere before this, in the review's own priority order:
 
 ## Small / unrelated
 
-- [ ] `chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset` — `visudo -c`
+Worked through 2026-10-27. **Three closed** (the DNS rule count, the `usbhub` socket map,
+the `.196` references), **two still open** -- one needs your password, one needs a real WAN
+change -- and **two new ones found on the way**: `usbhub_ports.py` has drifted on disk, and
+the hub has been moved to a USB 2 port.
+
+- [ ] `chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset` -- `visudo -c`
       flags both as bad permissions. Pre-existing, they load today, but it is the kind of
-      thing that stops working after a sudo upgrade.
-- [ ] `iptables -S INPUT` carries **four** identical `br0` DNS accept rules where
-      `pi5connect.sh`'s `-C` guard should have produced two
-      (`raspap/pi5connect.sh`, `ensure_dns_input`). Harmless. Re-counted after the stage-2
-      cellular switch on 2026-10-23: **still four, not six** -- so the guard holds across a
-      WAN change and the list is not leaking per switch.
+      thing that stops working after a sudo upgrade. **Still open, and it cannot be done
+      from a Claude session:** `sudo -n -l` shows this user's NOPASSWD entries are
+      command-scoped (`sophie-firewall.sh status`, the journald trio, the USB
+      bind/unbind tee) and `chmod` is not among them, so the blanket `(ALL : ALL) ALL`
+      rule prompts for a password. Confirmed 2026-10-27 that both files are still `0644`
+      while every other file in `/etc/sudoers.d` is `0440`. Run it yourself:
+      ```bash
+      sudo chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset && sudo visudo -c
+      ```
 
-      **Source identified 2026-10-26, and it is NOT `rules.v4`.** Commits `b87e27c` and
-      `186ed0c` claimed `netfilter-persistent` restoring `/etc/iptables/rules.v4` explained
-      these, because that file does contain four such lines. The reboot that evening
-      disproved it: `netfilter-persistent` was `inactive`, nothing restored that file, and
-      the count came back as **four** anyway, as two exact `udp` pairs and two exact `tcp`
-      pairs.
+- [x] ~~`iptables -S INPUT` carries **four** identical `br0` DNS accept rules~~ **Closed
+      2026-10-27: the count is two.** One `udp --dport 53` and one `tcp --dport 53`, which
+      is exactly what `ensure_dns_input`'s `-C` guard is supposed to leave.
 
-      So it is the TOCTOU race in `ensure_dns_input`: `-C` then `-A` is not atomic, and the
-      dispatcher fires several `pi5connect` instances for one event (six trigger entries in
-      the log for this boot alone). Two instances both find the rule absent and both add it.
-      That makes this the **same root cause** as the stale-FORWARD-rules item below, and the
-      lock proposed there fixes both. The `rules.v4` claim in those two commit messages is
-      wrong; the rest of what they say stands.
+      The root cause identified on 2026-10-26 was right and the fix landed: it was the TOCTOU
+      race in `ensure_dns_input`, not `netfilter-persistent` restoring `/etc/iptables/rules.v4`.
+      The count went 4 -> 2 at the 2026-10-26 16:18 reboot, which on its own proves only
+      that nothing re-seeded them; what makes this closeable is that the v2.4 lock was
+      installed at 16:37:42 and the five-instance dispatcher storm at 16:38:34 -- plus one
+      lock *timeout* at 16:39:50 that proceeded anyway -- left the count at two, where it
+      still is a day later.
+
+      Kept for the record, because it cost two commits to get right: commits `b87e27c` and
+      `186ed0c` claimed `rules.v4` explained the four rules, because that file does contain
+      four such lines. The 2026-10-26 reboot disproved it -- `netfilter-persistent` was
+      `inactive`, nothing restored that file, and the count came back as four anyway, as two
+      exact `udp` pairs and two exact `tcp` pairs. The `rules.v4` claim in those two commit
+      messages is wrong; the rest of what they say stands.
 
 - [ ] **Stale rules for a dead WAN survive a switch.** After `wlan1` went away on
       2026-10-23, `FORWARD` still held `-i br0 -o wlan1 -j ACCEPT` and its
@@ -610,16 +640,83 @@ Not tracked anywhere before this, in the review's own priority order:
       remove-then-add path is not symmetric. Root cause is visible in the log: the
       dispatcher fired **three** `pi5connect` instances concurrently for the same
       `eth2 up`, all three reaching "Adding rules for new WAN" within the same second.
-      A lock around the rule rewrite, like the one `f5cc58a` added for socket power, is
-      the obvious fix.
+      The `flock` added in `639a285` is the fix.
 
-- [ ] **`usbhub/README.md`'s observed socket map is stale.** It records
-      `3-1`/`3-1.3`/`4-1`/`4-1.3` from 2026-10-18; after the 2026-10-23 boot the hub
-      enumerates as `1-2.3`, with **one** identity per socket rather than two. The API
-      still resolves sockets correctly, so nothing is broken, but the README now documents
-      a bus path that no longer exists -- and the "one socket, two sysfs identities"
-      reasoning needs a line saying the paths themselves are not stable across boots.
-      Re-run `map_sockets.py` and update the measured map.
-- [ ] README/CLAUDE.md still mention reaching Sophie over SSH at `192.168.2.196`. That
-      path is now firewalled off by design — update the instructions to Pi Connect or
-      Sophie's own WiFi (`plan_firewall.md` §"Things that will break", item 1).
+      **Checked 2026-10-27 and the rules are clean -- but this is NOT evidence yet.** There
+      are exactly two per-WAN FORWARD rules and one WAN MASQUERADE rule, all for the live
+      `eth1`, and nothing for `wlan1` or `eth2`. The catch is that the last WAN *change* was
+      at 16:39 on 2026-10-26, before which the 16:18 reboot had already cleared the table,
+      so a clean table today is what a reboot gives you for free. **This item needs an
+      interface to genuinely go away while the lock is in force** -- unplug the wired
+      adapter, or select cellular from the Internet page -- and then a re-count. Deliberately
+      not done from a session: it drops the uplink.
+
+- [x] ~~**`usbhub/README.md`'s observed socket map is stale.**~~ Done 2026-10-27, and it
+      turned up a hardware change nobody had recorded. The README documented
+      `3-1`/`3-1.3` (USB 2) + `4-1`/`4-1.3` (USB 3) from 2026-10-18; the hub now enumerates
+      as `1-2` + `1-2.3` with **no USB 3 chip at all**. `/etc/usbhub/sockets.json` was
+      already correct, so only the document was wrong.
+
+      **Why the USB 3 chip is gone: the hub has been moved to a black (USB 2) port.** `1-2`
+      hangs off root hub `usb1` at 480 Mb/s, and `usb2` -- the SuperSpeed root hub sharing
+      that connector pair -- has nothing attached, so the SuperSpeed upstream link never
+      trains and the USB 3 chip never enumerates. Hence one sysfs identity per socket
+      instead of two. Nothing is broken: both chips still report `ppps`, `SocketMap` acts on
+      whatever identities exist, and `/api/sockets` resolves all seven correctly with the
+      right names and the gating on socket 3.
+
+      It also costs nothing as populated, which is worth stating rather than assuming --
+      read from `/api/sockets`, **no device on the hub is a SuperSpeed device**: the Alfa is
+      `0e8d:7612` (MT7612U, a USB 2.0 part) at 480, the wired uplink is `0bda:8152`, a
+      Realtek *10/100* adapter, at 480, and the BT500 is at 12. The SD card reader, which
+      *is* SuperSpeed, is in a blue port directly and not on the hub.
+
+      - [ ] **Decide whether to move the hub back to a blue port.** No current device needs
+            it, so this is not urgent, but two things are lost while it sits in a black
+            port: any SuperSpeed device plugged into the hub silently falls back to
+            480 Mb/s, and the "one socket, two identities" behaviour -- including the
+            2026-10-18 finding that the two chips' port power is independent rather than
+            ganged -- cannot be re-verified, because there is no second identity to switch.
+
+      What changed in the README: the live map replaces the 2026-10-18 one; a new
+      "Bus paths are not stable" section carries a dated table of both cablings and the rule
+      *read the live name, do not hardcode it*; the mapping command no longer says
+      `--hubs 3-1,3-1.3,4-1,4-1.3` but discovers the names, and now also documents
+      `--relocate`, which reapplies the stored socket geometry by VID:PID with nothing
+      unplugged -- that is how the current map was produced; the automatic cascade
+      protection is described by rule rather than by path; and every surviving `3-1`/`4-1`
+      reference is now explicitly labelled as a record of a measurement on a date.
+
+      The one hand-written path is called out rather than glossed: `USBHUB_PROTECTED` in
+      `usbhub-api.service` is belt-and-braces over the automatic cascade detection, so it
+      has to be re-measured when the hub moves. Checked 2026-10-27 -- it reads
+      `1-2:4,1-2:3` (socket 7's Bluetooth adapter, and the internal cascade), so somebody
+      already updated it for the move; it is correct as cabled.
+
+- [ ] **`usbhub_ports.py` on disk has drifted from the repo** (noticed while doing the
+      above). `/usr/local/sbin/usbhub_ports.py` is from 2026-10-20; `map_sockets.py` and
+      `usbhub_api.py` are byte-identical to the repo. The drift is comment-only except that
+      the repo version **deletes** `get_current_active_port()`, a shim for the old
+      Coolgear-shaped callers. Grepped the whole repo: nothing calls it, so re-running
+      `setup_usbhub_api.sh` is safe -- but it restarts a root service that owns hub power,
+      so it wants doing deliberately rather than in passing.
+
+- [x] ~~README/CLAUDE.md still mention reaching Sophie over SSH at `192.168.2.196`.~~ Done
+      2026-10-27 -- **and the item's own premise was wrong.** Neither `README.md` nor
+      `CLAUDE.md` ever mentioned that address; `README.md` is only the MQTT topic table and
+      `CLAUDE.md`'s Remote Desktop section already said VNC and Pi Connect. The two real
+      users were `plan_rv_improvements.md`, which called it "the bench Pi", and the `ssh -t`
+      example in `sdcard-writes/setup-passwordless-sudo.sh`. Both now point at
+      `ssh tblank@10.0.0.1` over Sophie's own WiFi, with a line on what the home LAN can
+      still do: SSH in from the home side now works only from the laptop, via the two
+      `--mac-source` ACCEPT rules in `SOPHIE-IN` (`28:d0:ea:d4:f7:47` and
+      `08:3a:88:55:27:80`, both confirmed present 2026-10-27).
+
+      Also fixed one that was not on any list: `~/dotfiles/claude/CLAUDE-rv.md` said
+      "No VPN configured; access via SSH on local network", which has been false since the
+      firewall went in and is exactly the sort of line that sends a session down a dead end.
+      It now names the default-deny uplink, `10.0.0.1` on `br0`, and Pi Connect.
+
+      Confirmed still current 2026-10-27: `eth1` is `192.168.2.197`, `wlan1` is
+      `192.168.2.107`. The remaining `.196` strings in the repo are deliberate -- the
+      correction note in `plan_firewall.md` and the history lines here.

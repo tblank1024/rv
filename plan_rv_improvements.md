@@ -371,6 +371,13 @@ Ordered by (impact ÷ effort), grouped into phases. Each item is independently s
 | 4 — security | ~½ day | medium (coordinated broker+client rollout) | closes open-broker + privilege surface |
 | 5 — refactors | ongoing | medium | maintainability |
 
-Phases 0–3 are safe to do at home against the bench Pi (`192.168.2.196`) with
-`docker compose up -d --build` and a check that all seven containers stay up and MQTT topics
-flow (`mosquitto_sub -t '#' -C 20`). Phase 4 needs all clients updated together.
+Phases 0–3 are safe to do at home against the Pi with `docker compose up -d --build` and a
+check that all seven containers stay up and MQTT topics flow (`mosquitto_sub -t '#' -C 20`).
+Phase 4 needs all clients updated together.
+
+Note on reaching it: this used to say "the bench Pi (`192.168.2.196`)". That address was
+never Sophie's — she is `192.168.2.197` (`eth1`) and `192.168.2.107` (`wlan1`) at home — and
+since the firewall went in (`plan_firewall.md`) the uplink is default-deny. SSH from the home
+LAN now works only from the laptop, by the two `--mac-source` exceptions in `SOPHIE-IN`; from
+anything else it is dropped. The paths that always work: `ssh tblank@10.0.0.1` on Sophie's own
+WiFi (`br0` is trusted), or Raspberry Pi Connect from anywhere.

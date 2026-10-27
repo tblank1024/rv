@@ -76,13 +76,16 @@ entry protects (the TPMS Bluetooth adapter and the hub's internal cascade).
 
 **Ports carrying another hub are protected automatically**, so cascades never
 have to be listed by hand: each hub's upstream port, and the Plugable's internal
-cascade on both the USB 2 and USB 3 sides (`3-1:3`/`4-1:3` at last measurement).
+cascade — port 3 of the upstream chip on each speed, `1-2:3` as attached on
+2026-10-27. Automatic is the point: the bus paths change (see "Bus paths are not
+stable" below), so a hand-written list would go stale.
 
 ## One socket, two sysfs ports
 
 A USB 3 hub is **two hubs in one shell**. A socket's SuperSpeed lanes go to a
 USB 3 hub chip and its D+/D− pair to a separate USB 2 hub chip, on a different
-bus. Measured on the Plugable, 2026-10-18 — one upstream cable:
+bus. Measured on the Plugable, 2026-10-18 — one upstream cable in a **blue**
+(USB 3) port on the Pi:
 
 ```
 3-1  +  3-1.3     USB 2 chips (bus 3)
@@ -121,8 +124,14 @@ Nothing relates a socket on the shell to a port number, so **the map is observed
 not derived**:
 
 ```bash
-sudo /usr/local/sbin/map_sockets.py --hubs 3-1,3-1.3,4-1,4-1.3
+sudo /usr/local/sbin/map_sockets.py --hubs "$(python3 -c '
+import sys; sys.path.insert(0, "/usr/local/sbin")
+import map_sockets as m
+print(",".join(h for pair in m.find_plugable_chips().values() for h in pair))')"
 ```
+
+Don't hardcode the hub names in that command; see "Bus paths are not stable"
+below for why.
 
 Plug one device into a socket, label it, move it to the next. Run it twice —
 once with a USB 2 device, once with a USB 3 one, giving each socket the same
@@ -130,6 +139,17 @@ label both times — so each socket ends up with both identities. It merges into
 `/etc/usbhub/sockets.json`; `--out` writes elsewhere, `--fresh` starts over. An
 absent map is a normal state: the socket endpoints answer 409 rather than guess,
 because guessing here means cutting power to the wrong uplink.
+
+Walking all seven sockets by hand is only needed **once per hub model**. The
+socket-to-chip-port geometry is a property of the shell, not of where the
+upstream cable goes, so after the hub moves use:
+
+```bash
+sudo /usr/local/sbin/map_sockets.py --relocate
+```
+
+which finds the chips by VID:PID and reapplies the stored geometry. That is what
+produced the current map below, with nothing unplugged.
 
 ## Probing a new hub
 
@@ -142,8 +162,10 @@ sudo uhubctl                              # per-port power switching support
 curl -s http://127.0.0.1:12347/api/hubs   # same data as JSON
 ```
 
-The Plugable's four chips report `ppps` (per-port power switching) to `uhubctl`,
+The Plugable's chips report `ppps` (per-port power switching) to `uhubctl`,
 which is the capability claim — not proof VBUS drops. See the warning above.
+(All four were visible on 2026-10-18 with the hub in a blue port; in a black port
+only the two USB 2 chips enumerate — see "Bus paths are not stable".)
 
 The Pi 5's two blue ports each carry both speeds on one connector, so a USB 2
 device and a USB 3 device on the same blue port share one connector. Moving
@@ -154,28 +176,86 @@ Declared draw (`bMaxPower`) across the Pi's own ports can exceed the 600 mA
 budget when `usb_max_current_enable=0` (raise to 1.6 A with a 27 W PSU).
 `bMaxPower` is a declared ceiling, not consumption; watch `vcgencmd get_throttled`.
 
-## The map, measured 2026-10-18
+## The map
+
+Current, read from `/etc/usbhub/sockets.json` on **2026-10-27**:
 
 ```
-socket 1    3-1.3:3, 4-1.3:3        socket 5    3-1:2, 4-1:2
-socket 2    3-1.3:2, 4-1.3:2        socket 6    3-1:1, 4-1:1
-socket 3    3-1.3:1, 4-1.3:1        socket 7    3-1:4, 4-1:4
-socket 4    3-1.3:4, 4-1.3:4
+socket 1   1-2.3:3   Wifi          socket 5   1-2:2
+socket 2   1-2.3:2   Wired         socket 6   1-2:1
+socket 3   1-2.3:1   Cellular  GATED
+socket 4   1-2.3:4   Starlink      socket 7   1-2:4   Bluetooth
 ```
 
-Two things worth having measured rather than assumed:
+**One identity per socket, not two, because the USB 3 chip is not on the bus.**
+The hub is currently in a **black (USB 2)** port on the Pi — `1-2` hangs off
+root hub `usb1` at 480 Mb/s, and `usb2`, the SuperSpeed root hub sharing that
+connector pair, has nothing attached. With no SuperSpeed upstream link the USB 3
+chip never enumerates, so each socket has only its USB 2 identity.
+
+Costs nothing as currently populated, and that is worth stating rather than
+assuming: **nothing on the hub is a SuperSpeed device.** Read from `/api/sockets`
+on 2026-10-27:
+
+| socket | device | negotiated |
+|---|---|---|
+| 1 Wifi | `0e8d:7612` Alfa AWUS036ACM (MT7612U) | 480 |
+| 2 Wired | `0bda:8152` Realtek **10/100** LAN | 480 |
+| 7 Bluetooth | `0b05:190e` ASUS USB-BT500 | 12 |
+
+Sockets 3 (Cellular, gated off) and 4 (Starlink) were empty at the time, and the
+modem is a `cdc_ether` dongle that enumerates High Speed. So 480 Mb/s of shared
+upstream constrains nothing plugged in today — note in particular that the wired
+uplink adapter is a *100 Mbit* part, so it was never going to use SuperSpeed.
+Switching is unaffected too: `SocketMap` acts on whatever identities exist, and
+both chips still report `ppps` (`1-2` and `1-2.3`, confirmed 2026-10-27).
+
+Two things it does cost. Any SuperSpeed device plugged into the hub would
+silently fall back to 480 Mb/s — the SD card reader is the one SuperSpeed device
+on the box and it is in a blue port directly, not on the hub. And the "one
+socket, two identities" reasoning below cannot be re-verified as cabled, because
+there is no second identity to disable. Move the hub to a blue port to get the
+USB 3 tree back.
+
+### Bus paths are not stable
+
+The paths in this file have changed twice and will change again. They encode
+*where the upstream cable is plugged in*, not anything about the hub:
+
+| date | USB 2 chips | USB 3 chips | Pi port |
+|---|---|---|---|
+| 2026-10-18 | `3-1` + `3-1.3` | `4-1` + `4-1.3` | blue |
+| 2026-10-27 | `1-2` + `1-2.3` | *absent* | black |
+
+So **do not hardcode a hub path** where it can be read instead. Anything in this
+README of the form `3-1:4` is a record of a measurement on that date, not a
+current address. Read the live names from `/etc/usbhub/sockets.json`, from
+`/api/hubs`, or with
+`map_sockets.py --relocate`, which is cheap and needs nothing unplugged.
+
+The one place a path *is* written down by hand is `USBHUB_PROTECTED` in
+`usbhub-api.service`, which is belt-and-braces over the automatic cascade
+detection. It therefore has to be re-measured whenever the hub moves, and the
+unit file says so. Checked 2026-10-27: it reads `1-2:4,1-2:3` — socket 7's
+Bluetooth adapter and the internal cascade — so it is correct for the current
+cabling.
+
+What *is* stable, and is why `--relocate` works at all:
 
 - **Physical order does not follow port order.** Sockets 1-4 are on the
   downstream chip in port order 3, 2, 1, 4; sockets 5-7 on the upstream chip in
-  order 2, 1, 4. Nothing about the geometry was guessable.
-- **Port numbering is identical across the two trees** — `3-1.3:3` and
-  `4-1.3:3` are the same socket for every one of the seven. So the two chips'
-  ports are wired to the connectors in the same order, which is what makes a
-  second mapping pass a confirmation rather than a separate discovery.
+  order 2, 1, 4. Nothing about the geometry was guessable — but it is a property
+  of the shell, so it survives the hub moving.
+- **Port numbering is identical across the two trees** — on 2026-10-18 `3-1.3:3`
+  and `4-1.3:3` were the same socket for every one of the seven. So the two
+  chips' ports are wired to the connectors in the same order, which is what
+  makes a second mapping pass a confirmation rather than a separate discovery.
 
 ### Which identity gates a device
 
-With the AX88179B (SuperSpeed) in socket 7:
+Measured 2026-10-18, with the AX88179B (SuperSpeed) in socket 7 and the hub in a
+blue port. Not repeatable as currently cabled — there is no USB 3 tree to disable
+one half of:
 
 | action | result |
 |---|---|
@@ -190,7 +270,7 @@ devices that could be plugged in.
 
 ### Reading a port is expensive on a suspended hub
 
-Measured per `states()` call:
+Measured per `states()` call, 2026-10-18 (hub names as they were then):
 
 ```
 3-1      2.0 ms        4-1      1.8 ms
