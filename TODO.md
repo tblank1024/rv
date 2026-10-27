@@ -392,6 +392,38 @@ Nothing depended on `netfilter-persistent`: the firewall armed without it, NAT c
 `pi5connect.sh` as designed, and the MASQUERADE duplicates dropped from six to four because
 the saved ruleset no longer seeds them.
 
+## WatchdogSec on the host daemons (2026-10-27)
+
+`wifi-api-rp5` and `usbhub-api` now carry `WatchdogSec=180` via drop-ins, and both ping
+systemd from their own source (`start_watchdog()`).
+
+The design point: `Restart=always` was already set on both, so it already handled the process
+*exiting*. The watchdog's entire added value is catching a **hang** -- so the ping had to prove
+the HTTP loop still serves, not merely that a timer thread is alive. A bare timer would keep
+pinging straight through a deadlocked `serve_forever()`, i.e. through exactly the failure it
+exists to catch. Both therefore issue a real loopback request to their own `/api/health` and
+ping only on success. That is not hypothetical for the WiFi bridge, which shells out to nmcli;
+a wedged nmcli is the realistic way for it to stop answering while the process stays up.
+
+Interval is `WatchdogSec/3` (60s), so three consecutive failed self-checks are needed before
+systemd acts -- one slow nmcli does not restart the service.
+
+Verified by systemd's own record rather than by inference: `WatchdogTimestamp` advanced
+12:46:04 -> 12:47:04 for both, exactly the 60s interval, so the pings are genuinely landing.
+Both APIs still answer through the dashboard afterwards (`ssid=Decher`, `active=wired`), and
+`/api/health` returns 200 on 12346 and 12347.
+
+Caught before deploying: the first version of the WiFi bridge's watchdog referenced
+`_wifi_opener`, a name that exists in the webserver's `server.py` but **not** in that file. It
+would have raised NameError inside the watchdog thread, so the self-check would always fail,
+no ping would ever be sent, and systemd would have restarted the WiFi bridge every 180s --
+the exact restart loop this work has been trying to avoid. Each service now builds its own
+proxy-free opener.
+
+- [ ] Not done: the same treatment for any future host daemon. `pi5connect.sh` cannot have it
+      -- it is a NetworkManager dispatcher script, not a daemon -- and the `sophie-firewall`
+      units are oneshots, where `WatchdogSec` is meaningless.
+
 ## From the HA security review (relayed 2026-10-26)
 
 Reconciled against this repo the same day. Most of the review was already tracked; these are the
@@ -450,7 +482,29 @@ Not tracked anywhere before this, in the review's own priority order:
       pinning that MAC to `eth0`, matching `10-wlan-ap.link`/`11-wlan-wan.link`, and preferably also
       change the bridge-member file to `[Match] MACAddress=` so the name stops mattering at all.
       Note RaspAP owns those files and may rewrite them.
-- [ ] **Require auth on Mosquitto 9001.** Measured 2026-10-26: `allow_anonymous true` with
+- [x] **Mosquitto 9001 narrowed and taken off the uplink** (2026-10-27) -- rather than given a
+      password, and the reasoning matters. A credential for 9001 would have to ship inside the
+      React bundle, readable by anyone who can load the dashboard, and `:8000` already serves
+      the same telemetry unauthenticated by deliberate decision. So a password there buys
+      almost nothing. What did help:
+
+      - **ACL narrowed from `read RVC/#` to `read RVC/SYS_ERRORS`.** Exactly one thing consumes
+        this listener -- `AlertsPanel.jsx` -- and it subscribes to that one topic. Measured: an
+        anonymous websocket client subscribing to `RVC/#`, `RVC/TANK_STATUS/#` and
+        `RVC/BATTERY_STATUS/#` now receives **nothing** from them, while a control on the
+        authenticated listener showed **724 messages across 28 topics** in a comparable
+        window, 63 of them TANK_STATUS and 30 BATTERY_STATUS. That whole stream used to be
+        readable by anyone on Sophie's WiFi.
+      - **Bound to `127.0.0.1` and `10.0.0.1` only**, so the anonymous listener is not on the
+        uplink at all. Verified: `192.168.2.197:9001` now refuses, `10.0.0.1:9001` works.
+        Loopback is included because the dashboard is sometimes reached through an SSH tunnel.
+
+      1883 deliberately left on `0.0.0.0`: it already requires a password, and binding it to
+      `br0` would make the broker refuse to start if `br0` were not up yet -- on an unattended
+      RV that trades a small exposure for no MQTT at all, meaning no alarm commands and no
+      telemetry. Revisit only with a boot-ordering guarantee.
+- [ ] ~~**Require auth on Mosquitto 9001.**~~ (addressed above; say so if you still want a
+      credential on it despite the bundle-readability problem) Measured 2026-10-26: `allow_anonymous true` with
       `acl_file` = `topic read RVC/#`. Read-only and confined to RV-C topics -- it cannot write, and
       cannot reach the alarm command topics -- but it does hand all RV telemetry to anyone on
       Sophie's WiFi. Low severity on its own; matters more while 9001 is still bound to every

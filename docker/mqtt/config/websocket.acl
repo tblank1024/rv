@@ -1,4 +1,13 @@
-# ACL for the anonymous websocket listener (9001) — browser dashboard only.
-# Anonymous clients may read telemetry; they can never publish, so WiFi
-# clients cannot inject alarm commands or spoof sensor data.
-topic read RVC/#
+# ACL for the anonymous websocket listener (9001) -- browser dashboard only.
+# Anonymous clients may read, never publish, so WiFi clients cannot inject
+# alarm commands or spoof sensor data.
+#
+# Narrowed from "read RVC/#" on 2026-10-27. That wildcard granted every
+# anonymous client on Sophie's WiFi the entire RV-C stream: tank levels,
+# battery state, charger, solar, tire pressures. Exactly one thing consumes
+# this listener -- AlertsPanel.jsx, which subscribes to RVC/SYS_ERRORS and
+# nothing else -- so the wildcard was giving away everything to buy nothing.
+#
+# If a future panel needs another topic over websockets, add it here
+# explicitly rather than widening this back to a wildcard.
+topic read RVC/SYS_ERRORS
