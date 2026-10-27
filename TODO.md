@@ -1,7 +1,33 @@
 # TODO — Sophie (RV1-PI5)
 
-Open work, most urgent first. Opened 2026-10-23 out of the firewall deployment
-(`plan_firewall.md`, `firewall/README.md`).
+Opened 2026-10-23 out of the firewall deployment (`plan_firewall.md`,
+`firewall/README.md`). The sections below are grouped by the work they came out of and
+carry the reasoning and the test evidence; **this index is the priority order.**
+Reconciled 2026-10-27 against the live box, which closed five items that were already
+done and merged three pairs of duplicates.
+
+## Open work, most urgent first
+
+| # | Item | Where | Why it is here |
+|---|---|---|---|
+| 1 | Check RaspAP `:80` and `wayvnc` `:5900` for default or empty passwords | HA security review | The firewall gives **no** protection on the RV LAN, so a default password there is equivalent to none. Pure investigation, no change needed to find out. |
+| 2 | Alert when `sophie-firewall` reads NOT ARMED | HA security review | The gap that let the 2026-10-21 exposure run silently for two days behind a green `systemctl status`. Fold into the health-hardening work, which needs an alert channel anyway. |
+| 3 | Review the `SOPHIE-IN drop:` logs | Firewall — finish the deployment | Cheap, and the only way to find something legitimate being silently dropped. Home automation at `192.168.2.11` is the review's own example. |
+| 4 | Turn on unattended security upgrades | HA security review | Nothing patches this box on its own and it is unattended for months. |
+| 5 | Bind the dashboard `:8000` to `10.0.0.1` + `127.0.0.1` | Phase 2 hardening | Defence in depth: if the firewall drops again, nothing on the uplink to find. Loopback is **not** optional — the compose healthcheck uses it. |
+| 6 | mDNS `allow-interfaces=br0` | Phase 2 hardening | Stops Sophie advertising herself off the RV LAN. Small. |
+| 7 | `sophie-hostd` on `127.0.0.1` | webserver container privileges | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). **Wants its own session** — it touches reboot and container restart, the two controls you need while debugging it. |
+| 8 | Remote access (Tailscale/WireGuard) | Phase 2 hardening | Dials out, works through CGNAT, no inbound exception. |
+
+Blocked on being somewhere else, not on effort:
+
+| Item | Needs |
+|---|---|
+| Scan the cellular v6 address from outside | A laptop with global IPv6. Home ISP has none. |
+| Starlink path of the Internet selector | A trip — no sky in the garage. |
+| Stale rules for a dead WAN | A real uplink change while the `pi5connect` lock is in force. |
+| A true cold boot | Someone at the RV, hub fully de-energised. |
+| Install the `wan-*` `.link` files | A boot where the WAN renames itself; check NM profiles first. |
 
 ## Check at the next reboot
 
@@ -179,11 +205,38 @@ warns about -- *"the interface name does not identify the uplink type -- don't k
 on it"* -- and it fired for real, by accident of enumeration order, within one reboot of
 being written down. Nothing to fix; it is the design working. Two consequences though:
 
-- [ ] **Pin the USB-ethernet adapters by MAC** with `.link` files, the way
-      `11-wlan-wan.link` pins the Alfa. `usbhub/README.md` already recommends it. The
-      modem is `d0:0e:8d:0f:3b:c7` (`cdc_ether`). Policy does not need it, but every
-      *document*, log grep and debugging session does -- `eth1` meaning "wired" in one
-      boot and "cellular" in the next is a trap for humans even when the code is immune.
+- [ ] **Pin the USB-ethernet adapters** with `.link` files, the way `11-wlan-wan.link`
+      pins the Alfa. Policy does not need it, but every *document*, log grep and debugging
+      session does -- `eth1` meaning "wired" in one boot and "cellular" in the next is a
+      trap for humans even when the code is immune.
+
+      **Status corrected 2026-10-27: this is already written and is NOT installed.** The
+      repo has `raspap/20-wan-wired.link`, `21-wan-cell.link` and `22-wan-starlink.link`,
+      naming the adapters `wan-wired` / `wan-cell` / `wan-starlink`. `/etc/systemd/network`
+      holds only `10-wlan-ap`, `11-wlan-wan`, `12-eth-onboard`, `99-default` and
+      `73-usb-net-by-mac.link` (a symlink to `/dev/null`, i.e. the deliberate mask of the
+      distro's `enx*` policy that `usbhub/README.md` mentions).
+
+      Two things checked before deciding to leave them alone:
+
+      - **They match by `Path=`, not MAC**, deliberately: the role belongs to the hub
+        socket and the adapter is interchangeable (an AX88179B was swapped for an RTL8152
+        on 2026-10-19 and the socket kept its meaning). So the item's own title is wrong;
+        by-MAC was reconsidered and rejected.
+      - **The paths still match the live devices**, despite the hub having moved to a USB 2
+        port. `eth1` is `platform-xhci-hcd.0-usb-0:2.3.2:1.0` and `20-wan-wired.link`
+        matches `...usb-0:2.3.2*`; `21-wan-cell.link` wants `2.3.1` and `22` wants `2.3.4`,
+        which are hub ports 1 and 4 -- sockets 3 (Cellular) and 4 (Starlink) in the map.
+        All three are correct for the current cabling. `wlan1` sits at `2.3.3` (socket 1)
+        and is correctly left to `11-wlan-wan.link`.
+
+      So installing them is a three-file copy. The reason not to do it in passing: **`.link`
+      files apply at device creation**, so nothing happens until the next boot or re-plug --
+      and then the live WAN interface comes up as `wan-wired` instead of `eth1`, unattended.
+      Before deploying, confirm no NetworkManager connection profile is bound to the name
+      `eth1` (`nmcli -f connection.interface-name con show <name>`), since a profile pinned
+      to a name that no longer exists is how this goes wrong at 2 AM with nobody in the RV.
+      `pi5connect.sh` itself is immune -- it resolves roles through the hub socket.
 - Anywhere these notes say `eth2` for the modem, read "whatever `eth*` it got this boot".
   The v6 address also changed across the reboot, `…::3d5` -> `…::5c5`, confirming it is
   dynamic and that any outside v6 scan has to be done against a freshly read address.
@@ -218,11 +271,12 @@ being written down. Nothing to fix; it is the design working. Two consequences t
       nmap -Pn -p- <Sophie's uplink IPv4>     # expect: all filtered
       ```
 
-- [ ] **Disable `netfilter-persistent`.** `systemctl disable netfilter-persistent`. Its
-      `iptables-restore` flushes the whole filter table and was the cause of the
-      2026-10-21 exposure. The ordering fix makes it survivable, but `rules.v4` is dead
-      weight — `pi5connect.sh` installs the MASQUERADE rule itself on every WAN change.
-      Removes the hazard instead of sequencing around it.
+- [x] ~~**Disable `netfilter-persistent`.**~~ Done 2026-10-26, and survived the reboot that
+      evening (see §"Reboot test after disabling netfilter-persistent"). Re-confirmed
+      2026-10-27: `systemctl is-enabled` = **disabled**, `is-active` = **inactive**. Its
+      `iptables-restore` flushed the whole filter table and caused the 2026-10-21 exposure;
+      `rules.v4` was dead weight because `pi5connect.sh` installs the MASQUERADE rule itself
+      on every WAN change. Hazard removed rather than sequenced around.
 
 - [ ] **Review `SOPHIE-IN drop:` logs** over a few days parked at home, for anything of
       ours trying to reach Sophie inbound — home automation at `192.168.2.11` especially
@@ -233,36 +287,39 @@ being written down. Nothing to fix; it is the design working. Two consequences t
       sudo journalctl -k | grep 'SOPHIE-IN drop' | sed -E 's/.*drop: //' | sort | uniq -c | sort -rn
       ```
 
-- [ ] **`buildRP5RaspAP/install_raspap_bridge.sh` still writes the permissive `rules.v4`**
-      (`INPUT ACCEPT`, `FORWARD ACCEPT`, all-ACCEPT rules). A rebuild from that script
-      recreates the problem the firewall exists to fix. Make it emit a NAT-only file, or
-      nothing at all.
+- [x] ~~**`buildRP5RaspAP/install_raspap_bridge.sh` still writes the permissive `rules.v4`**~~
+      Done 2026-10-26 — see the fuller entry under §"From the HA security review". Verified
+      2026-10-27: the only remaining `rules.v4` / `iptables-restore` / `iptables-persistent`
+      strings in that script are **four comments** explaining that it no longer does any of
+      it. Nothing executable touches netfilter.
 
 ## Phase 2 hardening
 
 Defence in depth: each item still protects Sophie if a firewall rule is ever wrong.
 Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
 
-- [ ] **Dashboard auth** — do this one first. `:8000` has no authentication at all, and
-      its endpoints can reboot the Pi, restart containers and cut USB hub power. Anyone on
-      Sophie's WiFi (a guest, a phone) can call them today. At minimum gate the
-      destructive routes.
-- [ ] **Bind LAN-only services to the LAN address**: uvicorn `0.0.0.0` → `10.0.0.1`
-      (`webserver/server/server.py`, check nothing on Sophie uses `localhost:8000` first —
-      the compose healthcheck does), and mosquitto's `listener 9001` → `10.0.0.1`
-      (`docker/mqtt/config/mosquitto.conf`). The 1883 listener needs localhost for the
-      host-network containers.
-- [ ] **SSH key-only**: `PasswordAuthentication no` in `/etc/ssh/sshd_config.d/`. Confirm
-      key login works first.
+- [x] ~~**Dashboard auth**~~ Done 2026-10-26 — PIN gate with server-side enforcement, see
+      `plan_pin_protection.md`. Verified still live 2026-10-27: `/api/auth/status` returns
+      `configured: true`, and the privileged endpoints answer `pin_required`.
+- [x] ~~**SSH key-only**~~ Done 2026-10-26 — `/etc/ssh/sshd_config.d/10-sophie-hardening.conf`.
+      Verified 2026-10-27 from `sshd -T`, which is the effective config rather than the file:
+      `passwordauthentication no`, `kbdinteractiveauthentication no`, `permitrootlogin no`.
+- [ ] **Bind the dashboard (8000) to `10.0.0.1` *and* `127.0.0.1`.** uvicorn is on `0.0.0.0`
+      in `webserver/server/server.py`. Loopback is not optional: the webserver is
+      `network_mode: host` and its own compose healthcheck talks to localhost, as do several
+      local probes. Defence in depth — if the firewall ever drops again, nothing is
+      listening on the uplink to find.
+      Mosquitto's 9001 half of this is **already done** (2026-10-27, bound to `127.0.0.1`
+      and `10.0.0.1`, ACL narrowed to `RVC/SYS_ERRORS`); 1883 is deliberately left on
+      `0.0.0.0` — see the Mosquitto item under "From the HA security review".
 - [ ] **mDNS**: `allow-interfaces=br0` in `/etc/avahi/avahi-daemon.conf`.
-- [ ] **Least privilege for the webserver container**: `privileged`, `pid: host` and the
-      Docker socket, already flagged in `docker-compose.yml` as Phase 4. Note the firewall
-      status endpoint reads the host chains through `nsenter -t 1`, so it depends on
-      `pid: host` + privileged; trimming those needs a different route (a small host-side
-      API like `usbhub-api.service`, or `iptables` in the image).
+- [ ] **Least privilege for the webserver container.** Tracked in full under
+      §"webserver container privileges" below — two of four steps are done, and the
+      remaining work is the `sophie-hostd` project. Not repeated here.
 - [ ] **Remote access**: Tailscale or WireGuard — dials out, works through CGNAT, needs no
       inbound exception. This is the replacement for the old `192.168.2.196` SSH habit.
-- [ ] **Updates**: periodic `apt full-upgrade` and container image rebuilds.
+- [ ] **Updates**: periodic `apt full-upgrade` and container image rebuilds. Same item as
+      "unattended security upgrades" under the HA security review.
 - [ ] `raspap` compose profile (inactive) sets `RASPAP_COUNTRY=GB`; set `US` if ever
       enabled (regulatory domain, `plan_new_WAN_WiFi.md` issue 8).
 
@@ -628,7 +685,7 @@ Not tracked anywhere before this, in the review's own priority order:
       carrier. **The `.link` name pinning only takes effect at the next boot** — `.link`
       files apply at device creation — so re-check `networkctl status eth0` then; the
       security-relevant MAC match is already live either way.
-- [ ] ~~**Verify `br0` cannot pick up a USB adapter by name.**~~ (done above) Checked 2026-10-26 and the concern is
+- [x] ~~**Verify `br0` cannot pick up a USB adapter by name.**~~ (done above) Checked 2026-10-26 and the concern is
       real: `/etc/systemd/network/raspap-br0-member-eth0.network` matches `[Match] Name=eth0`, and
       `br0` is the first ACCEPT in `SOPHIE-IN`, so anything landing on that name sits inside the
       trusted zone and bypasses the firewall completely. Likelihood is low -- `eth0` is the SoC NIC
@@ -658,7 +715,7 @@ Not tracked anywhere before this, in the review's own priority order:
       `br0` would make the broker refuse to start if `br0` were not up yet -- on an unattended
       RV that trades a small exposure for no MQTT at all, meaning no alarm commands and no
       telemetry. Revisit only with a boot-ordering guarantee.
-- [ ] ~~**Require auth on Mosquitto 9001.**~~ (addressed above; say so if you still want a
+- [x] ~~**Require auth on Mosquitto 9001.**~~ (addressed above; say so if you still want a
       credential on it despite the bundle-readability problem) Measured 2026-10-26: `allow_anonymous true` with
       `acl_file` = `topic read RVC/#`. Read-only and confined to RV-C topics -- it cannot write, and
       cannot reach the alarm command topics -- but it does hand all RV telemetry to anyone on
@@ -668,10 +725,8 @@ Not tracked anywhere before this, in the review's own priority order:
       `plan_firewall.md:90` lists both as ports but nobody has verified their credentials. On the
       RV LAN side the firewall gives no protection at all, so a default password there is equivalent
       to no password.
-- [ ] **Bind the dashboard (8000) and Mosquitto websockets (9001) to `10.0.0.1`.** Defence in depth:
-      if the firewall ever drops again, nothing is listening on the uplink to find. **Bind
-      `127.0.0.1` as well**, or the compose healthcheck and every local probe break -- the webserver
-      is `network_mode: host` and its own health check talks to localhost.
+- [ ] **Bind the dashboard (8000) to `10.0.0.1` and `127.0.0.1`.** Same item as "Bind the
+      dashboard (8000)" under §"Phase 2 hardening"; the 9001 half is already done.
 - [ ] **Turn on unattended security upgrades.** Nothing currently patches this box on its own, and it
       is often unattended for months.
 - [ ] **Review the `SOPHIE-IN drop:` logs over a few days at home.** Cheap, and the only way to find
