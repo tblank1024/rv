@@ -66,7 +66,6 @@ set -u
 LOGFILE="${LOGFILE:-/var/log/wan-scan.log}"
 exec >> "$LOGFILE" 2>&1
 
-SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
 HUB_API="${HUB_API:-http://127.0.0.1:12347}"
 PI5CONNECT="/usr/local/sbin/pi5connect.sh"
 STATE_FILE="/run/pi5connect-wan"
@@ -88,26 +87,36 @@ SCAN_LOCK="/run/wan-scan-in-progress"
 #
 # "In force" means: inside MANUAL_GRACE, while the chosen uplink is still
 # coming up (a cold modem needs 17s to enumerate, 22s for carrier, 52s for
-# DHCP -- see the timeouts above), or after that only while the choice IS the
-# current WAN. So a choice that never came up cannot pin the scan forever:
-# that is the half of this that stops a deliberate choice stranding the RV.
-MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
-MANUAL_FALLBACK="${MANUAL_FALLBACK:-/run/wan-manual-fallback}"
-MANUAL_GRACE="${MANUAL_GRACE:-120}"
+# DHCP -- see IFACE_WAIT/CARRIER_WAIT/DHCP_WAIT in wan-common.sh), or after
+# that only while the choice IS the current WAN. So a choice that never came up
+# cannot pin the scan forever: that is the half of this that stops a deliberate
+# choice stranding the RV.
+
+# --- Constants shared with pi5connect.sh -----------------------------------
+# The modem timeouts, WAN_PREFERENCE and MANUAL_GRACE all live in ONE file now.
+# MANUAL_GRACE used to be the literal 120 here and in pi5connect.sh, with no
+# statement anywhere that 120 was IFACE_WAIT + CARRIER_WAIT + DHCP_WAIT -- so
+# shortening a timeout silently left the grace too long and lengthening one
+# left it too short. It is computed from them in wan-common.sh instead.
+#
+# Sourced defensively; the mirror below is a last resort and says so in the
+# log. check_wan_constants.sh asserts it still matches wan-common.sh.
+WAN_COMMON="${WAN_COMMON:-/usr/local/sbin/wan-common.sh}"
+if [[ -r "$WAN_COMMON" ]]; then
+    # shellcheck source=wan-common.sh
+    . "$WAN_COMMON"
+else
+    echo "[$(date)] WARNING: $WAN_COMMON missing; using the inline mirror of the shared constants"
+    IFACE_WAIT=35; CARRIER_WAIT=10; DHCP_WAIT=75
+    WAN_COLD_START=$(( IFACE_WAIT + CARRIER_WAIT + DHCP_WAIT ))
+    MANUAL_GRACE="${MANUAL_GRACE:-$WAN_COLD_START}"
+    MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
+    MANUAL_FALLBACK="${MANUAL_FALLBACK:-/run/wan-manual-fallback}"
+    WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
+    SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
+fi
 MANUAL_ROLE=""
-
-# Same order and the same aliases as pi5connect.sh. Keep them in step.
-WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
-
-# Timeouts MEASURED on this hardware 2026-10-19, not guessed. Powering the
-# cellular socket from cold: USB enumeration +17s (the modem boots its own
-# firmware and mode-switches from QCOM 05c6:f000 to TCL 1bbb:0646), netdev and
-# carrier +22s, DHCP +52s. My first guesses here were 12/6/40, which would have
-# abandoned the modem five seconds before it even appeared on the bus.
-IFACE_WAIT=35        # seconds for a powered socket to present an interface
-CARRIER_WAIT=10      # then for carrier -- 0 means nothing on the other end
-DHCP_WAIT=75         # then for an IPv4 address
-SETTLE=2
+SETTLE="${SETTLE:-2}"
 
 MODE="better"
 DRYRUN=0

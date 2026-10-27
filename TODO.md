@@ -320,12 +320,70 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       the 0.3s `LOOPDELAY`; the healthcheck returns 0 on the real topic, 1 on a dead topic and
       0 on bad credentials; Docker reports `healthy`; and the alarm came back disarmed as it
       went in. **All 8 containers now have a healthcheck and the autoheal label.**
-- [ ] `webserver/client/src/page-debug/debug.jsx:612` still prints raw `bMaxPower` in mA in
-      its socket list. Left deliberately — raw sysfs values are the point of a diagnostic
-      page — but the owner's "show all power in watts" was not qualified, so confirm.
-- [ ] `MANUAL_GRACE` is 120s in **three** places (`pi5connect.sh`, `wan_scan.sh`,
-      and implicitly the modem timings they are derived from). They must stay in step;
-      a comment says so but nothing enforces it.
+- [x] ~~`webserver/client/src/page-debug/debug.jsx:612` still prints raw `bMaxPower` in mA
+      in its socket list.~~ **Confirmed and fixed 2026-10-27: watts, with the mA kept in
+      parentheses.** A socket line now reads e.g. `ASUS USB-BT500 — up to 2.5 W (500mA)`.
+      Both readings, because the two arguments were both right: watts is the owner's rule,
+      and the raw sysfs figure is what `lsusb -v` and the journal print, so it is what you
+      compare against on a *diagnostic* page.
+
+      The part worth noting is that the conversion was duplicated, not missing: it already
+      existed as `maxWatts` inside `page-internet/Internet.jsx`. Adding a second copy to the
+      debug page would have left "show all power in watts" with two implementations to keep
+      in step. It now lives in `webserver/client/src/utils/power.js` as `maxWatts` plus a
+      `maxWattsDetailed` wrapper for the diagnostic page, and `Internet.jsx` imports it
+      instead of defining it.
+
+      Still rendered as "up to", because `bMaxPower` is a declared ceiling, not a
+      measurement — socket 3 drew ~1 W against a 500 mA (2.5 W) declaration. Checked against
+      the live `/api/sockets` values: `100mA` -> `up to 0.5 W`, `500mA` -> `up to 2.5 W`, and
+      an absent device yields an empty string rather than `up to 0.0 W`. `eslint` clean; the
+      one warning left in `debug.jsx` is a pre-existing `controlSynology` dependency notice,
+      untouched.
+- [x] ~~`MANUAL_GRACE` is 120s in **three** places (`pi5connect.sh`, `wan_scan.sh`,
+      and implicitly the modem timings they are derived from).~~ **Fixed 2026-10-27.** The
+      third place was the real problem: nothing anywhere said that 120 *was*
+      `IFACE_WAIT + CARRIER_WAIT + DHCP_WAIT` (35 + 10 + 75), so editing a modem timeout
+      silently invalidated a constant in a different file. Shorten a wait and the grace is
+      too long; lengthen one and the scan stops honouring a deliberate uplink choice while
+      that uplink is still legitimately coming up — the exact bug the manual choice was
+      added to fix, reintroduced by changing an unrelated-looking number.
+
+      - **New `raspap/wan-common.sh`**, sourced by both scripts: one definition of
+        `WAN_PREFERENCE`, `MANUAL_FILE`, `MANUAL_FALLBACK`, `SOCKET_MAP` and the modem
+        timings, with `MANUAL_GRACE` **computed** as `WAN_COLD_START` rather than restated.
+        Change a timeout and the grace follows. The value is unchanged at 120.
+      - **Sourced defensively**, matching the `[[ -x "$WAN_SCAN" ]]` style already in
+        `pi5connect.sh`: if the file is missing, each script logs a WARNING and falls back to
+        an inline mirror. `pi5connect.sh` runs from a NetworkManager dispatcher, so dying
+        because a constants file is absent would leave the RV with no uplink — much worse
+        than a stale constant. It also means the three files can be deployed in any order.
+      - **New `raspap/check_wan_constants.sh`** is the enforcement the item asked for. It
+        asserts the derivation holds and that both inline mirrors still agree with
+        `wan-common.sh`, and it reads the mirrors by *executing* them in a clean `env -i`
+        shell rather than grepping, so it exercises the real fallback path instead of a
+        reading of it.
+
+      Verified rather than assumed, because a check that cannot fail is worth nothing. Five
+      deliberately drifted copies, each one caught: a shortened `DHCP_WAIT` with the grace
+      left alone; a drifted fallback in `pi5connect.sh`; a reordered `WAN_PREFERENCE` in
+      `wan_scan.sh`'s fallback; the derivation replaced by a non-matching literal; and an
+      untouched control, which passes. Both constants blocks were then run with the shared
+      file present *and* deliberately absent, giving identical values on both paths
+      (`grace=120 waits=35/10/75 pref=(wired wifi starlink cellular)`), the WARNING only on
+      the fallback path, and the pre-existing environment override preserved —
+      `MANUAL_GRACE=99` still wins, as `${MANUAL_GRACE:-120}` did before.
+
+      - [ ] **Not deployed.** The repo has it; `/usr/local/sbin` does not, and installing
+            needs root this session does not have. Copy all three together:
+            ```bash
+            sudo install -m 0644 raspap/wan-common.sh /usr/local/sbin/wan-common.sh
+            sudo install -m 0755 raspap/pi5connect.sh raspap/wan_scan.sh /usr/local/sbin/
+            raspap/check_wan_constants.sh /usr/local/sbin   # verify what is installed
+            ```
+            Order does not matter — the mirror covers a partial install — but check
+            `/var/log/pi5connect.log` for the WARNING afterwards, to confirm the shared file
+            is actually being found rather than silently mirrored.
 
 ## webserver container privileges (2026-10-27) -- two of four steps done
 
@@ -671,12 +729,21 @@ the hub has been moved to a USB 2 port.
       Realtek *10/100* adapter, at 480, and the BT500 is at 12. The SD card reader, which
       *is* SuperSpeed, is in a blue port directly and not on the hub.
 
-      - [ ] **Decide whether to move the hub back to a blue port.** No current device needs
-            it, so this is not urgent, but two things are lost while it sits in a black
-            port: any SuperSpeed device plugged into the hub silently falls back to
-            480 Mb/s, and the "one socket, two identities" behaviour -- including the
-            2026-10-18 finding that the two chips' port power is independent rather than
-            ganged -- cannot be re-verified, because there is no second identity to switch.
+      - [x] ~~**Decide whether to move the hub back to a blue port.**~~ **Decided
+            2026-10-27 by the owner: it stays on USB 2.0.** Recorded as a choice in
+            `usbhub/README.md` and in `CLAUDE.md`'s hardware table, so the next session does
+            not read the missing USB 3 chip as a fault and "fix" it.
+
+            The two costs are accepted, not outstanding: a SuperSpeed device on the hub
+            would silently fall back to 480 Mb/s, and the "one socket, two identities"
+            behaviour -- including the 2026-10-18 finding that the two chips' port power is
+            independent rather than ganged -- cannot be re-verified while there is no second
+            identity to switch. Two consequences to keep in mind as a result:
+            **a SuperSpeed device belongs in a blue Pi port**, which also means it cannot be
+            power-gated (fine today -- nothing needing gating needs SuperSpeed); and
+            **the two-identity handling in `SocketMap` is not dead code** -- it is correct
+            for any USB 3 hub, including this one in a blue port, so it should not be
+            simplified away on the evidence of one cabling.
 
       What changed in the README: the live map replaces the 2026-10-18 one; a new
       "Bus paths are not stable" section carries a dated table of both cablings and the rule

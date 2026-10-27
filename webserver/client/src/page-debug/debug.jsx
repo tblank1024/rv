@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import './debug.css';
 import { getServerUrl } from '../utils/api';
+import { maxWattsDetailed } from '../utils/power';
 import PinGate from '../components/PinPrompt';
 import SecurityCard from '../components/SecurityCard';
 
@@ -615,6 +616,7 @@ function DebugPanel() {
               const busy = !!hubBusy[label];
               const ident = (sock.identities || [])
                 .map(i => `${i.hub}:${i.port}`).join(' + ');
+              const declared = maxWattsDetailed(sock.max_power);
               return (
                 <div key={label} className="control-item">
                   <h3>
@@ -642,14 +644,23 @@ function DebugPanel() {
                       {busy ? 'WAIT' : (sock.enabled ? 'ON' : 'OFF')}
                     </span>
                   </button>
+                  {/* Watts, per the owner's "show all power in watts", with the
+                      raw sysfs mA kept in parentheses: this is the diagnostic
+                      page, and the mA figure is what lsusb and the journal
+                      print, so it is what you compare against. The conversion
+                      is the same helper the Internet page uses. */}
                   <div style={{fontSize: '12px', color: '#666', marginTop: '4px'}}>
                     {sock.device_present
-                      ? `${sock.product || 'device'}${sock.max_power ? ' ' + sock.max_power : ''}`
+                      ? `${sock.product || 'device'}${declared ? ' \u2014 ' + declared : ''}`
                       : 'empty'}
                   </div>
-                  {/* Both sysfs identities: a USB 3 hub is two hub chips, so a
-                      socket has one port number per speed. Shown because it is
-                      what the journal and uhubctl name. */}
+                  {/* Every sysfs identity the socket has. A USB 3 hub is two
+                      hub chips, so a socket can have one port number per
+                      speed -- but Sophie's hub lives in a USB 2 port by
+                      choice, so the USB 3 chip never enumerates and there is
+                      one identity each. Shown because it is what the journal
+                      and uhubctl name, and the names change with the Pi port
+                      the hub is in. */}
                   <div style={{fontSize: '11px', color: '#999'}}>{ident}</div>
                   {sock.error && <div className="error-text">{sock.error}</div>}
                 </div>

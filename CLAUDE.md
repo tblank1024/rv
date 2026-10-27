@@ -19,7 +19,7 @@ Applications running on a Raspberry Pi 5 (RP5) inside "Sophie" the RV. The compa
 | BLE USB dongle #2 | For TireLinc TPMS; motherboard BLE was unreliable for this sensor |
 | USB SD card reader | Backup storage only |
 | DIO GPIO connections | Alarm system inputs/outputs |
-| USB switchable hub | Selects the active internet uplink (see below) |
+| USB switchable hub | Selects the active internet uplink (see below). Plugged into a **USB 2 (black)** Pi port by choice, so its USB 3 chip does not enumerate and each socket has one sysfs identity, not two. Nothing on it is SuperSpeed. Bus paths move with the Pi port — read them, never hardcode (`usbhub/README.md`). |
 
 ## Networking
 

@@ -40,6 +40,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Message, Card, Header, Icon, Button, Label } from 'semantic-ui-react';
 import './Internet.css';
 import { fetchFromServer } from '../utils/api';
+import { maxWatts } from '../utils/power';
 import WifiPicker from './WifiPicker';
 
 // The selector, in the order it is shown. `option` is the key POSTed to
@@ -63,18 +64,6 @@ const STATE_TO_OPTION = {
   'cellular-amp': 'cell-amp',
   starlink: 'starlink',
   none: 'none',
-};
-
-/**
- * USB bMaxPower in watts. sysfs reports the DECLARED maximum in mA at 5 V
- * ("100mA"), which is a ceiling the device is allowed to draw, not a
- * measurement -- so this is rendered with "up to". Socket 3 measured ~1 W
- * powered and idle against a 500 mA declaration, so the gap is large.
- */
-const maxWatts = (maxPower) => {
-  const match = /^(\d+)\s*mA$/i.exec((maxPower || '').trim());
-  if (!match) return '';
-  return `up to ${(Number(match[1]) * 5 / 1000).toFixed(1)} W`;
 };
 
 const Internet = () => {

@@ -188,10 +188,11 @@ socket 4   1-2.3:4   Starlink      socket 7   1-2:4   Bluetooth
 ```
 
 **One identity per socket, not two, because the USB 3 chip is not on the bus.**
-The hub is currently in a **black (USB 2)** port on the Pi — `1-2` hangs off
-root hub `usb1` at 480 Mb/s, and `usb2`, the SuperSpeed root hub sharing that
-connector pair, has nothing attached. With no SuperSpeed upstream link the USB 3
-chip never enumerates, so each socket has only its USB 2 identity.
+The hub lives in a **black (USB 2)** port on the Pi — **a settled decision as of
+2026-10-27, not an accident to be corrected.** `1-2` hangs off root hub `usb1` at
+480 Mb/s, and `usb2`, the SuperSpeed root hub sharing that connector pair, has
+nothing attached. With no SuperSpeed upstream link the USB 3 chip never
+enumerates, so each socket has only its USB 2 identity.
 
 Costs nothing as currently populated, and that is worth stating rather than
 assuming: **nothing on the hub is a SuperSpeed device.** Read from `/api/sockets`
@@ -210,12 +211,22 @@ uplink adapter is a *100 Mbit* part, so it was never going to use SuperSpeed.
 Switching is unaffected too: `SocketMap` acts on whatever identities exist, and
 both chips still report `ppps` (`1-2` and `1-2.3`, confirmed 2026-10-27).
 
-Two things it does cost. Any SuperSpeed device plugged into the hub would
-silently fall back to 480 Mb/s — the SD card reader is the one SuperSpeed device
-on the box and it is in a blue port directly, not on the hub. And the "one
-socket, two identities" reasoning below cannot be re-verified as cabled, because
-there is no second identity to disable. Move the hub to a blue port to get the
-USB 3 tree back.
+Two things it does cost, and they are accepted rather than outstanding. Any
+SuperSpeed device plugged into the hub would silently fall back to 480 Mb/s —
+the SD card reader is the one SuperSpeed device on the box and it is in a blue
+port directly, not on the hub, so keep it that way. And the "one socket, two
+identities" reasoning below cannot be re-verified as cabled, because there is no
+second identity to disable; it stands as a 2026-10-18 measurement.
+
+Consequences to keep in mind rather than fix:
+
+- **Treat two identities per socket as the general case, not dead code.**
+  `SocketMap` still handles it, and it is correct for any USB 3 hub, including
+  this one in a blue port. Do not "simplify" it away on the evidence of one
+  cabling.
+- **A SuperSpeed device belongs in a blue port on the Pi**, not on the hub —
+  which also means it cannot be power-gated. That trade is the reason the
+  decision is cheap today: nothing that needs gating needs SuperSpeed.
 
 ### Bus paths are not stable
 
@@ -225,7 +236,7 @@ The paths in this file have changed twice and will change again. They encode
 | date | USB 2 chips | USB 3 chips | Pi port |
 |---|---|---|---|
 | 2026-10-18 | `3-1` + `3-1.3` | `4-1` + `4-1.3` | blue |
-| 2026-10-27 | `1-2` + `1-2.3` | *absent* | black |
+| 2026-10-27 | `1-2` + `1-2.3` | *absent* | black (current, by choice) |
 
 So **do not hardcode a hub path** where it can be read instead. Anything in this
 README of the form `3-1:4` is a record of a measurement on that date, not a

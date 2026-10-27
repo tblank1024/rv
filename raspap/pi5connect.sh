@@ -84,25 +84,31 @@ PROBE_HTTP_TIMEOUT=6
 # Interfaces that are never WAN
 AP_SIDE=("lo" "eth0" "wlan0" "br0" "docker0")
 
-# --- WAN preference, best first --------------------------------------------
-# A healthy incumbent is displaced only by a candidate that ranks STRICTLY
-# higher. Without this, "never preempt a healthy incumbent" meant a transient
-# wired glitch stranded the RV on metered cellular indefinitely: the 2026-10-19
-# failover test switched to cellular in 3s and then kept it after wired came
-# back -- exactly as designed, and exactly wrong for the bill.
+# --- Constants shared with wan_scan.sh -------------------------------------
+# WAN_PREFERENCE, MANUAL_GRACE, MANUAL_FILE and SOCKET_MAP live in ONE file so
+# they cannot drift between the two scripts, and so MANUAL_GRACE can be derived
+# from the modem timings rather than restated as a literal. See wan-common.sh
+# for the reasoning behind each value.
 #
-# The order is also the power order, and that is not a coincidence: the two
-# cheapest uplinks to leave running are the two most preferred.
-WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
-SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
-
-# A deliberate choice from the dashboard ("<role> <epoch>"), written by
-# /api/internet/select. While it is in force the chosen role outranks
-# everything, so failover tries it first and a "more preferred" uplink cannot
-# preempt it. See manual_role() and the longer note in wan_scan.sh, which owns
-# clearing this file when the choice cannot be honoured.
-MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
-MANUAL_GRACE="${MANUAL_GRACE:-120}"
+# Sourced defensively, in the same spirit as the `[[ -x "$WAN_SCAN" ]]` guards
+# below: this runs from a NetworkManager dispatcher, so dying because a
+# constants file is absent would leave the RV with no uplink -- far worse than
+# a stale constant. The mirror below is a last resort and says so in the log;
+# check_wan_constants.sh asserts it still matches wan-common.sh.
+WAN_COMMON="${WAN_COMMON:-/usr/local/sbin/wan-common.sh}"
+if [[ -r "$WAN_COMMON" ]]; then
+    # shellcheck source=wan-common.sh
+    . "$WAN_COMMON"
+else
+    echo "[$(date)] WARNING: $WAN_COMMON missing; using the inline mirror of the shared constants"
+    IFACE_WAIT=35; CARRIER_WAIT=10; DHCP_WAIT=75
+    WAN_COLD_START=$(( IFACE_WAIT + CARRIER_WAIT + DHCP_WAIT ))
+    MANUAL_GRACE="${MANUAL_GRACE:-$WAN_COLD_START}"
+    MANUAL_FILE="${MANUAL_FILE:-/run/wan-manual-choice}"
+    MANUAL_FALLBACK="${MANUAL_FALLBACK:-/run/wan-manual-fallback}"
+    WAN_PREFERENCE=("wired" "wifi" "starlink" "cellular")
+    SOCKET_MAP="${SOCKET_MAP:-/etc/usbhub/sockets.json}"
+fi
 MANUAL_ROLE=""
 
 # The WAN role of an interface, resolved through the hub socket its device is
