@@ -9,8 +9,9 @@ done and merged three pairs of duplicates.
 ## Open work, most urgent first
 
 Status as of 2026-10-27: items 1–4 and 6 are done (2 was already built in task C
-on 10-26 and is now cross-linked). Remaining: 5 (bind :8000, a multi-socket change
-wanting its own session), 7 (`sophie-hostd`, its own session) and 8 (remote access).
+on 10-26 and is now cross-linked); 5 is decided (leave on `0.0.0.0`) and 8 (remote
+access / Tailscale) is dropped by owner decision. **The one open high-priority item is
+7, `sophie-hostd`** — planned below, and it wants its own session.
 
 | # | Item | State | Why it is here |
 |---|---|---|---|
@@ -18,10 +19,9 @@ wanting its own session), 7 (`sophie-hostd`, its own session) and 8 (remote acce
 | 2 | Alert when `sophie-firewall` reads NOT ARMED | **Done** (task C, 10-26) | Already built: `RVC/RV_Health/1` `firewall_armed` → watcher bounds → `SYS_ERRORS` → dashboard + MQTT. Verified live. On-box by the owner's choice. |
 | 3 | Review the `SOPHIE-IN drop:` logs | **Done** | 23 h reviewed: zero TCP drops from the home LAN, nothing aimed at Sophie's service ports. Nothing legitimate dropped. |
 | 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
-| 5 | Bind the dashboard `:8000` to `10.0.0.1` + `127.0.0.1` | Open | Defence in depth: if the firewall drops again, nothing on the uplink to find. Loopback is **not** optional — the compose healthcheck uses it. |
+| 5 | Bind the dashboard `:8000` off the uplink | **Decided: leave on `0.0.0.0`** | Firewall already confines it and now self-alerts; the clean fix is a two-socket refactor with a `br0` startup race. Same trade as mosquitto 1883. |
 | 6 | mDNS `allow-interfaces=br0` | **Done** | avahi was announcing on both uplinks; now br0 only. |
-| 7 | `sophie-hostd` on `127.0.0.1` | Open — own session | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). **Wants its own session** — it touches reboot and container restart, the two controls you need while debugging it. |
-| 8 | Remote access (Tailscale/WireGuard) | Open | Dials out, works through CGNAT, no inbound exception. |
+| 7 | `sophie-hostd` on `127.0.0.1` | Open — **planned**, own session | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). Plan written under §"webserver container privileges". Touches reboot and restart — own session. |
 
 Blocked on being somewhere else, not on effort:
 
@@ -325,14 +325,24 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
 - [x] ~~**SSH key-only**~~ Done 2026-10-26 — `/etc/ssh/sshd_config.d/10-sophie-hardening.conf`.
       Verified 2026-10-27 from `sshd -T`, which is the effective config rather than the file:
       `passwordauthentication no`, `kbdinteractiveauthentication no`, `permitrootlogin no`.
-- [ ] **Bind the dashboard (8000) to `10.0.0.1` *and* `127.0.0.1`.** uvicorn is on `0.0.0.0`
-      in `webserver/server/server.py`. Loopback is not optional: the webserver is
-      `network_mode: host` and its own compose healthcheck talks to localhost, as do several
-      local probes. Defence in depth — if the firewall ever drops again, nothing is
-      listening on the uplink to find.
-      Mosquitto's 9001 half of this is **already done** (2026-10-27, bound to `127.0.0.1`
-      and `10.0.0.1`, ACL narrowed to `RVC/SYS_ERRORS`); 1883 is deliberately left on
-      `0.0.0.0` — see the Mosquitto item under "From the HA security review".
+- [x] ~~**Bind the dashboard (8000) to `10.0.0.1` *and* `127.0.0.1`.**~~ **Decided 2026-10-27:
+      leave uvicorn on `0.0.0.0`.** The same deliberate trade the project already made for
+      mosquitto's 1883 listener, for the same reasons:
+      - The firewall already confines 8000 to the RV LAN (no `eth1` ACCEPT -> default DROP;
+        verified on-box), and that firewall now *self-alerts* if it ever reads NOT ARMED
+        (§"From the HA security review", the RV_Health item). So the "firewall silently
+        dropped" scenario this item guarded against is itself now covered.
+      - The clean fix is not a one-liner. `uvicorn.run(host=)` takes a single address, and
+        the healthcheck needs `127.0.0.1` while clients need `10.0.0.1`, so it means a
+        two-socket `Server.serve(sockets=[...])` refactor of the dashboard entry point.
+      - The Docker-networking shortcut (`ports: "10.0.0.1:8000:8000"`) does **not** apply:
+        the container is `network_mode: host`, where `ports:` is ignored and there is no
+        proxy to bind. And binding a specific host IP coulples startup to `br0` being up --
+        bind fails and the process dies if the dashboard starts before `br0`, exactly why
+        1883 was left on `0.0.0.0` too.
+      Net: marginal defence-in-depth, real startup-fragility and refactor cost. Reopen only
+      if 8000 is ever deliberately exposed on the uplink, or as part of the health-hardening
+      work if it ever adds a boot-ordering guard that removes the `br0` race.
 - [x] ~~**mDNS**: `allow-interfaces=br0` in `/etc/avahi/avahi-daemon.conf`.~~ Done 2026-10-27.
       Set `allow-interfaces=br0` (was the commented `#allow-interfaces=eth0` example) and
       restarted `avahi-daemon`. This was doing real work: avahi's own log showed it had been
@@ -346,8 +356,11 @@ Full list and rationale in `plan_firewall.md` §"Phase 2 hardening".
 - [ ] **Least privilege for the webserver container.** Tracked in full under
       §"webserver container privileges" below — two of four steps are done, and the
       remaining work is the `sophie-hostd` project. Not repeated here.
-- [ ] **Remote access**: Tailscale or WireGuard — dials out, works through CGNAT, needs no
-      inbound exception. This is the replacement for the old `192.168.2.196` SSH habit.
+- [x] ~~**Remote access**: Tailscale or WireGuard.~~ **Dropped 2026-10-27 by owner decision
+      — not doing it.** Raspberry Pi Connect already covers remote shell and screen sharing
+      (dials out, works through CGNAT, no inbound exception), and on Sophie's own WiFi
+      `ssh tblank@10.0.0.1` works directly. A mesh VPN was judged not worth the added moving
+      part. Revisit only if a need arises that Pi Connect cannot meet.
 - [-] **Updates**: periodic `apt full-upgrade` and container image rebuilds. The
       **security** half is done (see "unattended security upgrades" under the HA review).
       Still open, and deliberately kept manual: a full `apt full-upgrade` (general stable
@@ -538,17 +551,79 @@ publishing, 9/9 containers up, alarm state unchanged.
 
 **Remaining, and this is a project rather than a tidy-up:**
 
-- [ ] **A `sophie-hostd` on `127.0.0.1`**, shaped like `usbhub/usbhub_api.py` -- which already
-      has the allow-list guard to copy -- exposing exactly: `reboot`, `restart-containers`,
-      `container-states`, `firewall-status`, and read/write of `/run/wan-manual-choice`,
-      `/run/wan-manual-fallback` and `/etc/rvdashboard/dashboard-auth.json`. That retires both
-      remaining root routes: `docker.sock`, `pid: host` and `privileged` all come out, and the
-      webserver becomes an ordinary container with a GPIO device and some network access.
-      Roughly 150-200 lines plus ~13 call sites. **It touches reboot and container restart**, so
-      it wants its own session and careful testing -- done badly it breaks the two controls you
-      would need while debugging it.
-- [ ] Hand the modem's `/sys/bus/usb` bind/unbind to `usbhub-api`, which is already root and
-      already owns USB. Then `/sys/bus/usb:rw` comes out too.
+- [ ] **A `sophie-hostd` on `127.0.0.1`** — the project that retires the last two root
+      routes. Plan below. **Own session, careful testing**: it touches reboot and container
+      restart, the two controls you need *while* debugging it.
+- [ ] Hand the modem's `/sys/bus/usb` bind/unbind to `usbhub-api` (step 1 of the plan).
+
+### Plan: `sophie-hostd`
+
+**Goal.** Drop `privileged: true`, `pid: host` and the `/var/run/docker.sock` mount from the
+webserver, so a dashboard bug is container-confined instead of host-root. The webserver keeps
+`network_mode: host` (that is **not** a root route — it shares the net namespace, not root or
+pid; it is also what lets the webserver reach the host loopback daemons) and its GPIO device.
+Every operation that today needs host root moves behind a small root daemon on loopback, the
+exact pattern already proven by `usbhub-api` and `wifi-api-rp5`.
+
+**Why a new daemon and not sudoers rules.** The operations are structured (JSON in/out,
+allow-listed container names, bounded `systemctl` units), not single fixed commands. `usbhub_api.py`
+already has the allow-list guard and the stdlib-only, loopback-only, root-systemd-unit shape to
+copy. A pile of `tee`/`systemctl` sudoers entries would be broader and harder to audit.
+
+**Full privileged surface, inventoried from `server.py` 2026-10-27** — the earlier shortlist
+missed three, and a miss means `privileged` cannot actually come off:
+
+| hostd endpoint | replaces in server.py | host action |
+|---|---|---|
+| `GET /firewall-status` | L2769 `nsenter … iptables/ip6tables -S` | read both chains (net ns) |
+| `GET /container-states` | L2904 / L3318 docker SDK | `docker ps` + per-container State |
+| `POST /containers/restart` | L3344 `c.restart()` | restart unhealthy/labeled |
+| `POST /container/<name>/restart` | L3366 tirelinc restart | restart one allow-listed name |
+| `POST /reboot` | L3216 journal flush + L3259 `systemctl reboot` | flush SD-saver journal, then reboot |
+| `GET /dashboard-auth` / `PUT /dashboard-auth` | L342/L360 read+write `AUTH_FILE` | `/etc/rvdashboard/dashboard-auth.json`, mode 0600 |
+| `GET /wan-manual` / `PUT /wan-manual` / `DELETE /wan-manual` | L2168/L2178/L2200 tee/rm/cat | `/run/wan-manual-choice`, `/run/wan-manual-fallback` |
+| `POST /wan-scan` | L1653 `systemd-run wan-scan-ondemand` | trigger an on-demand scan |
+| `GET /wan-scan/status` | L1679 `systemctl is-active` | poll that unit |
+| `GET /wan-scan/result` | L1689 `cat /run/wan-scan-result` | read result |
+| `GET /health-units` | L2934 `systemctl is-active <HEALTH_UNITS>` | host unit states for RV_Health |
+
+Because `sophie-hostd` runs **on the host**, none of these need `nsenter` — it runs `systemctl`,
+`iptables`, the file I/O and `docker` directly. The docker calls become hostd talking to the
+socket as root; the webserver no longer mounts it.
+
+**Not moving (verify each still works unprivileged, host-networked):**
+- Reads of `/sys/class/net/<iface>` for the Internet page (L1821) — `/sys` is mounted read-only
+  in any container; confirm it resolves without `privileged`.
+- MQTT/`wifi-api`/`usbhub-api` on `127.0.0.1` — loopback works because the container stays
+  host-networked.
+- GPIO for the alarm import — a device mapping, not a privilege.
+
+**What this does and does not buy.** It removes the *arbitrary*-root routes: no `docker run
+--privileged`, no reading every process's `/proc/*/environ`, no writing the SD card as a block
+device. What remains reachable from a compromised webserver is exactly the fixed, auditable list
+above — including reboot and restart. So the win is "a bug can do these N specific host things"
+instead of "a bug is root." State that honestly; it is a large reduction, not elimination.
+
+**Sequencing — never leave reboot and restart both broken:**
+1. **Modem `/sys/bus/usb` → `usbhub-api` first** (the second checkbox above). `usbhub-api` is
+   already root and owns USB; add a bind/unbind endpoint with an allow-list, point the modem
+   path at it, and drop the `/sys/bus/usb:rw` mount. Independent and low-risk; do it first so
+   that mount is gone before the big change.
+2. **Build `sophie-hostd`** (unit + allow-list + the endpoints above), install like
+   `setup_usbhub_api.sh`, bind `127.0.0.1:12348`, `WatchdogSec` + self-check like the other two
+   daemons. Verify every endpoint by hand with `curl` before any webserver change.
+3. **Dual-path the webserver**: each call tries hostd, and *falls back to the current
+   nsenter/docker path* while both privilege and hostd still exist. Deploy, exercise the
+   dashboard end to end (reboot and restart especially, on a day you can be at the RV).
+4. **Remove `privileged`, `pid: host`, `docker.sock`** from `docker-compose.yml`; recreate the
+   container. Now the fallback paths are dead (no nsenter without pid:host) — confirm every
+   endpoint still works via hostd, and that `/sys/class/net` reads and loopback APIs still work.
+5. **Delete the dead nsenter/docker code** and the fallback branches. Re-test.
+6. **Reboot test** — the only way to prove the host daemon is up before the webserver needs it,
+   and that reboot/restart work from a cold start.
+
+**Rough size:** ~150–250 lines for the daemon, ~13 webserver call sites touched. Could live as
+`plan_sophie_hostd.md` if it grows past this sketch; kept here per the request to plan it in TODO.
 
 ## pi5connect lock (2026-10-26) -- fixes both duplicate-rule items
 
