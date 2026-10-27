@@ -334,12 +334,15 @@ services:
     # privileged + pid:host + docker.sock: manages containers, USB hub power,
     # host shutdown, and the USB modem — document/trim in Phase 4 hardening.
     privileged: true
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - NET_BROADCAST
-      - SYS_ADMIN
-      - DAC_OVERRIDE
+    # NO cap_add here, deliberately. It used to list NET_ADMIN, NET_RAW,
+    # NET_BROADCAST, SYS_ADMIN and DAC_OVERRIDE, which had no effect at all:
+    # privileged: true already grants every capability. Worse than harmless --
+    # it read like a considered minimal set, and if privileged is ever dropped
+    # that list would silently become the REAL grant without anyone having
+    # checked it is minimal (SYS_ADMIN alone is close to root).
+    #
+    # When privileged does come off, establish the needed capabilities
+    # empirically rather than inheriting that list.
     environment:
       - TZ=America/Los_Angeles
       - MQTT_USER=${MQTT_USER}
@@ -366,11 +369,21 @@ services:
       - USBHUB_API_PORT=12347
       - COMPOSE_FILE=/home/tblank/code/tblank1024/rv/docker/docker-compose.yml
     volumes:
-      # Live view of host /dev (a bind of devtmpfs tracks hotplug); the
-      # container's own /dev is a snapshot taken at start, so a re-enumerated
-      # device is only visible here. Mounted
-      # beside /dev, not over it, so the gpiochip4 mapping below survives.
-      - /dev:/host-dev:rw
+      # REMOVED 2026-10-27: - /dev:/host-dev:rw
+      #
+      # A live, writable devtmpfs. /host-dev/mmcblk0 is the SD card as a block
+      # device, so write access to it rewrites the root filesystem directly,
+      # bypassing file ownership and permissions entirely -- one of three
+      # independent routes from a webserver bug to root on the host.
+      #
+      # Nothing used it. Grepped the whole repo: "host-dev" appeared only in
+      # this file, on the mount line and in one comment referring to it. The
+      # original reason (a re-enumerated device is only visible through a live
+      # bind of devtmpfs) no longer applies, because the jobs that needed
+      # hotplugged devices were delegated to host daemons: usbhub-api owns hub
+      # power, wifi-api-rp5 owns the Alfa, and the modem is handled through
+      # /sys/bus/usb below. Restore it only with a specific device in mind, and
+      # read-only if at all.
       - /sys/class/net:/sys/class/net:ro
       - /sys/bus/usb:/sys/bus/usb:rw
       - /sys/devices:/sys/devices:ro
@@ -386,8 +399,10 @@ services:
     # Container-side path must stay gpiochip4: gpiozero.LGPIOFactory
     # auto-detects the Pi revision and opens chip 4 for Pi 5 boards.
     # Because this service is privileged, Docker silently skips a devices:
-    # entry whose host path is missing; other host devices are reached via
-    # /host-dev instead.
+    # entry whose host path is missing -- so a typo here fails quietly rather
+    # than refusing to start. (This used to add "other host devices are
+    # reached via /host-dev instead"; that bind was removed 2026-10-27, see
+    # the note in volumes: above.)
     devices:
       - /dev/gpiochip-rp1:/dev/gpiochip4
     # autoheal (see below) restarts this when Docker marks it unhealthy.

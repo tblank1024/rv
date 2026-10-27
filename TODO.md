@@ -327,6 +327,58 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       and implicitly the modem timings they are derived from). They must stay in step;
       a comment says so but nothing enforces it.
 
+## webserver container privileges (2026-10-27) -- two of four steps done
+
+The webserver has **three independent routes to host root**, and that framing matters: each is
+sufficient alone, so removing one changes nothing while the others stand.
+
+1. `privileged: true` + `pid: host` -- PID 1 is host systemd, so `nsenter -t 1 -m -n` yields the
+   host's mount and network namespaces. `server.py` does this in 24 places. Also exposes
+   `/proc/<pid>/environ` for every host process, so any secret passed as an env var anywhere on
+   the box is readable.
+2. `/var/run/docker.sock` -- the Docker API is root-equivalent by design.
+   `docker run --privileged -v /:/host` needs no exploit.
+3. `/dev:/host-dev:rw` -- a live writable devtmpfs. `/host-dev/mmcblk0` is the SD card as a
+   block device, so writing it rewrites the root filesystem, bypassing permissions entirely.
+
+Consequence: any code-execution bug in the dashboard is root on Sophie, not container root. The
+PIN gate narrowed who can deliberately invoke the dangerous endpoints; it does nothing for a bug
+in a read path, since reads are open by design.
+
+**Done 2026-10-27:**
+
+- [x] **Removed `/dev:/host-dev:rw`** -- route 3 closed. It was unused: grepping the whole repo,
+      "host-dev" appeared only in `docker-compose.yml`, on the mount line and in one comment
+      referring to it. The original reason (a hotplugged device is only visible through a live
+      devtmpfs bind) had lapsed, because the jobs needing hotplugged devices were already
+      delegated to host daemons -- `usbhub-api` owns hub power, `wifi-api-rp5` owns the Alfa,
+      and the modem goes through `/sys/bus/usb`.
+- [x] **Removed `cap_add`** (`NET_ADMIN`, `NET_RAW`, `NET_BROADCAST`, `SYS_ADMIN`,
+      `DAC_OVERRIDE`). It had no effect -- `privileged: true` already grants every capability --
+      and was worse than harmless: it read like a considered minimal set, so if `privileged`
+      were ever dropped that list would silently become the real grant with nobody having
+      checked it is minimal. `SYS_ADMIN` alone is close to root. When `privileged` comes off,
+      establish the capabilities empirically instead.
+
+Verified after both: container healthy, `/host-dev` absent, `nsenter` still reaches the host
+(iptables read, host file read), the Docker socket still lists 9 containers, `/sys/bus/usb` is
+still writable for the modem rebind, all six dashboard endpoints 200, the health reporter still
+publishing, 9/9 containers up, alarm state unchanged.
+
+**Remaining, and this is a project rather than a tidy-up:**
+
+- [ ] **A `sophie-hostd` on `127.0.0.1`**, shaped like `usbhub/usbhub_api.py` -- which already
+      has the allow-list guard to copy -- exposing exactly: `reboot`, `restart-containers`,
+      `container-states`, `firewall-status`, and read/write of `/run/wan-manual-choice`,
+      `/run/wan-manual-fallback` and `/etc/rvdashboard/dashboard-auth.json`. That retires both
+      remaining root routes: `docker.sock`, `pid: host` and `privileged` all come out, and the
+      webserver becomes an ordinary container with a GPIO device and some network access.
+      Roughly 150-200 lines plus ~13 call sites. **It touches reboot and container restart**, so
+      it wants its own session and careful testing -- done badly it breaks the two controls you
+      would need while debugging it.
+- [ ] Hand the modem's `/sys/bus/usb` bind/unbind to `usbhub-api`, which is already root and
+      already owns USB. Then `/sys/bus/usb:rw` comes out too.
+
 ## pi5connect lock (2026-10-26) -- fixes both duplicate-rule items
 
 `pi5connect.sh` v2.4 takes an `flock` on `/run/pi5connect.lock` around the whole invocation.
