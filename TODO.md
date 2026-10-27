@@ -8,13 +8,14 @@ done and merged three pairs of duplicates.
 
 ## Open work, most urgent first
 
-Status as of 2026-10-27: items 1, 3, 4 and 6 are done this session (1 has one
-owner-only question left); the rest are below in full.
+Status as of 2026-10-27: items 1–4 and 6 are done (2 was already built in task C
+on 10-26 and is now cross-linked). Remaining: 5 (bind :8000, a multi-socket change
+wanting its own session), 7 (`sophie-hostd`, its own session) and 8 (remote access).
 
 | # | Item | State | Why it is here |
 |---|---|---|---|
-| 1 | RaspAP `:80` / `wayvnc` `:5900` default-or-empty passwords | **Done bar one question** | Both enforce auth and neither is empty; VNC is PAM-backed. One owner-only question: is the RaspAP admin password still the factory `secret`? I did not test it — see the item. |
-| 2 | Alert when `sophie-firewall` reads NOT ARMED | Open — next up | The gap that let the 2026-10-21 exposure run silently for two days behind a green `systemctl status`. Fold into the health-hardening work, which needs an alert channel anyway. |
+| 1 | RaspAP `:80` / `wayvnc` `:5900` default-or-empty passwords | **Done** | Both enforce auth, neither is empty, VNC is PAM-backed; owner confirmed the RaspAP admin password is non-default. |
+| 2 | Alert when `sophie-firewall` reads NOT ARMED | **Done** (task C, 10-26) | Already built: `RVC/RV_Health/1` `firewall_armed` → watcher bounds → `SYS_ERRORS` → dashboard + MQTT. Verified live. On-box by the owner's choice. |
 | 3 | Review the `SOPHIE-IN drop:` logs | **Done** | 23 h reviewed: zero TCP drops from the home LAN, nothing aimed at Sophie's service ports. Nothing legitimate dropped. |
 | 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
 | 5 | Bind the dashboard `:8000` to `10.0.0.1` + `127.0.0.1` | Open | Defence in depth: if the firewall drops again, nothing on the uplink to find. Loopback is **not** optional — the compose healthcheck uses it. |
@@ -695,11 +696,25 @@ Not tracked anywhere before this, in the review's own priority order:
       via a `/etc/sysctl.d` drop-in -- the old append duplicated the line on every run -- and the
       script no longer installs `iptables-persistent` or enables the unit. NAT belongs to
       `pi5connect.sh` at runtime, the filter policy to `sophie-firewall.sh`.
-- [ ] **Alert when `sophie-firewall` reads NOT ARMED.** `plan_firewall.md` documents the `status`
-      output and the Debug page card, but nothing *pushes*. This is the gap that let the 2026-10-21
-      exposure run silently for two days with a green `systemctl status`. Strongest candidate of the
-      lot. **Fold into the health-hardening work rather than building a one-off** -- that project needs
-      an alert channel anyway, and doing it twice would mean two things to keep working.
+- [x] ~~**Alert when `sophie-firewall` reads NOT ARMED.**~~ **Already built, and it is the
+      "fold into health-hardening" the note asked for.** Done in task C on 2026-10-26
+      (commits `b87e27c`, `7200355`); surfaced here 2026-10-27 because this item had been
+      tracked separately and was not cross-linked. Verified live, not just in code:
+
+      - The webserver's host-health publisher sends `RVC/RV_Health/1` every 60 s with a
+        `firewall_armed` field (`webserver/server/server.py:2966`). Caught live 2026-10-27:
+        `{"...","firewall_armed": 1, "Status": "OK", "detail": "all clear"}`.
+      - The watcher declares that field's expected bounds as `(1, 1)`
+        (`watcher/watcher.py:717`), so **any value other than armed goes through the same
+        out-of-range machinery every other fault uses** and is published as a
+        `RVC/SYS_ERRORS` entry — no second alert path to maintain, which is exactly the
+        "doing it twice" the note wanted to avoid.
+      - From there the dashboard `AlertsPanel` shows it and it is on MQTT. On-box only, by
+        the owner's deliberate choice in task C (no phone push).
+
+      So the 2026-10-21 failure mode — NOT ARMED behind a green `systemctl status` — now
+      raises a visible fault. If a push channel off the RV is ever wanted, that is a new
+      decision, not a reopen of this.
 - [x] **`br0` can no longer pick up a USB adapter by name** (2026-10-26). Was
       `[Match] Name=eth0` in `raspap-br0-member-eth0.network`, and `br0` is the first ACCEPT
       in `SOPHIE-IN`, so anything landing on that name sat inside the trusted zone and
@@ -753,7 +768,7 @@ Not tracked anywhere before this, in the review's own priority order:
       cannot reach the alarm command topics -- but it does hand all RV telemetry to anyone on
       Sophie's WiFi. Low severity on its own; matters more while 9001 is still bound to every
       interface.
-- [-] **Check RaspAP's web UI (:80) and `wayvnc` (:5900) for default or empty passwords.**
+- [x] ~~**Check RaspAP's web UI (:80) and `wayvnc` (:5900) for default or empty passwords.**~~
       Investigated 2026-10-27. **Neither is empty; VNC is provably not default. One open
       question for the owner on the RaspAP password, which I did not test by guessing.**
 
@@ -769,13 +784,11 @@ Not tracked anywhere before this, in the review's own priority order:
       does session auth in the PHP app, not via lighttpd `mod_auth` (which is all commented
       out, as shipped). So the UI is not open.
 
-      - [ ] **One thing only the owner knows: is the RaspAP admin password still the factory
-            default `secret`?** It cannot be read from the hash — RaspAP salts per install,
-            so the stored string differs from any published default even if the password is
-            unchanged, and confirming it would mean a login attempt, which I'm not doing on
-            my own initiative. If you did not deliberately change it from `secret`, change it
-            now in the RaspAP UI (Authentication page) — it is reachable by any device on
-            Sophie's WiFi.
+      - [x] ~~**Is the RaspAP admin password still the factory default `secret`?**~~ Owner
+            confirmed 2026-10-27 it was deliberately changed from the default. So the one
+            open question on this item is answered and the whole item is closed: both ports
+            enforce auth, neither is empty, VNC is PAM-backed, and the admin password is
+            non-default.
 
       **The bound on all of this: the firewall confines both ports to the RV LAN.** Verified
       on-box — `SOPHIE-IN` trusts `lo`/`br0`/`docker0`/`br-+` and drops everything else, and
