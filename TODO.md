@@ -340,6 +340,19 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       an absent device yields an empty string rather than `up to 0.0 W`. `eslint` clean; the
       one warning left in `debug.jsx` is a pre-existing `controlSynology` dependency notice,
       untouched.
+
+      **Deployed 2026-10-27.** `docker compose build webserver` then `up -d webserver` --
+      the client build is baked into the image, not bind-mounted, so a rebuild is the only
+      way this reaches the page. Confirmed the new bundle is the one being served: the page
+      references `main.f080ac30.js`, the exact hash the build produced, and that bundle
+      contains the `up to ... W` helper. Container `healthy`, 9/9 containers up, and the
+      firewall came back intact after the restart (`-A INPUT -j SOPHIE-IN` at position 1,
+      DNS and MASQUERADE counts still 2 and 1).
+
+      The two dashboard endpoints that would show it (`/api/hub/sockets`,
+      `/api/debug/firewall/status`) answer `pin_required`, as designed, so the rendered
+      values were checked against the host API on `127.0.0.1:12347` instead -- the render is
+      a pure function of `max_power`, and those were the real values it was tested on.
 - [x] ~~`MANUAL_GRACE` is 120s in **three** places (`pi5connect.sh`, `wan_scan.sh`,
       and implicitly the modem timings they are derived from).~~ **Fixed 2026-10-27.** The
       third place was the real problem: nothing anywhere said that 120 *was*
