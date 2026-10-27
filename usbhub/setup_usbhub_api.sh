@@ -67,10 +67,19 @@ if [ -f "$SOCKET_MAP" ]; then
   echo "  sudo /usr/local/sbin/usbhub_ports.py --sockets"
 else
   echo "No socket map yet ($SOCKET_MAP). Physical socket numbers cannot be"
-  echo "derived from sysfs, so build it by plugging a device into each socket:"
-  echo "  sudo /usr/local/sbin/map_sockets.py --hubs 3-1,3-1.3,4-1,4-1.3"
+  echo "derived from sysfs, so the map has to be observed."
+  echo "If the hub was mapped before and has only MOVED, reapply the stored"
+  echo "geometry -- nothing needs unplugging:"
+  echo "  sudo /usr/local/sbin/map_sockets.py --relocate"
+  echo "Otherwise walk the sockets, plugging one device into each in turn."
+  echo "Pass --hubs the hub names as they are RIGHT NOW: they encode the Pi"
+  echo "port the hub is in, not anything about the hub, so a name from an old"
+  echo "note will be wrong. Read the current ones from /api/hubs, or see"
+  echo "usbhub/README.md section 'Bus paths are not stable'."
   echo "Run it twice -- once with a USB 2 device, once with a USB 3 one --"
   echo "giving each socket the same label, so both identities get recorded."
+  echo "(In a USB 2 port, as the hub is by choice today, the USB 3 chip does"
+  echo "not enumerate: one identity per socket, so one pass is all there is.)"
 fi
 echo "Logs: journalctl -u $UNIT -f"
 exit 0

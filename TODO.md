@@ -387,16 +387,26 @@ choice being reverted. See commits `7159cca` (rv) and `b1bf0ac` (WifitoHostBridg
       the fallback path, and the pre-existing environment override preserved —
       `MANUAL_GRACE=99` still wins, as `${MANUAL_GRACE:-120}` did before.
 
-      - [ ] **Not deployed.** The repo has it; `/usr/local/sbin` does not, and installing
-            needs root this session does not have. Copy all three together:
-            ```bash
-            sudo install -m 0644 raspap/wan-common.sh /usr/local/sbin/wan-common.sh
-            sudo install -m 0755 raspap/pi5connect.sh raspap/wan_scan.sh /usr/local/sbin/
-            raspap/check_wan_constants.sh /usr/local/sbin   # verify what is installed
-            ```
-            Order does not matter — the mirror covers a partial install — but check
-            `/var/log/pi5connect.log` for the WARNING afterwards, to confirm the shared file
-            is actually being found rather than silently mirrored.
+      - [x] ~~**Not deployed.**~~ **Installed 2026-10-27** into `/usr/local/sbin`:
+            `wan-common.sh` 0644, `pi5connect.sh`, `wan_scan.sh` and
+            `check_wan_constants.sh` 0755, all root-owned and all `diff` identical to the
+            repo. The previous `pi5connect.sh`/`wan_scan.sh` were copied aside first, since
+            this is the uplink path.
+
+            `check_wan_constants.sh /usr/local/sbin` passes against the installed copies,
+            not just the repo ones. Then both scripts were run for real as root:
+
+            - `wan_scan.sh --dry-run`: `current WAN eth1 role=wired rank=0`, correctly found
+              nothing better, `no change`.
+            - `pi5connect.sh eth1 up` -- the live dispatcher path, re-committing the current
+              WAN: probe OK on ICMP first try, route set, rules added, `complete v2.4`.
+
+            **No `WARNING` line in either log, which is the point of the check**: the
+            fallback mirror logs one, so its absence is positive evidence that
+            `wan-common.sh` was found and sourced rather than silently mirrored. Afterwards
+            the uplink is still `eth1` with the internet reachable, the firewall reads
+            `== ARMED` with `-A INPUT -j SOPHIE-IN` at position 1 in both families, and the
+            rule counts are unmoved at 2 DNS / 1 MASQUERADE / 2 per-WAN FORWARD.
 
 ## webserver container privileges (2026-10-27) -- two of four steps done
 
@@ -508,6 +518,11 @@ in ~2s and the rest are redundant no-ops behind it.
       `Lock: waited 30s ... proceeding without it (duplicate rules possible)` at 16:39:50.
       Neither produced a duplicate. The DNS item below is closeable on that; the stale-rule
       item is not, because it needs an interface to actually go away.
+
+      One more pass added 2026-10-27 while installing the new scripts: a deliberate
+      `pi5connect.sh eth1 up` logged `Adding rules for new WAN=eth1` and the counts stayed
+      at 2 / 1 / 2. Still not a WAN *change*, so it does not close the stale-rule item, but
+      it is a real rule-rewrite under the lock that added nothing.
 
 ## Reboot test after disabling netfilter-persistent (2026-10-26 16:18)
 
@@ -667,22 +682,24 @@ Not tracked anywhere before this, in the review's own priority order:
 
 ## Small / unrelated
 
-Worked through 2026-10-27. **Three closed** (the DNS rule count, the `usbhub` socket map,
-the `.196` references), **two still open** -- one needs your password, one needs a real WAN
-change -- and **two new ones found on the way**: `usbhub_ports.py` has drifted on disk, and
-the hub has been moved to a USB 2 port.
+Worked through 2026-10-27. **All closed except one.** The DNS rule count, the `usbhub`
+socket map, the `.196` references, the `sudoers` permissions and the `usbhub_ports.py` drift
+are done; the hub-on-USB-2 question found on the way was settled by the owner (it stays).
 
-- [ ] `chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset` -- `visudo -c`
-      flags both as bad permissions. Pre-existing, they load today, but it is the kind of
-      thing that stops working after a sudo upgrade. **Still open, and it cannot be done
-      from a Claude session:** `sudo -n -l` shows this user's NOPASSWD entries are
-      command-scoped (`sophie-firewall.sh status`, the journald trio, the USB
-      bind/unbind tee) and `chmod` is not among them, so the blanket `(ALL : ALL) ALL`
-      rule prompts for a password. Confirmed 2026-10-27 that both files are still `0644`
-      while every other file in `/etc/sudoers.d` is `0440`. Run it yourself:
-      ```bash
-      sudo chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset && sudo visudo -c
-      ```
+The one genuinely open item is **stale rules for a dead WAN**, and it is open for a reason
+that no amount of session time fixes: it needs an interface to actually go away while the
+lock is in force, which means dropping the uplink.
+
+- [x] ~~`chmod 0440 /etc/sudoers.d/debian_frontend /etc/sudoers.d/usb-reset`~~ **Done
+      2026-10-27**, after the owner ran `sudo -v` to cache the credential (`chmod` is not
+      one of this user's NOPASSWD entries, so it needs the blanket `(ALL : ALL) ALL` rule).
+      Both were `0644` where every other file in `/etc/sudoers.d` was `0440`; both are now
+      `-r--r----- root root`.
+
+      `visudo -c` went from two `bad permissions, should be mode 0440` lines to **every
+      file parsed OK, no warnings**. Checked that the rules still load rather than assuming
+      it: `sudo -l` still lists the `tee .../usb/{un,}bind` pair from `usb-reset` and
+      `env_keep+=DEBIAN_FRONTEND` from `debian_frontend`.
 
 - [x] ~~`iptables -S INPUT` carries **four** identical `br0` DNS accept rules~~ **Closed
       2026-10-27: the count is two.** One `udp --dport 53` and one `tcp --dport 53`, which
@@ -773,13 +790,38 @@ the hub has been moved to a USB 2 port.
       `1-2:4,1-2:3` (socket 7's Bluetooth adapter, and the internal cascade), so somebody
       already updated it for the move; it is correct as cabled.
 
-- [ ] **`usbhub_ports.py` on disk has drifted from the repo** (noticed while doing the
-      above). `/usr/local/sbin/usbhub_ports.py` is from 2026-10-20; `map_sockets.py` and
-      `usbhub_api.py` are byte-identical to the repo. The drift is comment-only except that
-      the repo version **deletes** `get_current_active_port()`, a shim for the old
-      Coolgear-shaped callers. Grepped the whole repo: nothing calls it, so re-running
-      `setup_usbhub_api.sh` is safe -- but it restarts a root service that owns hub power,
-      so it wants doing deliberately rather than in passing.
+- [x] ~~**`usbhub_ports.py` on disk has drifted from the repo**~~ **Resolved 2026-10-27 by
+      running `setup_usbhub_api.sh`.** All four files (`usbhub_ports.py`, `usbhub_api.py`,
+      `map_sockets.py` and the unit) now `diff` identical to the repo; the previous driver
+      was kept as `/usr/local/sbin/usbhub_ports.py.prev` by the installer.
+
+      The drift was from commit `c345012` ("Remove dead Coolgear code"), which the Oct 20
+      install predated. Comment-only, except that the repo version deletes
+      `get_current_active_port()` -- a shim for the old Coolgear-shaped callers. Nothing in
+      the repo calls it, confirmed by grep before and `grep -c` on the installed file after:
+      0 occurrences, nothing broken. The unit's functional content is unchanged; only its
+      `USBHUB_PROTECTED` *comment* was trimmed, and the value is still `1-2:4,1-2:3`.
+
+      The one thing worth verifying rather than trusting was socket power, since this
+      restarts the root service that owns it. The installer's header claims "restarting this
+      service never changes a port: it only reads state at start-up", and that held: all
+      seven sockets came back with identical `enabled`/`device_present`, including socket 3
+      still gated off and socket 7's Bluetooth still powered. Service `active`,
+      `/api/health` 200, uplink and internet unaffected, 9/9 containers healthy, and the
+      alarm still reporting both zones OFF on its heartbeat.
+
+      Also confirmed the automatic cascade protection the README describes, from the
+      service's own start-up line: `protected=['1-2:3', '1-2:4'] +auto ['1-2:3', 'usb1:2']`
+      -- it found the internal cascade and the hub's own upstream port by itself.
+
+      `WatchdogSec` survived the restart: `WatchdogTimestamp` advanced 15:00:57 -> 15:01:57,
+      exactly the 60s interval, with `NRestarts=0`. `wifi-api-rp5` likewise.
+
+      While here, fixed the installer's own stale hint: `setup_usbhub_api.sh` printed
+      `map_sockets.py --hubs 3-1,3-1.3,4-1,4-1.3` for the no-map case. It now points at
+      `--relocate` for a moved hub, says to read the current hub names rather than copy them
+      from a note, and mentions that a USB 2 port gives one identity per socket so one pass
+      is all there is.
 
 - [x] ~~README/CLAUDE.md still mention reaching Sophie over SSH at `192.168.2.196`.~~ Done
       2026-10-27 -- **and the item's own premise was wrong.** Neither `README.md` nor
