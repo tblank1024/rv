@@ -21,7 +21,7 @@ access / Tailscale) is dropped by owner decision. **The one open high-priority i
 | 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
 | 5 | Bind the dashboard `:8000` off the uplink | **Decided: leave on `0.0.0.0`** | Firewall already confines it and now self-alerts; the clean fix is a two-socket refactor with a `br0` startup race. Same trade as mosquitto 1883. |
 | 6 | mDNS `allow-interfaces=br0` | **Done** | avahi was announcing on both uplinks; now br0 only. |
-| 7 | `sophie-hostd` on `127.0.0.1` | **In progress** — daemon built+installed 2026-10-28; webserver cutover pending (at-RV) | Retires the last two routes to host root. Daemon done and tested; dropping `privileged`/`pid:host`/`docker.sock` wants an at-RV reboot test. |
+| 7 | `sophie-hostd` on `127.0.0.1` | **DONE 2026-10-28** — webserver de-privileged, survived reboot | Removed `privileged`/`pid:host`/`docker.sock`; host ops go through sophie-hostd. Only leftover: step 1 (modem→usbhub-api) for the cellular-test button. |
 
 Blocked on being somewhere else, not on effort:
 
@@ -551,17 +551,26 @@ publishing, 9/9 containers up, alarm state unchanged.
 
 **Remaining, and this is a project rather than a tidy-up:**
 
-- [-] **A `sophie-hostd` on `127.0.0.1`** — **daemon built, installed and tested
-      2026-10-28** (`rv/sophie-hostd/`, step 2 of the plan). **Still open:** the webserver
-      cutover — dual-path it, drop `privileged`/`pid: host`/`docker.sock`, delete the dead
-      paths, reboot-test (steps 3–6). That is the at-RV part, because it touches reboot and
-      container restart, the controls you need *while* debugging it.
-- [ ] Hand the modem's `/sys/bus/usb` bind/unbind to `usbhub-api` (step 1 of the plan).
-      Independent and not yet done; do it before step 4 so `/sys/bus/usb:rw` is off the
-      webserver before privilege is dropped. **Note found while building:**
-      `prepare_cellular_modem()` also kills host **MTP processes**, which needs `pid: host`
-      too — so that kill must move to a host daemon (usbhub-api or sophie-hostd) or be
-      dropped, or `pid: host` cannot come off. Fold into step 1.
+- [x] ~~**A `sophie-hostd` on `127.0.0.1`**~~ **DONE 2026-10-28 — the webserver is
+      de-privileged.** Drove the cutover live (user on Pi Connect): step 3 dual-path deployed,
+      step 4 dropped `privileged`/`pid: host`/`docker.sock`, and it survived a reboot. Verified
+      cold: `docker inspect` shows `Privileged=false`, `PidMode=""`, no docker.sock mount
+      (only `/sys/devices:ro` remains); `RVC/RV_Health` publishes `firewall_armed=1 Status=OK`
+      after boot, which only works if the webserver reads the firewall through sophie-hostd —
+      so the daemon comes up before the webserver needs it. 9/9 containers healthy, firewall
+      ARMED. The fallback path was also proven (dashboard stayed up with hostd stopped while
+      still privileged). A dashboard bug is now container-confined, not host root.
+      Dead-code cleanup (removing the `[hostd-fallback]` branches from `server.py`) was left as
+      an optional later commit — the dual-path is the stable end state.
+- [ ] **Step 1 (now the only remaining piece): hand the modem's `/sys/bus/usb` bind/unbind to
+      `usbhub-api`.** This is the one privileged path NOT moved, so `/sys/bus/usb:rw` is still
+      mounted on the webserver (harmless — writing it needs the privilege the container no
+      longer has). Consequence today: the **"cellular test" button** (`prepare_cellular_modem()`)
+      fails, because it also kills host **MTP processes** (needs `pid: host`) and rebinds the
+      modem. Normal cellular *use* is unaffected (that goes through the socket/Kasa path). Move
+      both the bind/unbind and the MTP kill to `usbhub-api` (already root, already owns USB),
+      then drop the `/sys/bus/usb:rw` mount. After that the webserver has no privileged path
+      left at all.
 
 ### Plan: `sophie-hostd`
 

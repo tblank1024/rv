@@ -81,8 +81,10 @@ state — it holds none and acts only on request.
 
 ## Status
 
-As of 2026-10-28 the daemon is written and installed; the webserver has **not** yet
-been cut over to it, and still runs privileged. The cutover (dual-path the webserver,
-then drop `privileged`/`pid: host`/`docker.sock`, then delete the dead paths,
-reboot-test) is staged in `rv/TODO.md` and wants an at-the-RV session because it
-touches reboot and container restart.
+As of 2026-10-28 the cutover is **done**: the webserver is de-privileged
+(`Privileged=false`, no `pid: host`, no docker.sock) and drives all host operations
+through this daemon, verified across a reboot. The one privileged path not yet moved
+is the modem rebind + MTP kill in `prepare_cellular_modem()` (the "cellular test"
+button) -- step 1 in `rv/TODO.md`, which hands it to `usbhub-api`. The optional
+dead-code cleanup (removing the `[hostd-fallback]` branches in `server.py`) is also
+still open.

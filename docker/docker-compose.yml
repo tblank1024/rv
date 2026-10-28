@@ -326,23 +326,24 @@ services:
     container_name: webserver
     image: webserver:latest
     network_mode: host
-    pid: host
     restart: unless-stopped
     init: true
     mem_limit: 512m
     logging: *logging
-    # privileged + pid:host + docker.sock: manages containers, USB hub power,
-    # host shutdown, and the USB modem — document/trim in Phase 4 hardening.
-    privileged: true
-    # NO cap_add here, deliberately. It used to list NET_ADMIN, NET_RAW,
-    # NET_BROADCAST, SYS_ADMIN and DAC_OVERRIDE, which had no effect at all:
-    # privileged: true already grants every capability. Worse than harmless --
-    # it read like a considered minimal set, and if privileged is ever dropped
-    # that list would silently become the REAL grant without anyone having
-    # checked it is minimal (SYS_ADMIN alone is close to root).
-    #
-    # When privileged does come off, establish the needed capabilities
-    # empirically rather than inheriting that list.
+    # DE-PRIVILEGED 2026-10-28. pid:host, privileged:true and the docker.sock
+    # mount were the webserver's three independent routes to host root, there
+    # only to run a fixed set of host operations (firewall reads, container
+    # restart/state, reboot, three host files). Those now go through sophie-hostd
+    # on 127.0.0.1 (rv/sophie-hostd; cutover in CUTOVER.md, verified across a
+    # reboot 2026-10-28). The container keeps network_mode: host (loopback still
+    # reaches the host daemons; it reads host NICs) and its GPIO device -- all it
+    # needs now. Still privileged-only and NOT yet moved: the modem rebind + MTP
+    # kill in prepare_cellular_modem() (the "cellular test" button), so
+    # /sys/bus/usb below stays for now -- step 1 of the sophie-hostd plan.
+    # No cap_add: the webserver needs no extra capabilities now that it is
+    # de-privileged. It previously had privileged:true (every capability); when
+    # that came off nothing had to replace it. If a capability is ever proven
+    # necessary, add exactly that one -- never privileged:true back.
     environment:
       - TZ=America/Los_Angeles
       - MQTT_USER=${MQTT_USER}
@@ -391,7 +392,8 @@ services:
       - /run/dbus:/run/dbus:rw
       - /var/run/dbus:/var/run/dbus:rw
       - ../alarm:/home/tblank/code/tblank1024/rv/alarm:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      # docker.sock removed 2026-10-28 (de-privileging): container restart and
+      # state go through sophie-hostd, which holds the socket on the host.
       - .:/home/tblank/code/tblank1024/rv/docker:ro
       - ../webserver/server/synology-password.json:/app/rvsecurity/server/synology-password.json:ro
     # gpiochip: stable udev symlink, not a raw gpiochipN path (host chip
