@@ -84,21 +84,26 @@ def _run(cmd, **kw):
 # --- operations --------------------------------------------------------------
 
 def op_firewall():
-    """Raw iptables output for both families. The webserver parses it."""
+    """Raw iptables output for both families. The webserver parses it.
+
+    A chain that cannot be read is reported as null, NOT "" -- the webserver's
+    health logic must tell "chain is gone" (unhealthy) from "chain exists but
+    empty". INPUT failing means the whole family is unreachable."""
     out = {}
     for fam, binary in IPTABLES.items():
-        fam_out = {"reachable": True, "spec": {}, "counts": {}}
-        for chain in IPT_SPEC_CHAINS:
-            rc, so, se = _run([binary, "-S", chain], timeout=5)
-            if rc != 0 and chain == "INPUT":
-                fam_out = {"reachable": False, "error": se.strip()}
-                break
-            fam_out["spec"][chain] = so.strip() if rc == 0 else ""
-        else:
-            for chain in IPT_COUNT_CHAINS:
-                rc, so, se = _run([binary, "-L", chain, "-vnx"], timeout=5)
-                fam_out["counts"][chain] = so.strip() if rc == 0 else ""
-        out[fam] = fam_out
+        rc, inp, se = _run([binary, "-S", "INPUT"], timeout=5)
+        if rc != 0:
+            out[fam] = {"reachable": False, "error": se.strip()}
+            continue
+        spec = {"INPUT": inp.strip()}
+        for chain in ("FORWARD", "DOCKER-USER"):
+            rc, so, _ = _run([binary, "-S", chain], timeout=5)
+            spec[chain] = so.strip() if rc == 0 else None
+        counts = {}
+        for chain in IPT_COUNT_CHAINS:
+            rc, so, _ = _run([binary, "-L", chain, "-vnx"], timeout=5)
+            counts[chain] = so.strip() if rc == 0 else None
+        out[fam] = {"reachable": True, "spec": spec, "counts": counts}
     return out
 
 
@@ -186,33 +191,65 @@ def op_read_file_path(path):
         return None
 
 
-def _compose_containers():
+def _compose_container_names():
     """Names of containers in our compose project (running or not)."""
     rc, so, _ = _run(
         ["/usr/bin/docker", "ps", "-a",
          "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
-         "--format", "{{.Names}}\t{{.Status}}"], timeout=20)
-    rows = []
-    for line in so.splitlines():
-        if "\t" in line:
-            name, status = line.split("\t", 1)
-            rows.append({"name": name, "status": status})
-    return rows
+         "--format", "{{.Names}}"], timeout=20)
+    return [n for n in so.split() if n]
 
 
 def op_containers():
-    return {"project": COMPOSE_PROJECT, "containers": _compose_containers()}
+    """Rich per-container state for the health reporter and the UI: state,
+    health and StartedAt (the last is what the webserver's restart-loop
+    detector counts changes of, so it must survive de-privileging). One
+    `docker inspect` over the project's containers."""
+    names = _compose_container_names()
+    rows = []
+    if names:
+        rc, so, _ = _run(["/usr/bin/docker", "inspect", *names], timeout=25)
+        try:
+            for obj in json.loads(so or "[]"):
+                st = obj.get("State", {}) or {}
+                rows.append({
+                    "name": (obj.get("Name", "") or "").lstrip("/"),
+                    "state": st.get("Status", ""),
+                    "health": (st.get("Health") or {}).get("Status", ""),
+                    "started": st.get("StartedAt", ""),
+                })
+        except Exception:
+            pass
+    return {"project": COMPOSE_PROJECT, "containers": rows}
+
+
+CONTAINER_ACTIONS = ("start", "stop", "restart")
+
+
+def op_container_action(name, action):
+    """start / stop / restart ONE named compose container. (ok, detail)."""
+    if action not in CONTAINER_ACTIONS:
+        return False, {"error": f"bad action {action!r}"}
+    names = {r["name"] for r in op_containers()["containers"]}
+    if name not in names:
+        return False, {"error": f"unknown container {name!r}"}
+    args = ["/usr/bin/docker", action]
+    if action == "restart":
+        args += ["-t", "10"]
+    args.append(name)
+    rc, so, se = _run(args, timeout=40)
+    return rc == 0, {"name": name, "action": action, "detail": (se or so).strip()}
 
 
 def op_restart(target):
     """Restart 'all', 'unhealthy', or one named compose container.
     Returns (ok, {restarted: [...], skipped: [...], error: str|None})."""
-    rows = _compose_containers()
+    rows = op_containers()["containers"]
     names = {r["name"] for r in rows}
     if target == "all":
         todo = [r["name"] for r in rows]
     elif target == "unhealthy":
-        todo = [r["name"] for r in rows if "unhealthy" in r["status"].lower()]
+        todo = [r["name"] for r in rows if r["health"] == "unhealthy"]
     elif target in names:
         todo = [target]
     else:
@@ -353,6 +390,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not target:
                     return self._send(400, {"error": "target required"})
                 ok, detail = op_restart(target)
+                return self._send(200 if ok else 400, {"ok": ok, **detail})
+
+            if method == "POST" and path == "/api/containers/action":
+                body = self._json_body()
+                name, action = body.get("name"), body.get("action")
+                if not name or not action:
+                    return self._send(400, {"error": "name and action required"})
+                ok, detail = op_container_action(name, action)
                 return self._send(200 if ok else 400, {"ok": ok, **detail})
 
             if method == "POST" and path == "/api/reboot":
