@@ -21,7 +21,7 @@ access / Tailscale) is dropped by owner decision. **The one open high-priority i
 | 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
 | 5 | Bind the dashboard `:8000` off the uplink | **Decided: leave on `0.0.0.0`** | Firewall already confines it and now self-alerts; the clean fix is a two-socket refactor with a `br0` startup race. Same trade as mosquitto 1883. |
 | 6 | mDNS `allow-interfaces=br0` | **Done** | avahi was announcing on both uplinks; now br0 only. |
-| 7 | `sophie-hostd` on `127.0.0.1` | Open — **planned**, own session | Retires the last two routes to host root (`docker.sock`, `pid: host` + `privileged`). Plan written under §"webserver container privileges". Touches reboot and restart — own session. |
+| 7 | `sophie-hostd` on `127.0.0.1` | **In progress** — daemon built+installed 2026-10-28; webserver cutover pending (at-RV) | Retires the last two routes to host root. Daemon done and tested; dropping `privileged`/`pid:host`/`docker.sock` wants an at-RV reboot test. |
 
 Blocked on being somewhere else, not on effort:
 
@@ -551,10 +551,17 @@ publishing, 9/9 containers up, alarm state unchanged.
 
 **Remaining, and this is a project rather than a tidy-up:**
 
-- [ ] **A `sophie-hostd` on `127.0.0.1`** — the project that retires the last two root
-      routes. Plan below. **Own session, careful testing**: it touches reboot and container
-      restart, the two controls you need *while* debugging it.
+- [-] **A `sophie-hostd` on `127.0.0.1`** — **daemon built, installed and tested
+      2026-10-28** (`rv/sophie-hostd/`, step 2 of the plan). **Still open:** the webserver
+      cutover — dual-path it, drop `privileged`/`pid: host`/`docker.sock`, delete the dead
+      paths, reboot-test (steps 3–6). That is the at-RV part, because it touches reboot and
+      container restart, the controls you need *while* debugging it.
 - [ ] Hand the modem's `/sys/bus/usb` bind/unbind to `usbhub-api` (step 1 of the plan).
+      Independent and not yet done; do it before step 4 so `/sys/bus/usb:rw` is off the
+      webserver before privilege is dropped. **Note found while building:**
+      `prepare_cellular_modem()` also kills host **MTP processes**, which needs `pid: host`
+      too — so that kill must move to a host daemon (usbhub-api or sophie-hostd) or be
+      dropped, or `pid: host` cannot come off. Fold into step 1.
 
 ### Plan: `sophie-hostd`
 
@@ -609,9 +616,17 @@ instead of "a bug is root." State that honestly; it is a large reduction, not el
    already root and owns USB; add a bind/unbind endpoint with an allow-list, point the modem
    path at it, and drop the `/sys/bus/usb:rw` mount. Independent and low-risk; do it first so
    that mount is gone before the big change.
-2. **Build `sophie-hostd`** (unit + allow-list + the endpoints above), install like
-   `setup_usbhub_api.sh`, bind `127.0.0.1:12348`, `WatchdogSec` + self-check like the other two
-   daemons. Verify every endpoint by hand with `curl` before any webserver change.
+2. **Build `sophie-hostd`** — **DONE 2026-10-28.** In `rv/sophie-hostd/` (daemon, unit,
+   `setup_sophie_hostd.sh`, README); installed to `/usr/local/sbin`, `127.0.0.1:12348`,
+   `WatchdogSec=180` with the loopback self-check (verified pinging on its 60 s interval,
+   `NRestarts=0`). Every endpoint curl-tested as root: firewall reads reachable and hooked
+   (cross-checked against the live chains), the PIN store reads with the right four keys,
+   units/containers/wan reads correct, `reboot` `dry_run` flushed the journal without
+   rebooting, a `wan-fallback` write/read/delete round-trip (mode 0644) worked, and a real
+   `autoheal` restart via the API came back healthy. The one path NOT exercised live is the
+   `POST /api/wan-scan` trigger — it can change the WAN, so it was left for the at-RV
+   session; its code is a thin `systemd-run` wrapper and the GET state path works. **Nothing
+   is wired to it yet — the webserver still runs privileged, so this install is inert.**
 3. **Dual-path the webserver**: each call tries hostd, and *falls back to the current
    nsenter/docker path* while both privilege and hostd still exist. Deploy, exercise the
    dashboard end to end (reboot and restart especially, on a day you can be at the RV).

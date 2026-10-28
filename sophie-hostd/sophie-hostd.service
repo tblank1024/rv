@@ -1,0 +1,47 @@
+# Host-root broker for the webserver dashboard, as root, on loopback.
+#
+# The webserver container runs privileged + pid:host with the Docker socket
+# only to perform a fixed set of host-root operations. This service performs
+# them instead, behind a loopback allow-list, so the webserver can drop those
+# privileges and become an ordinary container. See rv/TODO.md "Plan: sophie-hostd".
+#
+# Same shape as usbhub-api.service and wifi-api-rp5.service: stdlib only,
+# loopback, no auth because the bind address IS the access control.
+[Unit]
+Description=Sophie host-root broker for the dashboard (root, loopback)
+After=network.target docker.service
+# Not a hard dependency on docker: the non-container endpoints (firewall,
+# files, reboot, units) still answer if docker is down; the container
+# endpoints just report the docker error.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/sophie_hostd.py
+User=root
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C
+Environment=LANG=C
+
+# NEVER set BIND to 0.0.0.0 or br0. This service can reboot the Pi, restart
+# containers and read the PIN store; loopback is the whole access control.
+Environment=SOPHIE_HOSTD_BIND=127.0.0.1
+Environment=SOPHIE_HOSTD_PORT=12348
+Environment=SOPHIE_HOSTD_ALLOWED_NET=127.0.0.0/8
+
+# The compose project label that "restart all / unhealthy" is scoped to, so a
+# stray non-RV container on the host is never touched. All RV services carry
+# this label (verified 2026-10-28).
+Environment=SOPHIE_HOSTD_COMPOSE_PROJECT=docker
+
+# Catch a wedged HTTP loop, not just a crashed process: the daemon pings the
+# watchdog only after a real loopback request to its own /api/health succeeds
+# (WatchdogSec/3 interval), so three failed self-checks are needed before
+# systemd acts -- the same design as the other two host daemons.
+WatchdogSec=180
+
+EnvironmentFile=-/etc/default/sophie-hostd
+
+[Install]
+WantedBy=multi-user.target
