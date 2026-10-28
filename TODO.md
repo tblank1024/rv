@@ -627,6 +627,13 @@ instead of "a bug is root." State that honestly; it is a large reduction, not el
    `POST /api/wan-scan` trigger — it can change the WAN, so it was left for the at-RV
    session; its code is a thin `systemd-run` wrapper and the GET state path works. **Nothing
    is wired to it yet — the webserver still runs privileged, so this install is inert.**
+
+   The at-RV cutover (steps 3–6) is driven by **`sophie-hostd/cutover.sh`**, runbook in
+   **`sophie-hostd/CUTOVER.md`**: `sudo ./cutover.sh next` per step — it does the work,
+   verifies, and stops; step 4 auto-rolls-back if the firewall read breaks after the drop.
+   Steps 3 and 5 still need the server.py dual-path / cleanup code committed first (the script
+   enforces this via markers `sophie-hostd dual-path` / `sophie-hostd cutover complete`);
+   steps 4 and 6 are mechanical.
 3. **Dual-path the webserver**: each call tries hostd, and *falls back to the current
    nsenter/docker path* while both privilege and hostd still exist. Deploy, exercise the
    dashboard end to end (reboot and restart especially, on a day you can be at the RV).
