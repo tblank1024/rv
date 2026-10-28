@@ -144,6 +144,12 @@ def container_action(name, action, timeout=45):
     return bool(d.get("ok")), d
 
 
+def modem_prepare(timeout=30):
+    """Kill MTP processes and rebind the cellular modem's USB device on the
+    host. Returns the result dict (ok, mtp_killed, rescanned, usb_path?, detail?)."""
+    return _call("POST", "/api/modem/prepare", timeout=timeout)
+
+
 def reboot(dry_run=False, timeout=15):
     """Flush the journal and reboot (or, dry_run, just flush). Returns (ok, message)."""
     d = _call("POST", "/api/reboot", body={"confirm": True, "dry_run": bool(dry_run)},

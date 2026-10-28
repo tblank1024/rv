@@ -56,11 +56,12 @@ import rvglue
 from typing import Annotated, Optional
 from kasa_power_strip import KasaPowerStrip, KasaPowerStripError
 from usb_modem_manager import usb_modem_manager
-# sophie-hostd dual-path: privileged host operations are brokered by the
-# loopback root daemon (rv/sophie-hostd). Each helper below tries hostd first
-# and falls back to the legacy nsenter/docker path while the webserver is still
-# privileged. Once de-privileged the fallbacks are dead and get removed (the
-# step-5 cleanup); see rv/sophie-hostd/CUTOVER.md.
+# sophie-hostd: every privileged host operation (firewall reads, container
+# restart/state, reboot, the modem rebind, and the host-side PIN/wan files) is
+# brokered by the loopback root daemon (rv/sophie-hostd) on 127.0.0.1. The
+# webserver is de-privileged -- no privileged, no pid:host, no docker.sock -- so
+# these helpers call hostd and return a clean error if it is unreachable, rather
+# than touching the host directly. See rv/sophie-hostd/CUTOVER.md.
 import hostd_client
 
 from fastapi import FastAPI, Body, HTTPException, Request
@@ -350,49 +351,22 @@ def _auth_parse(text):
 def _auth_config():
     """
     The stored salt, PIN hash, signing secret and generation, or None if no
-    PIN has been set yet. Read from the host via sophie-hostd, falling back to
-    nsenter while the webserver is still privileged.
+    PIN has been set yet (or if sophie-hostd cannot be reached). Read from the
+    host via sophie-hostd.
     """
     try:
         return _auth_parse(hostd_client.auth_read())
-    except hostd_client.HostdUnavailable:
-        return _auth_config_legacy()                 # [hostd-fallback]
-
-
-def _auth_config_legacy():                           # [hostd-fallback]
-    try:
-        proc = subprocess.run(
-            ["nsenter", "-t", "1", "-m", "--", "cat", AUTH_FILE],
-            capture_output=True, text=True, timeout=10)
-        if proc.returncode != 0:
-            return None
-    except Exception as exc:
-        print(f"WARNING: could not read {AUTH_FILE}: {exc}")
+    except hostd_client.HostdUnavailable as exc:
+        print(f"WARNING: sophie-hostd unavailable, cannot read auth config: {exc}")
         return None
-    return _auth_parse(proc.stdout)
 
 
 def _auth_config_write(config) -> bool:
     text = json.dumps(config, indent=2) + "\n"
     try:
         return hostd_client.auth_write(text)
-    except hostd_client.HostdUnavailable:
-        return _auth_config_write_legacy(text)       # [hostd-fallback]
-
-
-def _auth_config_write_legacy(text) -> bool:         # [hostd-fallback]
-    try:
-        proc = subprocess.run(
-            ["nsenter", "-t", "1", "-m", "--", "sh", "-c",
-             f"mkdir -p $(dirname {AUTH_FILE}) && cat > {AUTH_FILE} "
-             f"&& chmod 0600 {AUTH_FILE}"],
-            input=text, capture_output=True, text=True, timeout=10)
-        if proc.returncode != 0:
-            print(f"WARNING: could not write {AUTH_FILE}: {proc.stderr.strip()}")
-            return False
-        return True
-    except Exception as exc:
-        print(f"WARNING: could not write {AUTH_FILE}: {exc}")
+    except hostd_client.HostdUnavailable as exc:
+        print(f"WARNING: sophie-hostd unavailable, cannot write auth config: {exc}")
         return False
 
 
@@ -1674,34 +1648,14 @@ def scan_hub_wan() -> dict:
                              "if the cellular modem has to be powered up and tested."}
     try:
         started, message = hostd_client.wan_scan_start(on_loss)
-    except hostd_client.HostdUnavailable:
-        return _scan_hub_wan_legacy(on_loss, started_ok)     # [hostd-fallback]
+    except hostd_client.HostdUnavailable as exc:
+        return {"success": False, "error": "hostd_unavailable",
+                "message": f"sophie-hostd unavailable: {exc}"}
     if started:
         return started_ok
     if "already running" in (message or "").lower():
         return {"success": True, "started": False, "message": "A scan is already running."}
     return {"success": False, "error": "launch_failed", "message": message or "launch failed"}
-
-
-def _scan_hub_wan_legacy(on_loss, started_ok):       # [hostd-fallback]
-    script = "/usr/local/sbin/wan_scan.sh"
-    try:
-        mode = ["--on-loss"] if on_loss else []
-        result = subprocess.run(
-            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
-             "systemd-run", "--unit=wan-scan-ondemand", "--collect",
-             "--service-type=oneshot", "/bin/bash", script, *mode],
-            capture_output=True, text=True, timeout=20)
-        if result.returncode != 0:
-            detail = (result.stderr or "").strip()
-            if "already exists" in detail or "already running" in detail:
-                return {"success": True, "started": False,
-                        "message": "A scan is already running."}
-            return {"success": False, "error": "launch_failed",
-                    "message": detail or f"rc={result.returncode}"}
-    except Exception as exc:
-        return {"success": False, "error": "launch_failed", "message": str(exc)}
-    return started_ok
 
 
 @app.get("/api/hub/wan/scan")
@@ -1712,7 +1666,7 @@ def get_hub_wan_scan() -> dict:
         running = bool(state.get("running"))
         parts = (state.get("result") or "").split()
     except hostd_client.HostdUnavailable:
-        running, parts = _wan_scan_state_legacy()    # [hostd-fallback]
+        running, parts = False, []
     outcome, iface, socket_label, when = "", "", "", 0
     if len(parts) >= 4:
         outcome, iface, socket_label = parts[0], parts[1], parts[2]
@@ -1722,29 +1676,6 @@ def get_hub_wan_scan() -> dict:
             pass
     return {"success": True, "running": running, "outcome": outcome,
             "interface": iface, "socket": socket_label, "finished": when}
-
-
-def _wan_scan_state_legacy():                        # [hostd-fallback]
-    """(running, result_parts) read from the host via nsenter."""
-    running = False
-    try:
-        probe = subprocess.run(
-            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
-             "systemctl", "is-active", "wan-scan-ondemand"],
-            capture_output=True, text=True, timeout=8)
-        running = probe.stdout.strip() == "active"
-    except Exception:
-        pass
-    parts = []
-    try:
-        got = subprocess.run(                        # the container's /run is its own
-            ["nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--",
-             "cat", "/run/wan-scan-result"],
-            capture_output=True, text=True, timeout=8)
-        parts = got.stdout.split()
-    except Exception:
-        pass
-    return running, parts
 
 
 @app.post("/api/hub/wan")
@@ -2216,27 +2147,17 @@ _HOSTD_FILE_KEY = {MANUAL_CHOICE_FILE: "choice", MANUAL_FALLBACK_FILE: "fallback
 
 
 def _host_write(path: str, text: str):
-    """Write a small host file. Returns (ok, detail). Via sophie-hostd for the
-    manual-choice files, falling back to nsenter while still privileged."""
+    """Write a small host file. Returns (ok, detail). Via sophie-hostd; only the
+    two manual-choice files are writable here."""
     key = _HOSTD_FILE_KEY.get(path)
-    if key is not None:
-        try:
-            res = hostd_client.wan_manual_write(**{key: text})
-            r = res.get(key, {})
-            return bool(r.get("ok", True)), r.get("detail", "")
-        except hostd_client.HostdUnavailable:
-            pass                                     # [hostd-fallback]
-    return _host_write_legacy(path, text)            # [hostd-fallback]
-
-
-def _host_write_legacy(path: str, text: str):        # [hostd-fallback]
+    if key is None:
+        return False, f"not a manual-choice file: {path}"
     try:
-        proc = subprocess.run(["nsenter", "-t", "1", "-m", "--", "tee", path],
-                              input=text, capture_output=True, text=True,
-                              timeout=10)
-        return proc.returncode == 0, proc.stderr.strip()
-    except Exception as exc:
-        return False, str(exc)
+        res = hostd_client.wan_manual_write(**{key: text})
+        r = res.get(key, {})
+        return bool(r.get("ok", True)), r.get("detail", "")
+    except hostd_client.HostdUnavailable as exc:
+        return False, f"sophie-hostd unavailable: {exc}"
 
 
 def _host_remove(path: str):
@@ -2244,28 +2165,18 @@ def _host_remove(path: str):
     files at once. Faithful enough: callers either remove both together, or are
     aborting a selection (hub switch failed), where also clearing the stale
     informational fallback is harmless as the system returns to automatic."""
-    if path in _HOSTD_FILE_KEY:
-        try:
-            ok = hostd_client.wan_manual_delete()
-            return ok, ""
-        except hostd_client.HostdUnavailable:
-            pass                                     # [hostd-fallback]
-    return _host_remove_legacy(path)                 # [hostd-fallback]
-
-
-def _host_remove_legacy(path: str):                  # [hostd-fallback]
+    if path not in _HOSTD_FILE_KEY:
+        return False, f"not a manual-choice file: {path}"
     try:
-        proc = subprocess.run(["nsenter", "-t", "1", "-m", "--", "rm", "-f", path],
-                              capture_output=True, text=True, timeout=10)
-        return proc.returncode == 0, proc.stderr.strip()
-    except Exception as exc:
-        return False, str(exc)
+        return bool(hostd_client.wan_manual_delete()), ""
+    except hostd_client.HostdUnavailable as exc:
+        return False, f"sophie-hostd unavailable: {exc}"
 
 
 def read_manual_choice():
     """
     The deliberate uplink choice and any recorded fallback, as the UI needs
-    them, via sophie-hostd (nsenter fallback). Read on every status poll.
+    them, via sophie-hostd. Read on every status poll.
 
     Shapes: choice is "<role> <epoch>"; fallback is "<wanted> <got> <epoch>",
     written by wan_scan.sh when a choice could not be honoured.
@@ -2276,9 +2187,7 @@ def read_manual_choice():
         choice_raw = m.get("choice") or ""
         fallback_raw = m.get("fallback") or ""
     except hostd_client.HostdUnavailable:
-        choice_raw, fallback_raw = _read_manual_raw_legacy()   # [hostd-fallback]
-        if choice_raw is None:
-            return blank
+        return blank
     except Exception as exc:
         print(f"WARNING: could not read the manual uplink choice: {exc}")
         return blank
@@ -2300,26 +2209,6 @@ def read_manual_choice():
         except ValueError:
             pass
     return result
-
-
-def _read_manual_raw_legacy():                       # [hostd-fallback]
-    """(choice_raw, fallback_raw) from the host via nsenter, or (None, None)."""
-    try:
-        proc = subprocess.run(
-            # "|| true" on both: an absent file is the normal case; without it
-            # cat's non-zero exit becomes the shell's and a missing fallback
-            # file read as "no choice". Caught 2026-10-26 by the plumbing test.
-            ["nsenter", "-t", "1", "-m", "--", "sh", "-c",
-             f"cat {MANUAL_CHOICE_FILE} 2>/dev/null || true; echo '|'; "
-             f"cat {MANUAL_FALLBACK_FILE} 2>/dev/null || true"],
-            capture_output=True, text=True, timeout=10)
-        if proc.returncode != 0:
-            return None, None
-        choice_raw, _, fallback_raw = proc.stdout.partition("|")
-        return choice_raw, fallback_raw
-    except Exception as exc:
-        print(f"WARNING: could not read the manual uplink choice: {exc}")
-        return None, None
 
 
 class InternetSelectData(BaseModel):
@@ -2850,25 +2739,10 @@ def get_watcher_logs(lines: int = 200) -> dict:
 
 # --- Host firewall status (see plan_firewall.md and firewall/README.md) -------
 # The SOPHIE-IN / SOPHIE-FWD chains live in the host's network namespace and
-# this image carries no iptables binary. The status is fetched from sophie-hostd
-# (/api/firewall, read-only) and parsed here; the legacy nsenter path below is
-# the fallback while the webserver is still privileged. Read-only: -S and -L.
+# this image carries no iptables binary, so the raw status is fetched from
+# sophie-hostd (/api/firewall, read-only) and parsed here. Read-only: -S and -L.
 
 FIREWALL_TRUSTED = ["lo", "br0", "docker0", "br-+"]
-
-
-def _host_iptables(binary: str, *args: str):
-    """Run one of the host's iptables binaries. Returns (ok, output)."""
-    try:
-        result = subprocess.run(
-            ['nsenter', '-t', '1', '-m', '-n', '--', f'/usr/sbin/{binary}', *args],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return True, result.stdout.strip()
-        return False, result.stderr.strip()
-    except Exception as e:
-        return False, str(e)
 
 
 def _parse_chain_counters(out):
@@ -2939,21 +2813,6 @@ def _family_from_hostd(fam):
     return _firewall_family_parse(fam.get("spec", {}), fam.get("counts", {}))
 
 
-def _firewall_family(binary: str) -> dict:           # [hostd-fallback]
-    """Legacy per-call path: gather raw output via nsenter, then parse."""
-    spec, counts = {}, {}
-    ok, spec['INPUT'] = _host_iptables(binary, '-S', 'INPUT')
-    if not ok:
-        return {"reachable": False, "errors": [spec['INPUT']], "healthy": False}
-    for chain in ('FORWARD', 'DOCKER-USER'):
-        ok, out = _host_iptables(binary, '-S', chain)
-        spec[chain] = out if ok else None
-    for chain in ('SOPHIE-IN', 'SOPHIE-FWD'):
-        ok, out = _host_iptables(binary, '-L', chain, '-vnx')
-        counts[chain] = out if ok else None
-    return _firewall_family_parse(spec, counts)
-
-
 # ---------------------------------------------------------------------------
 # Host health -> MQTT, through the watcher's existing alert machinery
 # ---------------------------------------------------------------------------
@@ -3013,8 +2872,8 @@ def _health_containers():
         states = {c["name"]: (c.get("state", ""), c.get("health", ""),
                               c.get("started", "")) for c in conts}
         return _health_count(states)
-    except hostd_client.HostdUnavailable:
-        return _health_containers_legacy()           # [hostd-fallback]
+    except hostd_client.HostdUnavailable as exc:
+        return None, None, None, [f"sophie-hostd unavailable: {exc}"]
 
 
 def _health_count(states):
@@ -3049,45 +2908,14 @@ def _health_count(states):
     return len(unhealthy), len(down), restarts, notes
 
 
-def _health_containers_legacy():                     # [hostd-fallback]
-    try:
-        import docker as docker_sdk
-        client = docker_sdk.from_env()
-    except Exception as exc:
-        return None, None, None, [f"docker socket unavailable: {exc}"]
-    states = {}
-    for name in HEALTH_EXPECTED:
-        try:
-            s = client.containers.get(name).attrs.get("State", {})
-        except Exception:
-            continue                                 # absent -> counted down by _health_count
-        states[name] = (s.get("Status", ""),
-                        (s.get("Health") or {}).get("Status", ""),
-                        s.get("StartedAt", ""))
-    return _health_count(states)
-
-
 def _health_units():
-    """(failed_count, names). Unit states via sophie-hostd, nsenter fallback."""
+    """(failed_count, names). Unit states via sophie-hostd."""
     try:
         states = hostd_client.units(list(HEALTH_UNITS))
         bad = [u for u in HEALTH_UNITS if states.get(u) != "active"]
         return len(bad), bad
-    except hostd_client.HostdUnavailable:
-        return _health_units_legacy()                # [hostd-fallback]
-
-
-def _health_units_legacy():                          # [hostd-fallback]
-    try:
-        proc = subprocess.run(
-            ["nsenter", "-t", "1", "-m", "-n", "--", "systemctl", "is-active",
-             *HEALTH_UNITS],
-            capture_output=True, text=True, timeout=20)
-        states = proc.stdout.split()
-        bad = [u for u, st in zip(HEALTH_UNITS, states) if st != "active"]
-        return len(bad), bad
-    except Exception as exc:
-        print(f"WARNING: could not read unit states: {exc}")
+    except hostd_client.HostdUnavailable as exc:
+        print(f"WARNING: sophie-hostd unavailable, cannot read unit states: {exc}")
         return 0, []
 
 
@@ -3160,9 +2988,10 @@ def get_firewall_status() -> dict:
             raw = hostd_client.firewall_raw()
             families = {"ipv4": _family_from_hostd(raw.get("v4", {})),
                         "ipv6": _family_from_hostd(raw.get("v6", {}))}
-        except hostd_client.HostdUnavailable:
-            families = {"ipv4": _firewall_family('iptables'),       # [hostd-fallback]
-                        "ipv6": _firewall_family('ip6tables')}      # [hostd-fallback]
+        except hostd_client.HostdUnavailable as exc:
+            unreachable = {"reachable": False, "errors": [f"sophie-hostd unavailable: {exc}"],
+                           "healthy": False}
+            families = {"ipv4": dict(unreachable), "ipv6": dict(unreachable)}
         healthy = all(f.get("healthy") for f in families.values())
         inbound_open = [name for name, f in families.items() if not f.get("input_hooked")]
 
@@ -3354,170 +3183,36 @@ _COMPOSE_FILE = os.environ.get(
     '/home/tblank/code/tblank1024/rv/docker/docker-compose.yml'
 )
 
-def _nsenter_cmd(host_cmd: list) -> list:
-    """Wrap a command in nsenter so it executes in the host's namespaces."""
-    return ['nsenter', '-t', '1', '-m', '-u', '-i', '-n', '--'] + host_cmd
-
-def _flush_journal_to_disk() -> None:
-    """Copy the volatile (RAM-backed) journal to persistent disk storage.
-
-    journald runs with Storage=volatile (see ../../sdcard-writes/), so
-    system + container logs normally live only in tmpfs and are lost on
-    reboot. Called before any deliberate restart/reboot from the dashboard
-    so recent history survives for post-mortem debugging. Best-effort —
-    never raises, so a flush failure can't block the actual restart/reboot.
-    """
-    try:
-        subprocess.run(_nsenter_cmd(['journalctl', '--sync']),
-                        capture_output=True, text=True, timeout=5)
-        subprocess.run(_nsenter_cmd(['sh', '-c',
-            'rm -rf /var/log/journal-last-flush && '
-            'mkdir -p /var/log/journal-last-flush && '
-            'cp -a /run/log/journal/. /var/log/journal-last-flush/']),
-            capture_output=True, text=True, timeout=10)
-    except Exception as e:
-        print(f"journal flush before restart/reboot failed (non-fatal): {e}")
-
 @app.post("/api/system/reboot")
 def system_reboot() -> dict:
-    """Reboot the host Raspberry Pi.
-
-    Tries three methods in order:
-    1. libc reboot() syscall — requires pid: host + privileged: true
-    2. nsenter into host namespaces to run systemctl reboot
-    3. /proc/sysrq-trigger — works from any privileged container
-
-    Flushes the volatile journal to disk first (see
-    _flush_journal_to_disk) since a reboot wipes tmpfs, and the sysrq
-    fallback below bypasses systemd shutdown hooks entirely.
-    """
-    # sophie-hostd first: it flushes the journal on the host and runs
-    # `systemctl reboot` as root. The three legacy methods below are the
-    # fallback while the webserver is still privileged.
+    """Reboot the host Raspberry Pi via sophie-hostd, which flushes the volatile
+    journal to disk first (a reboot wipes tmpfs) and then runs `systemctl
+    reboot` as root. The webserver is de-privileged and has no way to reboot the
+    host itself; if hostd is unreachable, reboot from a shell instead."""
     try:
         ok, message = hostd_client.reboot()
-        if ok:
-            return {"success": True, "message": f"Reboot via sophie-hostd: {message}"}
-    except hostd_client.HostdUnavailable:
-        pass                                         # [hostd-fallback]
-
-    errors = []                                      # [hostd-fallback begins]
-    _flush_journal_to_disk()
-
-    # Method 1: libc reboot() syscall directly
-    # Only works when pid: host is set so we are in the initial PID namespace.
-    try:
-        import ctypes, ctypes.util, struct
-        libc = ctypes.CDLL(ctypes.util.find_library('c'), use_errno=True)
-        m1 = struct.unpack('i', struct.pack('I', 0xfee1dead))[0]
-        ret = libc.reboot(ctypes.c_int(m1), ctypes.c_int(0x28121969), ctypes.c_int(0x01234567), None)
-        if ret == 0:
-            return {"success": True, "message": "Reboot via libc syscall initiated"}
-        errno_val = ctypes.get_errno()
-        errors.append(f"libc.reboot returned {ret}, errno={errno_val} ({os.strerror(errno_val)})")
-    except Exception as e:
-        errors.append(f"libc.reboot exception: {e}")
-
-    # Method 2: nsenter — requires pid: host so PID 1 == host systemd
-    try:
-        result = subprocess.run(
-            ['nsenter', '-t', '1', '-m', '-u', '-i', '-n', '--', 'systemctl', 'reboot'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return {"success": True, "message": "Reboot via nsenter/systemctl initiated"}
-        errors.append(f"nsenter/systemctl rc={result.returncode} stderr={result.stderr.strip()}")
-    except Exception as e:
-        errors.append(f"nsenter exception: {e}")
-
-    # Method 3: SysRq trigger — works from any privileged container, bypasses PID namespace
-    try:
-        # Enable sysrq in case it is disabled
-        with open('/proc/sys/kernel/sysrq', 'w') as f:
-            f.write('1')
-        subprocess.run(['sync'], check=False)
-        import time; time.sleep(0.3)
-        with open('/proc/sysrq-trigger', 'w') as f:
-            f.write('b')
-        return {"success": True, "message": "Reboot via sysrq initiated"}
-    except Exception as e:
-        errors.append(f"sysrq exception: {e}")
-
-    return {"success": False, "message": "All reboot methods failed", "errors": errors}
+    except hostd_client.HostdUnavailable as exc:
+        return {"success": False,
+                "message": f"sophie-hostd unavailable, cannot reboot: {exc}. "
+                           "From a shell: sudo systemctl reboot"}
+    return {"success": ok, "message": f"Reboot via sophie-hostd: {message}"}
 
 @app.post("/api/system/restart-containers")
 def system_restart_containers() -> dict:
-    """Restart all containers in the compose project via the Docker socket.
-
-    Flushes the volatile journal to disk first (see
-    _flush_journal_to_disk) for consistency with the Reboot button. Not
-    load-bearing here since this only restarts containers, not the host —
-    the host's RAM-backed journal is unaffected either way.
-    """
+    """Restart all containers in the compose project through sophie-hostd, which
+    holds the Docker socket on the host. Detached so the HTTP response returns
+    before the webserver itself is restarted as part of 'all' -- hostd is a
+    separate process, so killing the webserver container does not interrupt it."""
     def _worker():
         import time
         time.sleep(0.5)                  # let the HTTP response return first
-        _flush_journal_to_disk()         # best-effort; no-op once de-privileged
-        # sophie-hostd restarts the whole project from the host. Unlike the
-        # legacy in-process path, it need not restart the webserver last -- it
-        # is a separate process, so killing the webserver container does not
-        # interrupt it.
         try:
             hostd_client.restart("all")
-            return
-        except hostd_client.HostdUnavailable:
-            pass                         # [hostd-fallback]
-        _restart_containers_legacy()     # [hostd-fallback]
+        except hostd_client.HostdUnavailable as exc:
+            print(f"WARNING: sophie-hostd unavailable, cannot restart containers: {exc}")
 
     threading.Thread(target=_worker, daemon=True).start()
     return {"success": True, "message": "Containers restarting"}
-
-
-def _restart_containers_legacy():        # [hostd-fallback]
-    """Restart the project via the Docker socket, webserver last (its own
-    restart kills this thread), for containers with and without compose labels."""
-    try:
-        import docker as docker_sdk
-        import yaml
-        client = docker_sdk.DockerClient(base_url='unix://var/run/docker.sock')
-        project = os.path.basename(os.path.dirname(_COMPOSE_FILE))
-        compose_names = set()
-        try:
-            with open(_COMPOSE_FILE) as f:
-                compose_data = yaml.safe_load(f)
-            for svc in (compose_data or {}).get('services', {}).values():
-                cn = svc.get('container_name')
-                if cn:
-                    compose_names.add(cn)
-        except Exception:
-            pass
-        labeled = client.containers.list(
-            all=True,
-            filters={'label': f'com.docker.compose.project={project}'})
-        labeled_names = {c.name for c in labeled}
-        unlabeled = []
-        for name in compose_names - labeled_names:
-            try:
-                unlabeled.append(client.containers.get(name))
-            except docker_sdk.errors.NotFound:
-                pass
-        all_containers = labeled + unlabeled
-
-        def _is_self(c):
-            return (c.labels or {}).get('com.docker.compose.service') == 'webserver'
-
-        others = [c for c in all_containers if not _is_self(c)]
-        self_container = [c for c in all_containers if _is_self(c)]
-        for c in others + self_container:
-            try:
-                if c.status == 'running':
-                    c.restart(timeout=10)
-                else:
-                    c.start()
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"WARNING: legacy container restart failed: {e}")
 
 # ---------------------------------------------------------------------------
 # Tire service control endpoints
@@ -3530,24 +3225,9 @@ def tire_service_status() -> dict:
         conts = hostd_client.containers()
         row = next((c for c in conts if c["name"] == "tirelinc"), None)
         return {"success": True, "running": bool(row and row.get("state") == "running")}
-    except hostd_client.HostdUnavailable:
-        return _tire_service_status_legacy()         # [hostd-fallback]
-
-
-def _tire_service_status_legacy() -> dict:           # [hostd-fallback]
-    try:
-        import docker as docker_sdk
-        client = docker_sdk.DockerClient(base_url='unix://var/run/docker.sock')
-        try:
-            container = client.containers.get('tirelinc')
-            running = container.status == 'running'
-            return {"success": True, "running": running}
-        except docker_sdk.errors.NotFound:
-            return {"success": True, "running": False}
-        finally:
-            client.close()
-    except Exception as e:
-        return {"success": False, "running": False, "message": str(e)}
+    except hostd_client.HostdUnavailable as exc:
+        return {"success": False, "running": False,
+                "message": f"sophie-hostd unavailable: {exc}"}
 
 @app.post("/api/tire/service")
 def tire_service_control(data: Annotated[dict, Body()]) -> dict:
@@ -3561,27 +3241,8 @@ def tire_service_control(data: Annotated[dict, Body()]) -> dict:
             return {"success": True, "running": action == 'start'}
         return {"success": False, "message": detail.get("error") or detail.get("detail")
                 or "tirelinc action failed"}
-    except hostd_client.HostdUnavailable:
-        return _tire_service_control_legacy(action)  # [hostd-fallback]
-
-
-def _tire_service_control_legacy(action) -> dict:    # [hostd-fallback]
-    try:
-        import docker as docker_sdk
-        client = docker_sdk.DockerClient(base_url='unix://var/run/docker.sock')
-        try:
-            container = client.containers.get('tirelinc')
-            if action == 'start':
-                container.start()
-            else:
-                container.stop()
-            return {"success": True, "running": action == 'start'}
-        except docker_sdk.errors.NotFound:
-            return {"success": False, "message": "tirelinc container not found"}
-        finally:
-            client.close()
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    except hostd_client.HostdUnavailable as exc:
+        return {"success": False, "message": f"sophie-hostd unavailable: {exc}"}
 
 @app.post("/api/tire/silence")
 def tire_silence_alarm() -> dict:

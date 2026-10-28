@@ -337,9 +337,11 @@ services:
     # on 127.0.0.1 (rv/sophie-hostd; cutover in CUTOVER.md, verified across a
     # reboot 2026-10-28). The container keeps network_mode: host (loopback still
     # reaches the host daemons; it reads host NICs) and its GPIO device -- all it
-    # needs now. Still privileged-only and NOT yet moved: the modem rebind + MTP
-    # kill in prepare_cellular_modem() (the "cellular test" button), so
-    # /sys/bus/usb below stays for now -- step 1 of the sophie-hostd plan.
+    # needs now. The last privileged path -- the modem rebind + MTP kill in
+    # prepare_cellular_modem() -- moved to sophie-hostd 2026-10-28, so
+    # /sys/bus/usb is no longer mounted and the webserver has NO route to host
+    # root left. It still reads USB via /dev/bus/usb (lsusb) and ModemManager
+    # via D-Bus, neither of which needs privilege.
     # No cap_add: the webserver needs no extra capabilities now that it is
     # de-privileged. It previously had privileged:true (every capability); when
     # that came off nothing had to replace it. If a capability is ever proven
@@ -382,11 +384,10 @@ services:
       # original reason (a re-enumerated device is only visible through a live
       # bind of devtmpfs) no longer applies, because the jobs that needed
       # hotplugged devices were delegated to host daemons: usbhub-api owns hub
-      # power, wifi-api-rp5 owns the Alfa, and the modem is handled through
-      # /sys/bus/usb below. Restore it only with a specific device in mind, and
+      # power, wifi-api-rp5 owns the Alfa, and the modem rebind now goes through
+      # sophie-hostd. Restore it only with a specific device in mind, and
       # read-only if at all.
       - /sys/class/net:/sys/class/net:ro
-      - /sys/bus/usb:/sys/bus/usb:rw
       - /sys/devices:/sys/devices:ro
       - /dev/bus/usb:/dev/bus/usb:rw
       - /run/dbus:/run/dbus:rw

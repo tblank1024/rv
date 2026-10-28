@@ -68,6 +68,13 @@ WAN_SCAN = "/usr/local/sbin/wan_scan.sh"
 WAN_SCAN_UNIT = "wan-scan-ondemand"
 WAN_SCAN_RESULT = "/run/wan-scan-result"
 
+# Cellular modem prep (the privileged half of the dashboard's "cellular test").
+# Constrained: only a device whose idVendor is a known cellular vendor is
+# rebound, and only these fixed process names are killed.
+CELLULAR_VENDOR_IDS = {"12d1", "19d2", "1e0e", "1bbb"}
+MTP_PROCS = ("gvfs-mtp-volume-monitor", "mtp-probe", "libmtp")
+USB_DRIVER_DIR = "/sys/bus/usb/drivers/usb"
+
 
 def _run(cmd, **kw):
     """subprocess.run with text capture and a default timeout. Never raises."""
@@ -262,6 +269,54 @@ def op_restart(target):
     return True, {"restarted": restarted, "skipped": skipped, "error": None}
 
 
+def _find_modem_usb_path():
+    """The modem's bus-port path (e.g. '1-1.1') by vendor id, or None. The path
+    shifts across re-enumeration, so it is discovered, never hardcoded."""
+    root = "/sys/bus/usb/devices"
+    try:
+        for entry in os.listdir(root):
+            try:
+                with open(os.path.join(root, entry, "idVendor")) as fh:
+                    if fh.read().strip().lower() in CELLULAR_VENDOR_IDS:
+                        return entry
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return None
+
+
+def op_modem_prepare():
+    """Kill MTP processes and unbind/rebind the cellular modem's USB device --
+    the privileged half of the webserver's prepare_cellular_modem(). The
+    webserver still does the unprivileged detect/wait/ModemManager checks."""
+    mtp_killed = False
+    for name in MTP_PROCS:
+        rc, _, _ = _run(["/usr/bin/pkill", "-f", name], timeout=5)
+        if rc == 0:
+            mtp_killed = True
+    if mtp_killed:
+        time.sleep(2)
+
+    usb_path = _find_modem_usb_path()
+    if not usb_path:
+        return {"ok": False, "mtp_killed": mtp_killed, "rescanned": False,
+                "detail": "no cellular modem found on the USB bus"}
+    try:
+        if os.path.exists(f"{USB_DRIVER_DIR}/{usb_path}"):
+            with open(f"{USB_DRIVER_DIR}/unbind", "w") as fh:
+                fh.write(usb_path)
+            time.sleep(1)
+        with open(f"{USB_DRIVER_DIR}/bind", "w") as fh:
+            fh.write(usb_path)
+        time.sleep(2)
+        return {"ok": True, "mtp_killed": mtp_killed, "rescanned": True,
+                "usb_path": usb_path}
+    except Exception as exc:
+        return {"ok": False, "mtp_killed": mtp_killed, "rescanned": False,
+                "usb_path": usb_path, "detail": str(exc)}
+
+
 def _flush_journal():
     """Best-effort: persist the RAM-backed journal before a reboot."""
     _run(["/usr/bin/journalctl", "--sync"], timeout=5)
@@ -399,6 +454,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "name and action required"})
                 ok, detail = op_container_action(name, action)
                 return self._send(200 if ok else 400, {"ok": ok, **detail})
+
+            if method == "POST" and path == "/api/modem/prepare":
+                return self._send(200, op_modem_prepare())   # carries its own ok
 
             if method == "POST" and path == "/api/reboot":
                 body = self._json_body()

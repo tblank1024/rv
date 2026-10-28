@@ -8,6 +8,7 @@ import os
 import time
 import subprocess
 import logging
+import hostd_client
 from typing import List, Dict, Optional, Tuple
 
 # Configure logging
@@ -21,109 +22,6 @@ class USBModemManager:
         self.cellular_vendor_ids = ["12d1", "19d2", "1e0e", "1bbb"]  # Common cellular modem vendor IDs
         self.mtp_processes = ["gvfs-mtp-volume-monitor", "mtp-probe", "libmtp"]
 
-    def find_modem_usb_path(self) -> Optional[str]:
-        """Locate the cellular modem's sysfs bus-port path (e.g. '3-1.1') by vendor ID.
-
-        Bus-port strings shift across reboots/re-enumeration, so this is resolved
-        dynamically rather than hardcoded.
-        """
-        sysfs_root = "/sys/bus/usb/devices"
-        try:
-            for entry in os.listdir(sysfs_root):
-                vendor_path = os.path.join(sysfs_root, entry, "idVendor")
-                if not os.path.isfile(vendor_path):
-                    continue
-                try:
-                    with open(vendor_path, "r") as f:
-                        vendor_id = f.read().strip().lower()
-                except OSError:
-                    continue
-                if vendor_id in self.cellular_vendor_ids:
-                    logger.info(f"Found cellular modem USB path: {entry} (vendor {vendor_id})")
-                    return entry
-        except Exception as e:
-            logger.warning(f"Error scanning {sysfs_root} for cellular modem: {e}")
-        return None
-        
-    def kill_mtp_processes(self) -> bool:
-        """Kill MTP-related processes that might interfere with modem detection."""
-        logger.info("Stopping MTP processes that might interfere with cellular modem...")
-        killed_any = False
-        
-        for process_name in self.mtp_processes:
-            try:
-                # Kill processes by name
-                result = subprocess.run(
-                    ["pkill", "-f", process_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                if result.returncode == 0:
-                    logger.info(f"Killed MTP process: {process_name}")
-                    killed_any = True
-                else:
-                    logger.debug(f"No {process_name} processes found")
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Timeout killing {process_name} processes")
-            except Exception as e:
-                logger.warning(f"Error killing {process_name}: {e}")
-        
-        # Try to stop systemd user services
-        try:
-            subprocess.run(
-                ["systemctl", "--user", "stop", "gvfs-mtp-volume-monitor"],
-                capture_output=True,
-                timeout=5
-            )
-            logger.info("Stopped gvfs-mtp-volume-monitor user service")
-            killed_any = True
-        except Exception as e:
-            logger.debug(f"Could not stop gvfs-mtp-volume-monitor service: {e}")
-        
-        if killed_any:
-            time.sleep(2)  # Allow processes to fully terminate
-            
-        return killed_any
-    
-    def usb_rescan(self, usb_path: Optional[str] = None) -> bool:
-        """Perform USB device rescan to force re-enumeration."""
-        if usb_path is None:
-            usb_path = self.find_modem_usb_path()
-            if usb_path is None:
-                logger.warning("Could not locate cellular modem USB path for rescan; skipping")
-                return False
-
-        logger.info(f"Performing USB rescan for device path: {usb_path}")
-        
-        try:
-            # Unbind the USB device
-            unbind_path = f"/sys/bus/usb/drivers/usb/{usb_path}"
-            if os.path.exists(unbind_path):
-                with open("/sys/bus/usb/drivers/usb/unbind", "w") as f:
-                    f.write(usb_path)
-                logger.info(f"Unbound USB device: {usb_path}")
-                time.sleep(1)
-            
-            # Rebind the USB device
-            with open("/sys/bus/usb/drivers/usb/bind", "w") as f:
-                f.write(usb_path)
-            logger.info(f"Rebound USB device: {usb_path}")
-            time.sleep(2)
-            
-            return True
-            
-        except PermissionError as e:
-            logger.error(f"Permission denied for USB rescan: {e}")
-            return False
-        except FileNotFoundError as e:
-            logger.warning(f"USB device path not found: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"USB rescan failed: {e}")
-            return False
-    
     def detect_cellular_modems(self) -> List[Dict]:
         """Detect cellular modems connected via USB."""
         modems = []
@@ -227,21 +125,25 @@ class USBModemManager:
         Returns (success, message).
         """
         logger.info("Starting cellular modem preparation sequence...")
-        
-        # Step 1: Kill MTP processes
-        mtp_killed = self.kill_mtp_processes()
         message_parts = []
-        
-        if mtp_killed:
+
+        # Steps 1-2 (privileged: kill MTP processes, unbind/rebind the modem's
+        # USB device) run on the host via sophie-hostd. The webserver is
+        # de-privileged and no longer has pid:host or write access to
+        # /sys/bus/usb, so it cannot do these itself.
+        try:
+            res = hostd_client.modem_prepare()
+        except hostd_client.HostdUnavailable as exc:
+            return False, f"sophie-hostd unavailable, cannot prep modem: {exc}"
+        if res.get("mtp_killed"):
             message_parts.append("MTP processes stopped")
-        
-        # Step 2: USB rescan
-        rescan_success = self.usb_rescan(usb_path)
+        rescan_success = bool(res.get("rescanned"))
         if rescan_success:
             message_parts.append("USB rescan completed")
         else:
-            message_parts.append("USB rescan failed")
-        
+            message_parts.append("USB rescan failed"
+                                 + (f": {res['detail']}" if res.get("detail") else ""))
+
         # Step 3: Detect modems
         modems = self.detect_cellular_modems()
         if modems:

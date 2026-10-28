@@ -21,7 +21,7 @@ access / Tailscale) is dropped by owner decision. **The one open high-priority i
 | 4 | Turn on unattended security upgrades | **Done** | Installed, security-only, no auto-reboot; 60-package security backlog applied. |
 | 5 | Bind the dashboard `:8000` off the uplink | **Decided: leave on `0.0.0.0`** | Firewall already confines it and now self-alerts; the clean fix is a two-socket refactor with a `br0` startup race. Same trade as mosquitto 1883. |
 | 6 | mDNS `allow-interfaces=br0` | **Done** | avahi was announcing on both uplinks; now br0 only. |
-| 7 | `sophie-hostd` on `127.0.0.1` | **DONE 2026-10-28** — webserver de-privileged, survived reboot | Removed `privileged`/`pid:host`/`docker.sock`; host ops go through sophie-hostd. Only leftover: step 1 (modem→usbhub-api) for the cellular-test button. |
+| 7 | `sophie-hostd` on `127.0.0.1` | **DONE 2026-10-28** — webserver fully de-privileged | Removed `privileged`/`pid:host`/`docker.sock` and `/sys/bus/usb`; ALL host ops (incl. modem rebind) go through sophie-hostd. Fallback code deleted. No privileged path left. |
 
 Blocked on being somewhere else, not on effort:
 
@@ -562,15 +562,25 @@ publishing, 9/9 containers up, alarm state unchanged.
       still privileged). A dashboard bug is now container-confined, not host root.
       Dead-code cleanup (removing the `[hostd-fallback]` branches from `server.py`) was left as
       an optional later commit — the dual-path is the stable end state.
-- [ ] **Step 1 (now the only remaining piece): hand the modem's `/sys/bus/usb` bind/unbind to
-      `usbhub-api`.** This is the one privileged path NOT moved, so `/sys/bus/usb:rw` is still
-      mounted on the webserver (harmless — writing it needs the privilege the container no
-      longer has). Consequence today: the **"cellular test" button** (`prepare_cellular_modem()`)
-      fails, because it also kills host **MTP processes** (needs `pid: host`) and rebinds the
-      modem. Normal cellular *use* is unaffected (that goes through the socket/Kasa path). Move
-      both the bind/unbind and the MTP kill to `usbhub-api` (already root, already owns USB),
-      then drop the `/sys/bus/usb:rw` mount. After that the webserver has no privileged path
-      left at all.
+- [x] ~~**Step 1: hand the modem's `/sys/bus/usb` bind/unbind to a host daemon.**~~ **Done
+      2026-10-28.** Put it in **`sophie-hostd`** rather than `usbhub-api` (deviation from the
+      original note): the general host-root broker is the right home for "kill some host
+      processes + rebind a USB device", and it keeps `usbhub-api` focused on hub power. New
+      constrained `POST /api/modem/prepare` (only rebinds a device whose idVendor is a known
+      cellular vendor, only kills the fixed MTP process names); `usb_modem_manager` calls it
+      and its three privileged methods (`find_modem_usb_path`, `kill_mtp_processes`,
+      `usb_rescan`) are deleted. **`/sys/bus/usb:rw` removed from the webserver.** With that,
+      **the webserver has NO privileged path left** — `docker inspect` shows `Privileged=false`,
+      `PidMode=""`, mounts are only `/dev/bus/usb` + read-only `/sys` binds. Verified: the
+      "cellular test" path runs through hostd from the de-privileged container (returns "no
+      modem found" cleanly, no modem on the bus to rebind).
+- [x] **Step 2: delete the dead `[hostd-fallback]` code from `server.py`.** Done 2026-10-28.
+      Every `_*_legacy` function and `except HostdUnavailable -> legacy()` branch removed; each
+      wrapper now returns a clean error when hostd is unreachable instead of touching the host.
+      `_flush_journal_to_disk`/`_nsenter_cmd` removed (orphaned). Audited: zero
+      `nsenter`/`docker.sock`/`docker_sdk` references remain. Graceful degradation verified by
+      stopping hostd — firewall reports unreachable, auth returns None, reboot returns a shell
+      hint, dashboard stays up, no crashes.
 
 ### Plan: `sophie-hostd`
 

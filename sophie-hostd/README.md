@@ -51,6 +51,7 @@ Actions:
 | `POST /api/wan-scan` | `{on_loss?}` | `systemd-run` a detached `wan_scan.sh` |
 | `POST /api/containers/restart` | `{target: "all"\|"unhealthy"\|"<name>"}` | `docker restart`, scoped to the compose project |
 | `POST /api/reboot` | `{confirm: true, dry_run?}` | flush the journal, then `systemctl reboot` |
+| `POST /api/modem/prepare` | — | kill MTP processes, then unbind/rebind the cellular modem's USB device (only a device with a known cellular vendor id) |
 
 ### The allow-list is the security boundary
 
@@ -81,10 +82,10 @@ state — it holds none and acts only on request.
 
 ## Status
 
-As of 2026-10-28 the cutover is **done**: the webserver is de-privileged
-(`Privileged=false`, no `pid: host`, no docker.sock) and drives all host operations
-through this daemon, verified across a reboot. The one privileged path not yet moved
-is the modem rebind + MTP kill in `prepare_cellular_modem()` (the "cellular test"
-button) -- step 1 in `rv/TODO.md`, which hands it to `usbhub-api`. The optional
-dead-code cleanup (removing the `[hostd-fallback]` branches in `server.py`) is also
-still open.
+As of 2026-10-28 the cutover is **complete**: the webserver is fully de-privileged
+(`Privileged=false`, no `pid: host`, no docker.sock, no `/sys/bus/usb`) and drives
+**every** host operation through this daemon -- including the modem rebind + MTP kill
+(`POST /api/modem/prepare`), which was the last privileged path. The dashboard's
+fallback code has been removed, so hostd is now the only path; if it is unreachable
+the affected endpoints return a clean error. Verified across a reboot and with hostd
+stopped.
