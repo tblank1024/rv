@@ -25,10 +25,10 @@ HOSTD="http://127.0.0.1:12348"
 DASH="http://127.0.0.1:8000"
 WS="webserver"
 
-# Markers the server.py code work must carry, so step 4 never drops privilege
-# before the dashboard can actually use hostd. These are grep'd, not written.
+# Marker the step-3 code must carry, so step 4 never drops privilege before the
+# dashboard can actually use hostd. Grep'd, not written. (Step 5 is an optional
+# cosmetic cleanup with no marker -- see step5 below.)
 DUALPATH_MARK="sophie-hostd dual-path"      # present once step-3 code is committed
-CLEANUP_MARK="sophie-hostd cutover complete" # present once step-5 code is committed
 
 c_red=$'\e[31m'; c_grn=$'\e[32m'; c_yel=$'\e[33m'; c_dim=$'\e[2m'; c_off=$'\e[0m'
 say()  { printf '%s\n' "$*"; }
@@ -45,6 +45,17 @@ set_state() { mkdir -p "$STATE_DIR"; echo "$1" >"$STATE"; }
 v_hostd() {
   curl -fs --max-time 8 "$HOSTD/api/health" >/dev/null 2>&1 \
     && ok "sophie-hostd answers on 127.0.0.1:12348" || { bad "sophie-hostd not answering"; return 1; }
+}
+v_hostd_fresh() {
+  # The dual-path server.py needs the enhanced daemon: /api/containers must
+  # carry per-container "state" (not the old {name,status}). A stale daemon
+  # would make the health reporter read every container as down.
+  if curl -fs --max-time 10 "$HOSTD/api/containers" 2>/dev/null | grep -q '"state"'; then
+    ok "sophie-hostd is the enhanced build (/api/containers has state)"
+  else
+    bad "sophie-hostd is STALE -- reinstall it first: sudo sophie-hostd/setup_sophie_hostd.sh"
+    return 1
+  fi
 }
 v_ws_healthy() {
   local h; h=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$WS" 2>/dev/null)
@@ -143,6 +154,7 @@ step3() {   # dual-path the webserver (deploy committed code + verify)
     say "   verifies it; it does not write it. Stopping -- nothing changed."
     return 1
   fi
+  v_hostd && v_hostd_fresh || { bad "fix sophie-hostd before deploying the dual-path"; return 1; }
   rebuild_ws || { bad "rebuild failed"; return 1; }
   v_ws_healthy && v_dash && v_hostd && v_rvhealth || { bad "verify failed -- fix before step 4"; return 1; }
   v_containers_all_up
@@ -171,18 +183,20 @@ step4() {   # drop privileged / pid:host / docker.sock, verify, auto-rollback on
   fi
 }
 
-step5() {   # delete the dead nsenter/docker code (deploy committed cleanup + verify)
-  say "== Step 5: deploy the cleaned-up webserver (dead paths removed) =="
-  if ! grep -q "$CLEANUP_MARK" "$SERVER"; then
-    bad "server.py has no '$CLEANUP_MARK' marker."
-    say "   The step-5 CODE (remove the nsenter/docker fallbacks) must be committed"
-    say "   first. Stopping -- nothing changed. Step 4's state is unaffected."
-    return 1
-  fi
-  rebuild_ws || { bad "rebuild failed"; return 1; }
-  v_priv_dropped && v_ws_healthy && v_dash && v_rvhealth || { bad "verify failed"; return 1; }
-  v_containers_all_up
-  say "${c_grn}Step 5 done.${c_off} Fallback code is gone. Final step is a reboot test: sudo ./cutover.sh next"
+step5() {   # OPTIONAL: the nsenter/docker fallbacks are now dead code -- this step
+            # just acknowledges that and moves on. Physically deleting them is a
+            # cosmetic follow-up (see 'cleanup' below); it is NOT required and is
+            # deliberately not gating, because the fallbacks are harmless after
+            # de-privilege (they fail gracefully) and are a handy emergency path
+            # if you ever restore privilege to debug.
+  say "== Step 5: dead-code cleanup (OPTIONAL) =="
+  say "The webserver is de-privileged and running on hostd. The legacy"
+  say "nsenter/docker branches are now dead but harmless -- they only run if"
+  say "hostd is unreachable, and without privilege they fail cleanly."
+  say "Removing them from server.py is cosmetic and can be done anytime as an"
+  say "ordinary commit (search server.py for '[hostd-fallback]'). It is not"
+  say "needed for the cutover to be complete."
+  say "${c_grn}Nothing to deploy.${c_off} Final step is the reboot test: sudo ./cutover.sh next"
 }
 
 step6() {   # reboot test

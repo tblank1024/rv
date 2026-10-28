@@ -28,10 +28,9 @@ must already be committed:
   Mark that commit with a comment containing **`sophie-hostd dual-path`** — the
   script refuses step 3 until it sees that marker, so it can never drop privilege
   before the dashboard can actually use the daemon.
-- **Step 5 needs the cleanup change**: the `nsenter`/docker fallbacks removed.
-  Mark it with a comment containing **`sophie-hostd cutover complete`**.
-
-Steps 4 and 6 are fully mechanical and need no code.
+Steps 4, 5 and 6 need no code. (Step 5 is an **optional** cosmetic cleanup --
+the dual-path from step 3 is the stable end state; the now-dead fallbacks are
+harmless and can be removed later as an ordinary commit.)
 
 The endpoint map (which `server.py` call goes to which hostd endpoint) is in
 `README.md` and in `rv/TODO.md` → "Plan: sophie-hostd".
@@ -56,7 +55,7 @@ reboot.
 |---|---|---|
 | 3 | **Step 3** — rebuild+deploy the dual-path webserver; verify dashboard, hostd, and that `RVC/RV_Health` still carries `firewall_armed`. Privilege still ON. | Exercise reboot + restart from the dashboard by hand, then `next`. |
 | 4 | **Step 4** — comment `pid: host`, `privileged: true`, `docker.sock` in the **webserver block only**; recreate; verify privilege is gone **and** the firewall read still works. **Auto-rolls-back on any failure.** | Exercise reboot + restart again, then `next`. |
-| 5 | **Step 5** — rebuild+deploy the cleaned-up webserver; verify. | `next`. |
+| 5 | **Step 5** — OPTIONAL dead-code note; deploys nothing (the fallbacks are harmless after de-privilege). | `next`. |
 | 6 | **Step 6** — reboot. | After login: `sudo ./cutover.sh verify`. |
 
 After step 6's reboot, `verify` confirms the daemon came up before the webserver
