@@ -298,6 +298,11 @@ app.add_middleware(
 # through.
 AUTH_FILE = "/etc/rvdashboard/dashboard-auth.json"
 AUTH_COOKIE = "sophie_pin"
+
+# Returned by _auth_config() when the PIN store could not be read (sophie-hostd
+# unreachable). Distinct from None ("read it, no PIN set") so the gate can fail
+# CLOSED on "unknown" while still opening for a genuinely unconfigured box.
+_AUTH_UNAVAILABLE = object()
 AUTH_TTL = 30 * 24 * 3600          # a device stays trusted 30 days
 AUTH_RENEW_AFTER = 24 * 3600       # re-issue once a token is a day old
 PIN_MIN_DIGITS = 4
@@ -350,15 +355,21 @@ def _auth_parse(text):
 
 def _auth_config():
     """
-    The stored salt, PIN hash, signing secret and generation, or None if no
-    PIN has been set yet (or if sophie-hostd cannot be reached). Read from the
-    host via sophie-hostd.
+    The stored salt, PIN hash, signing secret and generation; None if no PIN
+    has been set yet; or _AUTH_UNAVAILABLE if sophie-hostd cannot be reached.
+
+    Those last two are DIFFERENT and must not be conflated: None means "read the
+    store, there is no PIN" (so the gate opens, or a fresh box would lock the
+    owner out of the page that sets the PIN); _AUTH_UNAVAILABLE means "could not
+    read the store", where the gate must fail CLOSED -- otherwise the seconds of
+    a cold boot before hostd is up would be an unauthenticated window on the
+    protected routes. Read from the host via sophie-hostd.
     """
     try:
         return _auth_parse(hostd_client.auth_read())
     except hostd_client.HostdUnavailable as exc:
         print(f"WARNING: sophie-hostd unavailable, cannot read auth config: {exc}")
-        return None
+        return _AUTH_UNAVAILABLE
 
 
 def _auth_config_write(config) -> bool:
@@ -443,8 +454,18 @@ def _clear_failures(address: str):
 
 
 def is_authenticated(request: Request):
-    """(authenticated, claims, config) for this request."""
+    """(authenticated, claims, config) for this request.
+
+    config is a dict (PIN set), None (no PIN set), or _AUTH_UNAVAILABLE (store
+    unreadable). The gate treats a non-None config as "gated", so the sentinel
+    fails CLOSED: not authenticated, and protected routes are refused."""
     config = _auth_config()
+    if config is _AUTH_UNAVAILABLE:
+        # Cannot read the PIN store (sophie-hostd down). Fail CLOSED -- do NOT
+        # open the gate -- so the protected routes stay locked during e.g. the
+        # first seconds of a cold boot before hostd is up. config is returned
+        # non-None so require_pin/enforce_pin challenge the request.
+        return False, None, config
     if config is None:
         # No PIN set: nothing is gated. Said plainly rather than failing
         # closed, because failing closed on a fresh install would lock the
@@ -514,7 +535,10 @@ def auth_status(request: Request) -> Response:
         "locked_out": remaining > 0,
         "retry_after": remaining,
         "expires_in": int(claims["exp"] - time.time()) if claims else None,
-        "can_set_pin": _is_rv_lan(_client_address(request)),
+        # Offer first-time setup only when the store is readable AND genuinely
+        # has no PIN -- never when it is unreadable (config is the sentinel),
+        # or a cold-boot window would invite a takeover attempt.
+        "can_set_pin": config is None and _is_rv_lan(_client_address(request)),
     })
     # "Renewed on use": a device that keeps visiting never has to re-enter the
     # PIN, while one that stops visiting falls out of trust on schedule.
@@ -533,7 +557,12 @@ def auth_setup(request: Request, data: Annotated[PinData, Body()]) -> Response:
     never had a PIN, whoever reached the dashboard first over a campground
     network could claim it -- and then hold the gate against the owner.
     """
-    if _auth_config() is not None:
+    cfg = _auth_config()
+    if cfg is _AUTH_UNAVAILABLE:
+        return JSONResponse({"success": False,
+                             "message": "PIN storage is temporarily unavailable; try again in a moment"},
+                            status_code=503)
+    if cfg is not None:
         return JSONResponse({"success": False,
                              "message": "a PIN is already set; use Change PIN"},
                             status_code=400)
@@ -568,6 +597,10 @@ def auth_setup(request: Request, data: Annotated[PinData, Body()]) -> Response:
 def auth_pin(request: Request, data: Annotated[PinData, Body()]) -> Response:
     """Enter the PIN. Every attempt is logged, successful or not."""
     config = _auth_config()
+    if config is _AUTH_UNAVAILABLE:
+        return JSONResponse({"success": False,
+                             "message": "PIN storage is temporarily unavailable; try again in a moment"},
+                            status_code=503)
     if config is None:
         return JSONResponse({"success": False, "message": "no PIN is set"},
                             status_code=400)
@@ -605,6 +638,10 @@ def auth_change(request: Request, data: Annotated[PinChangeData, Body()]) -> Res
     """Change the PIN. Needs the current one, so a trusted device that has
     been left lying around cannot silently change the lock."""
     config = _auth_config()
+    if config is _AUTH_UNAVAILABLE:
+        return JSONResponse({"success": False,
+                             "message": "PIN storage is temporarily unavailable; try again in a moment"},
+                            status_code=503)
     if config is None:
         return JSONResponse({"success": False, "message": "no PIN is set"},
                             status_code=400)
@@ -658,6 +695,10 @@ def auth_revoke_all(request: Request) -> Response:
     """
     require_pin(request)
     config = _auth_config()
+    if config is _AUTH_UNAVAILABLE:
+        return JSONResponse({"success": False,
+                             "message": "PIN storage is temporarily unavailable; try again in a moment"},
+                            status_code=503)
     if config is None:
         return JSONResponse({"success": False, "message": "no PIN is set"},
                             status_code=400)
