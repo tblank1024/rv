@@ -73,6 +73,10 @@ odds-and-ends in its "Still open" section. Operating essentials:
   sophie-hostd is unreachable. Honest limit: plain HTTP on the RV LAN, a speed-bump not strong auth.
   **Never test a live PIN by guessing it, and never call the auth write path with throwaway data** —
   that overwrote the real PIN once (2026-10-28). If a PIN is ever typed into a log, change it.
+  **Standing rule (PIN store safety):** (1) before any change or test that could write the PIN store,
+  copy `/etc/rvdashboard/dashboard-auth.json` to a dated backup (e.g. `.bak-YYYY-MM-DD`) first, and
+  restore from that backup if anything goes wrong; (2) tests never touch the live PIN file — point the
+  PIN code at a temporary copy through a path setting or test argument, and delete the copy afterward.
 - **Health → alerts:** the webserver publishes `RVC/RV_Health/1` (firewall_armed, container health,
   restarts, unit states) every 60 s; the `watcher` turns any out-of-bounds field into a `RVC/SYS_ERRORS`
   entry shown on the dashboard. `autoheal` restarts unhealthy containers. On-box only (no push off the RV).
