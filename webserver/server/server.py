@@ -61,7 +61,7 @@ from usb_modem_manager import usb_modem_manager
 # brokered by the loopback root daemon (rv/sophie-hostd) on 127.0.0.1. The
 # webserver is de-privileged -- no privileged, no pid:host, no docker.sock -- so
 # these helpers call hostd and return a clean error if it is unreachable, rather
-# than touching the host directly. See rv/sophie-hostd/CUTOVER.md.
+# than touching the host directly. See rv/plan_history.md §7.
 import hostd_client
 
 from fastapi import FastAPI, Body, HTTPException, Request

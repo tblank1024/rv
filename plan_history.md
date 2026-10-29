@@ -110,8 +110,8 @@ the Docker socket, and a writable `/dev`/`/sys/bus/usb`). All removed.
   hostd's `/api/modem/prepare`. All legacy `nsenter`/docker-socket code deleted from
   `server.py` (zero references remain). Key commits: `3fbae6f` (daemon), `f48eb1a`
   (dual-path), `ba7d5f7` (drop privileges), `18e0d25` (modem + fallback cleanup).
-- **Cutover driven live** with the user on Pi Connect via `sophie-hostd/cutover.sh`
-  (resumable, auto-rolls-back step 4 if the firewall read breaks). **Verified across a reboot
+- **Cutover driven live** with the user on Pi Connect via a resumable driver script
+  (auto-rolled-back step 4 if the firewall read broke; removed after completion). **Verified across a reboot
   and a true cold boot**: `Privileged=false`, no pid:host, no docker.sock; `RVC/RV_Health`
   reads `firewall_armed=1` from cold. A dashboard code-exec bug is now container-confined,
   not host root.
