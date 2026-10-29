@@ -30,7 +30,6 @@ Blocked on being somewhere else, not on effort:
 | Scan the cellular v6 address from outside | A laptop with global IPv6. Home ISP has none. |
 | Starlink path of the Internet selector | A trip — no sky in the garage. |
 | Stale rules for a dead WAN | A real uplink change while the `pi5connect` lock is in force. |
-| A true cold boot | Someone at the RV, hub fully de-energised. |
 | Install the `wan-*` `.link` files | A boot where the WAN renames itself; check NM profiles first. |
 
 ## Check at the next reboot
@@ -951,8 +950,27 @@ Not tracked anywhere before this, in the review's own priority order:
       same item as under §"Firewall — finish the deployment", where the full 23 h result
       is recorded. Nothing legitimate dropped; home automation at `.11` only ever appears in
       multicast discovery, never a unicast connection to a Sophie service.
-- [ ] **A true cold boot** (full power-off, not a reboot). The 2026-10-23 test rebooted with the hub
-      still energised, so the modem never paid its ~36 s from a dead socket. Needs someone at the RV.
+- [x] ~~**A true cold boot** (full power-off, not a reboot).~~ Done 2026-10-28 (poweroff +
+      power cycle, boot 16:45). The fully de-privileged webserver came up clean cold:
+      `Privileged=false`, `PidMode=""`, only `/dev/bus/usb` mounted, 9/9 containers healthy,
+      firewall `== ARMED`, dashboard 200, and `RVC/RV_Health` reads `firewall_armed=1
+      Status=OK` — so the webserver reads the firewall through sophie-hostd from a cold start.
+
+      **Finding worth keeping: the boot order is NOT guaranteed, and that is fine.** The
+      webserver container started at 16:47:36, ~16 s *before* `sophie-hostd` went active at
+      16:47:52. The webserver's hostd calls therefore failed for those ~16 s and degraded
+      gracefully (the clean-error paths from the fallback removal), then recovered once hostd
+      came up — which is why everything reads green now. The health publisher's 60 s retry
+      papers over it. Two small consequences, neither a blocker:
+      - For ~16 s at cold boot the dashboard's firewall card / container health read
+        "unavailable", and `_auth_config` returns None, so `/api/auth/status` briefly reports
+        `configured: false` (a narrow window, RV-LAN only, firewall already armed). If ever
+        worth tightening: have the webserver wait for `sophie-hostd` on startup, or add a
+        boot-order dependency. Low priority.
+      - The modem's ~36 s cold-start from a dead socket still was not exercised, because
+        **wired was the boot uplink, not cellular** — the hub socket for the modem was not
+        the one powered at boot. That specific timing only happens when cellular is the only
+        uplink at power-on; catch it opportunistically on a trip.
 
 ## Small / unrelated
 
