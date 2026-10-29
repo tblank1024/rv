@@ -962,11 +962,17 @@ Not tracked anywhere before this, in the review's own priority order:
       gracefully (the clean-error paths from the fallback removal), then recovered once hostd
       came up — which is why everything reads green now. The health publisher's 60 s retry
       papers over it. Two small consequences, neither a blocker:
-      - For ~16 s at cold boot the dashboard's firewall card / container health read
-        "unavailable", and `_auth_config` returns None, so `/api/auth/status` briefly reports
-        `configured: false` (a narrow window, RV-LAN only, firewall already armed). If ever
-        worth tightening: have the webserver wait for `sophie-hostd` on startup, or add a
-        boot-order dependency. Low priority.
+      - **The cold-boot window was a real PIN fail-open, now fixed** (2026-10-28, commit
+        e714f03, after Manager flagged it). Before: while hostd was unreachable `_auth_config`
+        returned None, which the gate read as "no PIN set" and OPENED -- so for the ~16 s
+        before hostd is up, the protected routes were reachable on the RV LAN with no PIN.
+        Fix: `_auth_config` now returns a distinct `_AUTH_UNAVAILABLE` sentinel when the store
+        can't be read, and `is_authenticated` fails CLOSED on it (protected routes 401), while
+        a genuinely unconfigured box (None) still fails open for first-time setup. Verified by
+        forcing hostd to raise. Residual, cosmetic only: during that window the dashboard's
+        firewall/health cards read "unavailable" and it shows the PIN prompt rather than the
+        page -- which is the correct fail-closed behaviour. A boot-order dependency to shrink
+        the window is still possible but no longer security-relevant.
       - The modem's ~36 s cold-start from a dead socket still was not exercised, because
         **wired was the boot uplink, not cellular** — the hub socket for the modem was not
         the one powered at boot. That specific timing only happens when cellular is the only
