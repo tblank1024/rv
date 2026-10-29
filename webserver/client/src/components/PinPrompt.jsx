@@ -1,7 +1,7 @@
 /**
  * PinPrompt / PinGate — the dashboard's PIN entry.
  *
- * Design, scope and the measurements behind it: plan_pin_protection.md.
+ * Design, scope and the measurements behind it: plan_history.md §5.
  *
  * What this is NOT: authentication. The dashboard is plain HTTP, so the PIN
  * crosses the air in clear text, and anything on the RV LAN that is not a

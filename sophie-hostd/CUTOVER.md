@@ -33,7 +33,7 @@ the dual-path from step 3 is the stable end state; the now-dead fallbacks are
 harmless and can be removed later as an ordinary commit.)
 
 The endpoint map (which `server.py` call goes to which hostd endpoint) is in
-`README.md` and in `rv/TODO.md` → "Plan: sophie-hostd".
+`README.md` and in `rv/plan_history.md` → "Plan: sophie-hostd".
 
 ## Running it
 
@@ -85,7 +85,7 @@ Independent of the script, and needed before privilege comes off (it also needs
 process kill in `prepare_cellular_modem()`** — to `usbhub-api` (or hostd), then
 drop the `/sys/bus/usb:rw` mount (line ~388, webserver block). Until that's done,
 the cellular "prepare modem" path breaks once `pid: host`/`privileged` are gone.
-The script does not touch this; it is tracked in `rv/TODO.md`.
+The script does not touch this; it is tracked in `rv/plan_history.md`.
 
 ## Recover by hand
 

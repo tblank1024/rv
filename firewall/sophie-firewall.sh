@@ -1,14 +1,14 @@
 #!/bin/bash
 # Sophie host firewall: default-deny inbound/forward on every interface except the RV LAN side.
 # Usage: sophie-firewall.sh apply | docker | revert | status
-# See plan_firewall.md. Rules live in our own chains (SOPHIE-IN, SOPHIE-FWD); this script
+# See plan_history.md. Rules live in our own chains (SOPHIE-IN, SOPHIE-FWD); this script
 # never runs `iptables -F`, so Docker's and pi5connect.sh's rules are left alone.
 set -uo pipefail
 
 TRUSTED=(lo br0 docker0 "br-+")          # everything else (eth1, eth2, wlan1, wwan0, ...) is untrusted
 
 # The ONE inbound exception, added 2026-10-26 on the owner's decision. It
-# reverses "no inbound allow-list" in plan_firewall.md, so the reasoning is
+# reverses "no inbound allow-list" in plan_history.md, so the reasoning is
 # here rather than in the commit alone.
 #
 # Purpose: the laptop's Workers window attaches to the rv-manager tmux session
@@ -25,7 +25,7 @@ TRUSTED=(lo br0 docker0 "br-+")          # everything else (eth1, eth2, wlan1, w
 # road posture is unchanged.
 #
 # Why no -i pin: the uplink's interface name swaps between eth1 and eth2 across
-# boots (see TODO.md), and the MAC match already confines this to the local
+# boots (see plan_history.md §4), and the MAC match already confines this to the local
 # segment, which is what an interface pin would have been for.
 #
 # Residual risk, accepted: someone already on the home LAN who knows these MACs

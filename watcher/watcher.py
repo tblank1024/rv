@@ -768,7 +768,7 @@ def _prune_old_logs(keep_months=KEEP_MONTHS):
     """Delete rotated .log/.whitelist.json files in FILEDIR whose last-modified
     month is more than keep_months behind the current month. Runs whenever a new
     monthly log file is opened, so leftover months don't accumulate on the SD
-    card indefinitely (see plan_SDCARD_saver.md).
+    card indefinitely (see plan_history.md).
     """
     now = datetime.datetime.now()
     for path in glob.glob(os.path.join(FILEDIR, '*.log')) + glob.glob(os.path.join(FILEDIR, '*.whitelist.json')):

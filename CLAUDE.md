@@ -39,7 +39,7 @@ key policy on it:
    `/etc/systemd/network/11-wlan-wan.link`; `wlan0` is the AP radio and is NM-unmanaged
    (`/etc/NetworkManager/conf.d/99-unmanaged-wlan0.conf`). The dashboard's network picker drives
    it through `wifi-api-rp5.service` on `127.0.0.1:12346` (`WiFitoHostBridge` repo). Plan and
-   measurements: `plan_new_WAN_WiFi.md`.
+   measurements: `plan_history.md` §3.
 4. 5G modem
 
 `/usr/local/sbin/pi5connect.sh` (repo: `raspap/pi5connect.sh`) picks the WAN, sets the default
@@ -48,8 +48,38 @@ choice in `/run/pi5connect-wan`. It overwrites the rules at runtime, which is wh
 `/etc/iptables/rules.v4` is stale and does not matter.
 
 **Host firewall:** default-deny by interface (`firewall/sophie-firewall.sh`, units `sophie-firewall*.service`,
-chains `SOPHIE-IN`/`SOPHIE-FWD`); trusted: `lo`, `br0`, `docker0`, `br-+`. `plan_firewall.md` has the design and
-the revert procedure (`sophie-firewall.sh revert`).
+chains `SOPHIE-IN`/`SOPHIE-FWD`); trusted: `lo`, `br0`, `docker0`, `br-+`. Operator view in
+`firewall/README.md`; design + rollout recap in `plan_history.md` §4. Revert: `sudo sophie-firewall.sh revert`
+(password-gated on purpose). WAN selection: `raspap/pi5connect.sh` + `wan_scan.sh` + shared `wan-common.sh`
+(check with `raspap/check_wan_constants.sh`); one uplink at a time, chosen by hub-socket role not interface name.
+
+## Security posture & host-root daemons (status: 2026-10-28)
+
+All items from the hardening effort are deployed; the full record is `plan_history.md`, remaining
+odds-and-ends in its "Still open" section. Operating essentials:
+
+- **The webserver container is de-privileged** — no `privileged`, no `pid: host`, no `docker.sock`,
+  no `/sys/bus/usb`. It performs every host-root operation (firewall reads, container restart/state,
+  reboot, WAN scan, host unit states, the modem rebind, and the PIN/wan-manual host files) by calling
+  **`sophie-hostd`** over loopback. A dashboard bug is container-confined, not host root.
+- **Three host-root daemons, all on `127.0.0.1` only** (loopback bind IS the access control), stdlib,
+  `Restart=always` + `WatchdogSec` self-check:
+  - `wifi-api-rp5.service` `:12346` — drives the Alfa (`wlan1`) via nmcli (`WiFitoHostBridge` repo).
+  - `usbhub-api.service` `:12347` — per-port power on the Plugable hub (`usbhub/`).
+  - `sophie-hostd.service` `:12348` — the dashboard's host-root broker (`sophie-hostd/`).
+  Never bind any of them to `0.0.0.0` or `br0`.
+- **Dashboard PIN gate** on destructive routes (`server.py` `enforce_pin` + `/api/auth/*`), PIN file
+  `/etc/rvdashboard/dashboard-auth.json` (0600, read/written via sophie-hostd). It **fails closed** if
+  sophie-hostd is unreachable. Honest limit: plain HTTP on the RV LAN, a speed-bump not strong auth.
+  **Never test a live PIN by guessing it, and never call the auth write path with throwaway data** —
+  that overwrote the real PIN once (2026-10-28). If a PIN is ever typed into a log, change it.
+- **Health → alerts:** the webserver publishes `RVC/RV_Health/1` (firewall_armed, container health,
+  restarts, unit states) every 60 s; the `watcher` turns any out-of-bounds field into a `RVC/SYS_ERRORS`
+  entry shown on the dashboard. `autoheal` restarts unhealthy containers. On-box only (no push off the RV).
+- **SSH** key-only, narrowed to the laptop's MACs on the uplink; **unattended security upgrades** on
+  (security-only, never auto-reboots, `sdcard-writes/unattended-upgrades/`); **mDNS** scoped to `br0`.
+- **After changing webserver code: `cd docker && docker compose build webserver && docker compose up -d
+  webserver`** — a plain `up -d` keeps the stale cached image.
 
 ## Remote Desktop
 

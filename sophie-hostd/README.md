@@ -22,7 +22,7 @@ the Docker socket, and — now removed — a writable `/dev`). It has them only 
 handful of specific things. Moving those behind this daemon lets the webserver drop
 all of it and become an ordinary container with a GPIO device and host networking.
 The full rationale, the inventory, and the staged cutover are in
-`rv/TODO.md` → "Plan: sophie-hostd".
+`rv/plan_history.md` → "Plan: sophie-hostd".
 
 It runs **on the host**, so unlike the webserver it needs no `nsenter`: it calls the
 host's own `systemctl` / `iptables` / `docker` / `journalctl` directly.

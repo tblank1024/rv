@@ -3,7 +3,7 @@
  *
  * Added because the endpoints existed but nothing could reach them: once a PIN
  * was set it could only be changed with curl, which on a wall-mounted tablet
- * means not at all. Design and scope: plan_pin_protection.md.
+ * means not at all. Design and scope: plan_history.md.
  *
  * Every flow here is keypad-only. The device this runs on has no keyboard, and
  * putting one value of a PIN form in a text field is exactly the mistake that

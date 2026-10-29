@@ -8,7 +8,7 @@ host-root operations (read the firewall chains, restart containers, reboot, and
 read/write three host files). That makes any dashboard bug root on Sophie. This
 daemon moves exactly those operations behind a loopback HTTP API with a fixed
 allow-list, so the webserver can drop privileged/pid:host/docker.sock and become
-an ordinary container. See rv/TODO.md "Plan: sophie-hostd".
+an ordinary container. See rv/plan_history.md §7.
 
 Same shape as its siblings `usbhub_api.py` and `wifi-api-rp5`: stdlib only, root,
 bound to loopback with the bind address as the only access control, a systemd

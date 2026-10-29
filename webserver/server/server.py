@@ -280,7 +280,7 @@ app.add_middleware(
 # ===========================================================================
 # PIN gate
 # ===========================================================================
-# Design, scope and the measurements behind it: plan_pin_protection.md.
+# Design, scope and the measurements behind it: plan_history.md §5.
 #
 # In one paragraph: the dashboard has no authentication, and the cross-site
 # guard below only stops a *website* driving it through a LAN browser -- a
@@ -518,7 +518,7 @@ def _set_auth_cookie(response, token: str):
         samesite="lax",
         # NOT secure: the dashboard is plain HTTP, and a Secure cookie would
         # simply never be sent. This is also why the PIN is not strong
-        # authentication -- see plan_pin_protection.md "Honest limits".
+        # authentication -- see plan_history.md §5 "Honest limits".
         secure=False,
         path="/",
     )
@@ -2778,7 +2778,7 @@ def get_watcher_logs(lines: int = 200) -> dict:
             "whitelist": {}
         }
 
-# --- Host firewall status (see plan_firewall.md and firewall/README.md) -------
+# --- Host firewall status (see plan_history.md §4 and firewall/README.md) -------
 # The SOPHIE-IN / SOPHIE-FWD chains live in the host's network namespace and
 # this image carries no iptables binary, so the raw status is fetched from
 # sophie-hostd (/api/firewall, read-only) and parsed here. Read-only: -S and -L.

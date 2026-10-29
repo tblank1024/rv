@@ -8,7 +8,7 @@
 # It used to write a permissive /etc/iptables/rules.v4 and `iptables-restore`
 # it immediately. Re-running it on the live RV would therefore have:
 #   - flushed SOPHIE-IN / SOPHIE-FWD, disarming the host firewall
-#     (firewall/sophie-firewall.sh, plan_firewall.md)
+#     (firewall/sophie-firewall.sh, plan_history.md)
 #   - reopened ports 22, 80, 443 and 53 on EVERY interface, including the
 #     uplink -- undoing the MAC-restricted SSH rule added 2026-10-26
 #   - set the INPUT and FORWARD policies back to ACCEPT

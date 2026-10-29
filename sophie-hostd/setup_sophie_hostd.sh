@@ -6,7 +6,7 @@
 # Installs sophie_hostd.py into /usr/local/sbin and the unit into
 # /etc/systemd/system, then enables and (re)starts it. Restarting it never
 # changes host state: every endpoint acts only on request, and it holds no
-# state of its own. See README.md and rv/TODO.md "Plan: sophie-hostd".
+# state of its own. See README.md and rv/plan_history.md §7.
 #
 # This daemon does NOT by itself drop the webserver's privileges -- that is a
 # later, deliberate step (see the plan). Installing it is safe and inert until

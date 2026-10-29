@@ -3,7 +3,7 @@
 Default-deny inbound and forward on every interface except the RV LAN side, so that
 Sophie herself is not reachable from a campground/park network, a home LAN, Starlink or
 the cellular modem. Design, rationale and the per-uplink test matrix live in
-`../plan_firewall.md`; this file is the operator's view.
+`../plan_history.md`; this file is the operator's view.
 
 ## What's here
 
@@ -34,7 +34,7 @@ needs to function at all. Rate-limited `LOG` lines (`SOPHIE-IN drop:` / `SOPHIE-
 sit in front of each DROP; the journal is volatile, so they cost no SD writes.
 
 There is **no inbound allow-list** — no "SSH from the home subnet" exception, deliberately
-(see `plan_firewall.md` §"Things that will break"). Reach Sophie from outside the RV LAN via
+(see `plan_history.md` §"Things that will break"). Reach Sophie from outside the RV LAN via
 Raspberry Pi Connect, or put the laptop on Sophie's own WiFi.
 
 ## Install

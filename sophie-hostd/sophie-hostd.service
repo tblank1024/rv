@@ -3,7 +3,7 @@
 # The webserver container runs privileged + pid:host with the Docker socket
 # only to perform a fixed set of host-root operations. This service performs
 # them instead, behind a loopback allow-list, so the webserver can drop those
-# privileges and become an ordinary container. See rv/TODO.md "Plan: sophie-hostd".
+# privileges and become an ordinary container. See rv/plan_history.md §7.
 #
 # Same shape as usbhub-api.service and wifi-api-rp5.service: stdlib only,
 # loopback, no auth because the bind address IS the access control.

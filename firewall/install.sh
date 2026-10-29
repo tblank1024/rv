@@ -1,6 +1,6 @@
 #!/bin/bash
 # Install the Sophie firewall script and units. Enables them for boot but does NOT
-# start them (see plan_firewall.md "Rollout": apply by hand with an auto-revert armed first).
+# start them (see plan_history.md "Rollout": apply by hand with an auto-revert armed first).
 set -euo pipefail
 cd "$(dirname "$0")"
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }
