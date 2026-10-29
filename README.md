@@ -1,6 +1,19 @@
 # rv
 
-Applications running on Raspberry Pi in Sophie the RV.
+Applications for the Raspberry Pi 5 inside "Sophie" the RV: a set of Docker
+services (MQTT broker, RV-C/CAN decoder, battery/solar/tire monitors, a
+GPIO alarm, and a React dashboard) plus host-side glue for networking and the
+internet uplink.
+
+Where to look:
+- **`CLAUDE.md`** — operational and security status: the uplink/WAN setup, the
+  host firewall, the de-privileged dashboard and the loopback host-root daemons,
+  the PIN gate, and day-to-day notes (e.g. rebuild-before-`up -d`).
+- **`plan_history.md`** — condensed record of the major work done, with the
+  still-open field tests.
+- Component READMEs: `firewall/`, `usbhub/`, `sophie-hostd/`, `sdcard-writes/`,
+  `webserver/`.
+- This file — the MQTT topic contract every service publishes and consumes to.
 
 ## MQTT topic convention
 
