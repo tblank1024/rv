@@ -2878,6 +2878,11 @@ def _family_from_hostd(fam):
 # it root on the host to read a few counters.
 HEALTH_INSTANCE = 1
 HEALTH_INTERVAL = 60
+# sophie-hostd can come up ~15 s after the containers, and an unreachable hostd
+# reads as "firewall EXPOSED" (it fails closed). Don't report that as a fault
+# until the webserver has been up this long.
+HEALTH_STARTUP_GRACE = 120
+_HEALTH_PROCESS_START = time.time()
 HEALTH_RESTART_WINDOW = 15 * 60        # how long a restart keeps counting
 HEALTH_EXPECTED = ("mqtt", "rvc2mqtt", "battery", "tirelinc", "solar",
                    "alarm", "webserver", "watcher", "autoheal")
@@ -2966,6 +2971,11 @@ def publish_host_health():
         return False
     try:
         firewall = get_firewall_status()
+        if (not firewall.get("healthy")
+                and firewall.get("ipv4", {}).get("reachable") is False
+                and time.time() - _HEALTH_PROCESS_START < HEALTH_STARTUP_GRACE):
+            print("Host health: sophie-hostd not up yet; skipping report during startup grace")
+            return False
         armed = 1 if firewall.get("healthy") else 0
         unhealthy, down, restarts, notes = _health_containers()
         failed, bad_units = _health_units()
