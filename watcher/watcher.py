@@ -52,6 +52,15 @@ MAX_INTERVAL_OVERRIDES = {
     'Tire_RL_in_psi': 300,
     'Tire_RR_in_psi': 300,
     'Tire_RR_out_psi':300,
+    # Host health is published every 60 s (server.py HEALTH_INTERVAL); allow 3 missed reports.
+    'Health_timestamp':          180,
+    'Health_Status':             180,
+    'Health_detail':             180,
+    'Health_firewall_armed':     180,
+    'Health_containers_unhealthy':180,
+    'Health_containers_down':    180,
+    'Health_restarts_15m':       180,
+    'Health_units_failed':       180,
 }
 
 #global vars
