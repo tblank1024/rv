@@ -1,0 +1,6 @@
+[Unit]
+Description=Tell RV-Manager the Sophie report job failed
+
+[Service]
+Type=oneshot
+ExecStart=/home/tblank/code/tblank1024/rv/reports/nudge_rv_manager.sh failed

@@ -2,13 +2,15 @@
 """Weekly Sophie restart + health report (stdlib only, read-only).
 
 Writes markdown to reports/out/YYYY-MM-DD.md and reports/out/latest.md, prints it.
-Usage: weekly_health_report.py [days=7]
+Usage: weekly_health_report.py [days=7] [--force]
+Run daily: appends out/history.jsonl; writes the dated/latest report on Mondays or --force.
 """
 import json, re, shutil, subprocess, sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DAYS = int(sys.argv[1]) if len(sys.argv) > 1 else 7
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+DAYS = int(args[0]) if args else 7
 OUT = Path(__file__).parent / "out"
 now = datetime.now().astimezone()
 since = now - timedelta(days=DAYS)
@@ -164,12 +166,34 @@ try:
 except Exception as e:
     rep += section("MQTT health", [f"unavailable ({type(e).__name__})"])
 
+# --- daily history: journald is RAM-only (36 h) to spare the SD card, so a 7-day kernel scan
+# really only sees ~36 h. Run daily; each run appends ONE small line here (<1 KB/day of
+# flash writes) so the weekly report can show the whole week.
+OUT.mkdir(exist_ok=True)
+HIST = OUT / "history.jsonl"
+today = f"{now:%Y-%m-%d}"
+entry = {"date": today, "flags": [f for f in flags if "(re)started" not in f]}
+rows = []
+if HIST.exists():
+    rows = [json.loads(l) for l in HIST.read_text().splitlines() if l.strip()]
+    rows = [r for r in rows if r["date"] != today]
+rows = (rows + [entry])[-28:]
+HIST.write_text("".join(json.dumps(r) + "\n" for r in rows))
+week = [r for r in rows if r["date"] >= f"{since:%Y-%m-%d}"]
+hist_lines = [f"{r['date']}: " + ("; ".join(r["flags"]) or "ok") for r in week]
+for r in week:
+    for f in r["flags"]:
+        if r["date"] != today and f not in flags:
+            flags.append(f"{f} (on {r['date']})")
+rep += section("Daily history (kernel/error flags per daily run)", hist_lines)
+
 rep.insert(2, "**Flags:** " + ("; ".join(flags) if flags else "none — all clear") + "\n")
 text = "\n".join(rep)
-OUT.mkdir(exist_ok=True)
-(OUT / f"{now:%Y-%m-%d}.md").write_text(text)
-(OUT / "latest.md").write_text(text)
-# keep only the 4 newest dated reports
-for old in sorted(OUT.glob("20??-??-??.md"))[:-4]:
-    old.unlink()
+# Dated + latest reports are written on Mondays (or with --force); other days only update history.
+if now.weekday() == 0 or "--force" in sys.argv:
+    (OUT / f"{now:%Y-%m-%d}.md").write_text(text)
+    (OUT / "latest.md").write_text(text)
+    # keep only the 4 newest dated reports
+    for old in sorted(OUT.glob("20??-??-??.md"))[:-4]:
+        old.unlink()
 print(text)

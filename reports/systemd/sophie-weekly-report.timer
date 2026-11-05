@@ -1,8 +1,8 @@
 [Unit]
-Description=Sophie weekly report, Mondays 07:00
+Description=Sophie weekly report, daily 07:00 (report written Mondays)
 
 [Timer]
-OnCalendar=Mon *-*-* 07:00:00
+OnCalendar=*-*-* 07:00:00
 Persistent=true
 
 [Install]

@@ -1,5 +1,6 @@
 [Unit]
-Description=Sophie weekly restart + health report (writes rv/reports/out/latest.md)
+Description=Sophie daily health history; weekly report on Mondays
+OnFailure=sophie-weekly-report-failed.service
 
 [Service]
 Type=oneshot
