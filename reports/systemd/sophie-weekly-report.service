@@ -1,0 +1,6 @@
+[Unit]
+Description=Sophie weekly restart + health report (writes rv/reports/out/latest.md)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/tblank/code/tblank1024/rv/reports/weekly_health_report.py 7

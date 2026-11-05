@@ -1,0 +1,7 @@
+[Unit]
+Description=Nudge RV-Manager to forward the weekly Sophie report
+After=sophie-weekly-report.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/tblank/code/tblank1024/rv/reports/nudge_rv_manager.sh
