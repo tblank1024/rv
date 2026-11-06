@@ -162,6 +162,12 @@ try:
     p = next(v for k, v in env.items() if "MQTT" in k and ("PASS" in k or "PW" in k))
     out = run(["docker", "exec", "mqtt", "mosquitto_sub", "-h", "localhost", "-u", u, "-P", p,
                "-t", "RVC/RV_Health/1", "-C", "1", "-W", "75"], 90)
+    try:
+        h = json.loads(out.strip().splitlines()[-1])
+        if h.get("Status") != "OK" or not h.get("firewall_armed", 1):
+            flags.append(f"RV_Health {h.get('Status')}: {str(h.get('detail',''))[:120]}")
+    except Exception:
+        flags.append("RV_Health unreadable/no message in 75 s (webserver health publisher down?)")
     rep += section("Latest RV_Health (published every 60 s; includes firewall_armed, container/unit state)", [out[:1200]])
 except Exception as e:
     rep += section("MQTT health", [f"unavailable ({type(e).__name__})"])
