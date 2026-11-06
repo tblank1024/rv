@@ -40,7 +40,7 @@ import psutil
 
 #CONSTANTS
 FILEDIR = './watcherlogs/'
-KEEP_MONTHS = 4         # delete rotated .log/.whitelist.json files older than this many months
+KEEP_MONTHS = 2         # delete rotated .log/.whitelist.json files older than this many months
 LARGESTINTERVAL = 60    # default max seconds between updates before a progression fault is raised
 
 # Per-alias overrides for max allowed update interval.
